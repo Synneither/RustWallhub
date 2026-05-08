@@ -14,6 +14,15 @@ async function greet() {
   // Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
   greetMsg.value = await invoke("greet", { name: name.value });
 }
+async function loadimage() {
+  try{
+    const path='/Users/synneither/Pictures/Wallpapers';
+    const binarydata = await invoke("read_image", { path });
+
+    const blob=new Blob([binarydata], { type: "image/png" });
+  }
+  
+}
 </script>
 <template>
   <v-app id="inspire">
