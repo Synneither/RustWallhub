@@ -1,7 +1,7 @@
 import { createApp } from "vue";
 import App from "./App.vue";
 import { createVuetify } from 'vuetify';
-
+import "./assets/style.css"
 
 // 导入 Vuetify 样式
 import 'vuetify/styles';

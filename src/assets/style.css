@@ -1,0 +1,13 @@
+.bg-grey-lighten-3 {
+    background-color: #ffffff !important;
+}
+
+.btn {
+    color: #000000;
+    background-color: #ffffff;
+    border: 1px solid #d42a2a69;
+    border-radius: 4px;
+    padding: 6px 12px;
+    margin: 0 4px;
+    transition: background-color 0.3s ease;
+}

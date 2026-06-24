@@ -4,9 +4,11 @@
     "npm:@mdi/font@^7.4.47": "7.4.47",
     "npm:@tauri-apps/api@2": "2.11.0",
     "npm:@tauri-apps/cli@2": "2.11.1",
+    "npm:@tauri-apps/plugin-fs@2": "2.5.1",
     "npm:@tauri-apps/plugin-opener@2": "2.5.4",
     "npm:@vitejs/plugin-vue@^5.2.1": "5.2.4_vite@6.4.2_vue@3.5.34__typescript@5.6.3_typescript@5.6.3",
     "npm:typescript@~5.6.2": "5.6.3",
+    "npm:vite@6.4.2": "6.4.2",
     "npm:vite@^6.0.3": "6.4.2",
     "npm:vue-tsc@^2.1.10": "2.2.12_typescript@5.6.3",
     "npm:vue@^3.5.13": "3.5.34_typescript@5.6.3",
@@ -369,6 +371,12 @@
       ],
       "bin": true
     },
+    "@tauri-apps/plugin-fs@2.5.1": {
+      "integrity": "sha512-9Lz+Jopp6QyeEWhlpkMx4R/+P9HgR+AVAI4vOZhlT8Xaymtz8iVI/Ov984/XTqgJz/5gz5NretqPB/XEMS3NhQ==",
+      "dependencies": [
+        "@tauri-apps/api"
+      ]
+    },
     "@tauri-apps/plugin-opener@2.5.4": {
       "integrity": "sha512-1HnPkb+AmgO29HBazm4uPLKB+r7zzcTBW1d0fyYp1uP+jwtpoiNDGKMMzz58SFp49nOIrxdE3aUJtT57lfO9CQ==",
       "dependencies": [
@@ -715,6 +723,7 @@
         "npm:@mdi/font@^7.4.47",
         "npm:@tauri-apps/api@2",
         "npm:@tauri-apps/cli@2",
+        "npm:@tauri-apps/plugin-fs@2",
         "npm:@tauri-apps/plugin-opener@2",
         "npm:@vitejs/plugin-vue@^5.2.1",
         "npm:typescript@~5.6.2",
