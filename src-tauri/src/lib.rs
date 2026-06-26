@@ -1700,6 +1700,41 @@ fn set_feh_wallpaper(path_str: &str) -> Option<String> {
     output.status.success().then(|| "\u{58c1}\u{7eb8}\u{5df2}\u{8bbe}\u{7f6e} (feh)".to_string())
 }
 
+/// Windows — 通过 SystemParametersInfoW 设置壁纸
+#[cfg(target_os = "windows")]
+fn set_windows_wallpaper(path_str: &str) -> Option<String> {
+    use std::os::windows::ffi::OsStrExt;
+
+    let wide: Vec<u16> = std::ffi::OsStr::new(path_str)
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect();
+
+    const SPI_SETDESKWALLPAPER: u32 = 0x0014;
+    const SPIF_UPDATEINIFILE: u32 = 0x0001;
+    const SPIF_SENDCHANGE: u32 = 0x0002;
+
+    extern "system" {
+        fn SystemParametersInfoW(
+            uiAction: u32,
+            uiParam: u32,
+            pvParam: *const std::ffi::c_void,
+            fWinIni: u32,
+        ) -> i32;
+    }
+
+    let result = unsafe {
+        SystemParametersInfoW(
+            SPI_SETDESKWALLPAPER,
+            0,
+            wide.as_ptr() as *const std::ffi::c_void,
+            SPIF_UPDATEINIFILE | SPIF_SENDCHANGE,
+        )
+    };
+
+    (result != 0).then(|| "\u{58c1}\u{7eb8}\u{5df2}\u{8bbe}\u{7f6e} (Windows)".to_string())
+}
+
 
 #[tauri::command]
 async fn set_wallpaper(file_path: String) -> Result<String, AppError> {
@@ -1712,7 +1747,14 @@ async fn set_wallpaper(file_path: String) -> Result<String, AppError> {
         .canonicalize()
         .map_err(|e| AppError::Other(format!("获取绝对路径失败: {e}")))?;
     let path_str = absolute_path.to_string_lossy().to_string();
-    set_gnome_wallpaper(&path_str)
+
+    #[cfg(target_os = "windows")]
+    let win_result = set_windows_wallpaper(&path_str);
+    #[cfg(not(target_os = "windows"))]
+    let win_result: Option<String> = None;
+
+    win_result
+        .or_else(|| set_gnome_wallpaper(&path_str))
         .or_else(|| set_xfce_wallpaper(&path_str))
         .or_else(|| set_kde_wallpaper(&path_str))
         .or_else(|| set_sway_wallpaper(&path_str))
@@ -1720,7 +1762,7 @@ async fn set_wallpaper(file_path: String) -> Result<String, AppError> {
         .or_else(|| set_swww_wallpaper(&path_str))
         .or_else(|| set_feh_wallpaper(&path_str))
         .ok_or_else(|| AppError::Other(
-            "未检测到支持的桌面环境。支持: GNOME, KDE, XFCE, sway, Hyprland, niri(swww), swww, feh".to_string(),
+            "未检测到支持的桌面环境。支持: Windows, GNOME, KDE, XFCE, sway, Hyprland, niri(swww), swww, feh".to_string(),
         ))
 }
 
