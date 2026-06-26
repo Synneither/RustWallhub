@@ -79,8 +79,7 @@ pub fn is_valid_image(data: &[u8], content_type: &str) -> bool {
 pub fn file_is_image(path: &Path) -> bool {
     path.extension()
         .and_then(|ext| ext.to_str())
-        .map(|ext| IMAGE_EXTENSIONS.contains(&ext.to_lowercase().as_str()))
-        .unwrap_or(false)
+        .is_some_and(|ext| IMAGE_EXTENSIONS.contains(&ext.to_lowercase().as_str()))
 }
 
 pub fn compute_md5(data: &[u8]) -> String {

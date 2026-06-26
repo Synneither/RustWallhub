@@ -9,8 +9,7 @@ fn thumbnail_pool() -> &'static rayon::ThreadPool {
     static POOL: std::sync::OnceLock<rayon::ThreadPool> = std::sync::OnceLock::new();
     POOL.get_or_init(|| {
         let cpus = std::thread::available_parallelism()
-            .map(|n| n.get())
-            .unwrap_or(4);
+            .map_or(4, |n| n.get());
         let threads = (cpus / 2).clamp(2, 6);
         rayon::ThreadPoolBuilder::new()
             .num_threads(threads)

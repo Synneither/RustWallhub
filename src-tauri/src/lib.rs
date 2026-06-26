@@ -94,7 +94,7 @@ fn find_upward(
             return Some(candidate);
         }
         if depth >= MAX_UPWARD_DEPTH {
-            log::warn!("[find_upward] exceeded max depth {} at {:?}", MAX_UPWARD_DEPTH, current);
+            log::warn!("[find_upward] exceeded max depth {} at {}", MAX_UPWARD_DEPTH, current.display());
             break;
         }
         if !current.pop() {
@@ -911,7 +911,7 @@ async fn list_orphan_files(
                         orphans.push(OrphanFile {
                             name,
                             path: file_path.to_string_lossy().to_string(),
-                            size: entry.metadata().map(|m| m.len()).unwrap_or(0),
+                            size: entry.metadata().map_or(0, |m| m.len()),
                             source: src.to_string(),
                         });
                     }
@@ -1267,7 +1267,7 @@ async fn list_local_images(
                 entries.push(FileEntry {
                     name,
                     path: file_path.to_string_lossy().to_string(),
-                    size: entry.metadata().map(|m| m.len()).unwrap_or(0),
+                    size: entry.metadata().map_or(0, |m| m.len()),
                     is_orphan,
                 });
             }
@@ -1431,7 +1431,7 @@ async fn search_wallhaven(
 
     Ok(serde_json::json!({
         "images": images,
-        "page": meta.map(|m| m.current_page).unwrap_or(1),
+        "page": meta.map_or(1, |m| m.current_page),
         "total_pages": meta.and_then(|m| m.last_page).unwrap_or(1),
         "total": meta.and_then(|m| m.total).unwrap_or(0),
     }))
@@ -1550,10 +1550,9 @@ async fn download_wallhaven_selected(
 
 /// GNOME (gsettings)
 fn set_gnome_wallpaper(path_str: &str) -> Option<String> {
-    if !Command::new("gsettings")
+    if Command::new("gsettings")
         .args(["get", "org.gnome.desktop.background", "picture-uri"])
-        .output()
-        .is_ok()
+        .output().is_err()
     {
         return None;
     }
@@ -1638,7 +1637,7 @@ fn set_sway_wallpaper(path_str: &str) -> Option<String> {
 
 /// Hyprland (hyprpaper)
 fn set_hyprland_wallpaper(path_str: &str) -> Option<String> {
-    if !Command::new("hyprctl").arg("--version").output().is_ok() {
+    if Command::new("hyprctl").arg("--version").output().is_err() {
         return None;
     }
     let monitors = Command::new("hyprctl")
@@ -1666,15 +1665,13 @@ fn set_hyprland_wallpaper(path_str: &str) -> Option<String> {
         Command::new("hyprctl")
             .args(["hyprpaper", "wallpaper", &format!(",{path_str}")])
             .output()
-            .map(|o| o.status.success())
-            .unwrap_or(false)
+            .is_ok_and(|o| o.status.success())
     } else {
         monitors.iter().all(|monitor| {
             Command::new("hyprctl")
                 .args(["hyprpaper", "wallpaper", &format!("{monitor},{path_str}")])
                 .output()
-                .map(|o| o.status.success())
-                .unwrap_or(false)
+                .is_ok_and(|o| o.status.success())
         })
     };
 
@@ -1683,7 +1680,7 @@ fn set_hyprland_wallpaper(path_str: &str) -> Option<String> {
 
 /// swww
 fn set_swww_wallpaper(path_str: &str) -> Option<String> {
-    if !Command::new("swww").arg("--version").output().is_ok() {
+    if Command::new("swww").arg("--version").output().is_err() {
         return None;
     }
     let output = Command::new("swww")
@@ -1826,14 +1823,12 @@ async fn clean_thumbnails(
     let wh_cleaned = db::clean_stale_thumbnails(
         &wh_thumb_dir.to_string_lossy(),
         &config.wallhaven_save_dir,
-    )
-    .unwrap_or(0);
+    );
     let rd_thumb_dir = config.reddit_thumb_dir();
     let rd_cleaned = db::clean_stale_thumbnails(
         &rd_thumb_dir.to_string_lossy(),
         &config.reddit_save_dir,
-    )
-    .unwrap_or(0);
+    );
     Ok(serde_json::json!({
         "wallhaven": wh_cleaned,
         "reddit": rd_cleaned,
@@ -1860,8 +1855,7 @@ async fn get_current_wallpaper() -> Result<serde_json::Value, AppError> {
         .args(["get", "org.gnome.desktop.interface", "color-scheme"])
         .output()
         .ok()
-        .map(|o| String::from_utf8_lossy(&o.stdout).to_lowercase().contains("dark"))
-        .unwrap_or(true);
+        .is_none_or(|o| String::from_utf8_lossy(&o.stdout).to_lowercase().contains("dark"));
 
     let key = if is_dark { "dark" } else { "light" };
     let path = json

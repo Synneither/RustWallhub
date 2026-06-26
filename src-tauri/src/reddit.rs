@@ -65,7 +65,8 @@ impl RedditClient {
             "https://www.reddit.com/r/Animewallpaper/.json?limit={limit}"
         );
         if let Some(after_val) = after {
-            api_url.push_str(&format!("&after={after_val}"));
+            use std::fmt::Write;
+            let _ = write!(api_url, "&after={after_val}");
         }
 
         log::info!("[reddit] fetch_posts: after={:?} limit={}", after, limit);

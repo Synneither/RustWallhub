@@ -259,10 +259,10 @@ pub fn delete_reddit_image(db_path: &str, name: &str) -> SqlResult<bool> {
     delete_image_by_name(db_path, name)
 }
 
-pub fn clean_stale_thumbnails(thumbnail_dir: &str, save_dir: &str) -> std::io::Result<u64> {
+pub fn clean_stale_thumbnails(thumbnail_dir: &str, save_dir: &str) -> u64 {
     let thumb_dir_path = Path::new(thumbnail_dir);
     if !thumb_dir_path.is_dir() {
-        return Ok(0);
+        return 0;
     }
     let mut cleaned = 0u64;
     if let Ok(entries) = std::fs::read_dir(thumb_dir_path) {
@@ -279,7 +279,7 @@ pub fn clean_stale_thumbnails(thumbnail_dir: &str, save_dir: &str) -> std::io::R
         }
     }
     log::info!("[DB] clean_stale_thumbnails: cleaned={}", cleaned);
-    Ok(cleaned)
+    cleaned
 }
 
 pub fn get_db_stats(db_path: &str) -> SqlResult<DbStats> {
@@ -846,7 +846,7 @@ mod tests {
         let thumb_dir = TempDir::new().unwrap();
         let td = thumb_dir.path().to_path_buf();
         std::fs::write(td.join("orphan.jpg"), b"fake").unwrap();
-        assert!(clean_stale_thumbnails(&td.to_string_lossy(), &save_dir.path().to_string_lossy()).unwrap() > 0);
+        assert!(clean_stale_thumbnails(&td.to_string_lossy(), &save_dir.path().to_string_lossy()) > 0);
     }
 
     #[test]
@@ -856,7 +856,7 @@ mod tests {
         let td = thumb_dir.path().to_path_buf();
         std::fs::write(save_dir.path().join("valid.jpg"), b"data").unwrap();
         std::fs::write(td.join("valid.jpg"), b"thumb").unwrap();
-        assert_eq!(clean_stale_thumbnails(&td.to_string_lossy(), &save_dir.path().to_string_lossy()).unwrap(), 0);
+        assert_eq!(clean_stale_thumbnails(&td.to_string_lossy(), &save_dir.path().to_string_lossy()), 0);
     }
 
     #[test]
