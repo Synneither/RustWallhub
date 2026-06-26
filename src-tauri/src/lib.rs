@@ -1749,12 +1749,11 @@ async fn set_wallpaper(file_path: String) -> Result<String, AppError> {
     let path_str = absolute_path.to_string_lossy().to_string();
 
     #[cfg(target_os = "windows")]
-    let win_result = set_windows_wallpaper(&path_str);
-    #[cfg(not(target_os = "windows"))]
-    let win_result: Option<String> = None;
+    if let Some(result) = set_windows_wallpaper(&path_str) {
+        return Ok(result);
+    }
 
-    win_result
-        .or_else(|| set_gnome_wallpaper(&path_str))
+    set_gnome_wallpaper(&path_str)
         .or_else(|| set_xfce_wallpaper(&path_str))
         .or_else(|| set_kde_wallpaper(&path_str))
         .or_else(|| set_sway_wallpaper(&path_str))
