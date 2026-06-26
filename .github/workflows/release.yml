@@ -125,5 +125,10 @@ jobs:
             ### 更新日志
             详见 [CHANGELOG](./CHANGELOG.md)
           files: |
-            artifacts/**/*
+            artifacts/**/*.deb
+            artifacts/**/*.AppImage
+            artifacts/**/*.tar.gz
+            artifacts/**/*.msi
+            artifacts/**/*.exe
+            artifacts/**/*.zip
           draft: true
