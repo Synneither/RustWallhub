@@ -53,7 +53,6 @@ async function loadStats() {
     logger.info("Dashboard", "统计已加载", { wh: data.wallhaven, rd: data.reddit });
   } catch (e) {
     logger.error("Dashboard", "统计加载失败", e);
-    console.error("loadStats error:", e);
   }
 }
 
@@ -118,7 +117,6 @@ async function loadMissingCount() {
     logger.info("Dashboard", "缺失数量", { count });
   } catch (e) {
     logger.error("Dashboard", "缺失数量加载失败", e);
-    console.error("loadMissingCount error:", e);
   }
 }
 

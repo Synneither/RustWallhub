@@ -213,7 +213,6 @@ async function loadImages() {
     await requestThumbnails();
   } catch (e) {
     logger.error("Gallery", "加载图片失败", e);
-    console.error("加载图片失败:", e);
   }
   loading.value = false;
 }
@@ -245,7 +244,6 @@ async function loadSaveDir() {
     const config = await invoke<AppConfig>("get_config");
     saveDir.value = source.value === "wallhaven" ? config.wallhaven_save_dir : config.reddit_save_dir;
   } catch (e) {
-    console.error("加载配置失败:", e);
     saveDir.value = "";
   }
 }
@@ -273,7 +271,6 @@ async function requestThumbnails() {
       if (img) img.thumb_path = item.thumb_path;
     }
   } catch (e) {
-    console.error("缩略图批量生成失败:", e);
   }
 
   thumbLoading.value = false;
@@ -331,7 +328,6 @@ async function deleteSelected() {
       }
       count++;
     } catch (e) {
-      console.error(`操作 ${name} 失败:`, e);
     }
   }
   localSnackbarText.value = `批量操作完成: ${count} 张`;

@@ -77,7 +77,6 @@ async function saveSettings() {
     setTimeout(() => (saved.value = false), 2000);
   } catch (e) {
     logger.error("Settings", "保存设置失败", e);
-    console.error("保存设置失败:", e);
   }
   saving.value = false;
 }
