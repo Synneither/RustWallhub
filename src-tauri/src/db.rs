@@ -858,4 +858,93 @@ mod tests {
         std::fs::write(td.join("valid.jpg"), b"thumb").unwrap();
         assert_eq!(clean_stale_thumbnails(&td.to_string_lossy(), &save_dir.path().to_string_lossy()).unwrap(), 0);
     }
+
+    #[test]
+    fn test_insert_wallhaven_batch() {
+        let db = TestDb::wallhaven();
+        let images = vec![
+            ("id1".into(), "a.jpg".into(), "h1".into(), "u1".into(), "s1".into(), "1920x1080".into()),
+            ("id2".into(), "b.jpg".into(), "h2".into(), "u2".into(), "s2".into(), "3840x2160".into()),
+            ("id3".into(), "c.png".into(), "h3".into(), "u3".into(), "s3".into(), "2560x1440".into()),
+        ];
+        let (added, skipped) = insert_wallhaven_images_batch(db.path(), &images).unwrap();
+        assert_eq!(added, 3);
+        assert_eq!(skipped, 0);
+
+        let stats = get_db_stats(db.path()).unwrap();
+        assert_eq!(stats.total, 3);
+        assert_eq!(stats.love, 3);
+    }
+
+    #[test]
+    fn test_insert_wallhaven_batch_with_duplicates() {
+        let db = TestDb::wallhaven();
+        let images = vec![
+            ("dup".into(), "a.jpg".into(), "h1".into(), "u1".into(), "s1".into(), "1080p".into()),
+            ("dup".into(), "b.jpg".into(), "h2".into(), "u2".into(), "s2".into(), "4k".into()),
+            ("id2".into(), "c.jpg".into(), "h3".into(), "u3".into(), "s3".into(), "2k".into()),
+        ];
+        let (added, skipped) = insert_wallhaven_images_batch(db.path(), &images).unwrap();
+        assert_eq!(added, 2);
+        assert_eq!(skipped, 1);
+
+        // Verify the duplicate was the second one (same wallhaven_id)
+        let ids = get_existing_wallhaven_ids(db.path()).unwrap();
+        assert_eq!(ids.len(), 2);
+        assert!(ids.contains(&"dup".to_string()));
+        assert!(ids.contains(&"id2".to_string()));
+    }
+
+    #[test]
+    fn test_insert_wallhaven_batch_empty() {
+        let db = TestDb::wallhaven();
+        let images: Vec<(String, String, String, String, String, String)> = vec![];
+        let (added, skipped) = insert_wallhaven_images_batch(db.path(), &images).unwrap();
+        assert_eq!(added, 0);
+        assert_eq!(skipped, 0);
+
+        let stats = get_db_stats(db.path()).unwrap();
+        assert_eq!(stats.total, 0);
+    }
+
+    #[test]
+    fn test_insert_reddit_batch() {
+        let db = TestDb::reddit();
+        let images = vec![
+            ("a.jpg".into(), "h1".into(), "https://r.com/1".into(), "t1".into(), "/r/a".into()),
+            ("b.jpg".into(), "h2".into(), "https://r.com/2".into(), "t2".into(), "/r/b".into()),
+        ];
+        let (added, skipped) = insert_reddit_images_batch(db.path(), &images).unwrap();
+        assert_eq!(added, 2);
+        assert_eq!(skipped, 0);
+
+        let stats = get_db_stats(db.path()).unwrap();
+        assert_eq!(stats.total, 2);
+        assert_eq!(stats.love, 2);
+    }
+
+    #[test]
+    fn test_insert_reddit_batch_skips_duplicate_url() {
+        let db = TestDb::reddit();
+        let images = vec![
+            ("a.jpg".into(), "h1".into(), "https://r.com/1".into(), "t1".into(), "/r/a".into()),
+            ("b.jpg".into(), "h2".into(), "https://r.com/1".into(), "t2".into(), "/r/b".into()),
+        ];
+        let (added, skipped) = insert_reddit_images_batch(db.path(), &images).unwrap();
+        assert_eq!(added, 1);
+        assert_eq!(skipped, 1);
+    }
+
+    #[test]
+    fn test_insert_reddit_batch_skips_duplicate_hash() {
+        let db = TestDb::reddit();
+        insert_reddit_image(db.path(), "existing.jpg", "same_hash", "https://r.com/a", "t", "/r/a").unwrap();
+
+        let images = vec![
+            ("new.jpg".into(), "same_hash".into(), "https://r.com/b".into(), "t2".into(), "/r/b".into()),
+        ];
+        let (added, skipped) = insert_reddit_images_batch(db.path(), &images).unwrap();
+        assert_eq!(added, 0);
+        assert_eq!(skipped, 1);
+    }
 }

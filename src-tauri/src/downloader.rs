@@ -211,6 +211,41 @@ mod tests {
         let h2 = compute_md5(b"image2");
         assert_ne!(h1, h2);
     }
+
+    #[tokio::test]
+    async fn test_download_urls_concurrent_empty() {
+        let client = reqwest::Client::new();
+        let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let results = download_urls_concurrent(&client, &[], cancel, 3).await;
+        assert!(results.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_download_urls_concurrent_cancel() {
+        let client = reqwest::Client::new();
+        let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
+        // With cancel=true, every task returns immediately without making HTTP calls
+        let urls = vec![
+            "https://example.com/a.jpg".to_string(),
+            "https://example.com/b.jpg".to_string(),
+        ];
+        let results = download_urls_concurrent(&client, &urls, cancel, 0).await;
+        assert_eq!(results.len(), 2);
+        for result in &results {
+            let err = result.as_ref().unwrap_err();
+            assert!(err.contains("取消"), "expected cancel message, got: {err}");
+        }
+    }
+
+    #[tokio::test]
+    async fn test_download_urls_concurrent_invalid_url() {
+        let client = reqwest::Client::new();
+        let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let urls = vec!["not-a-valid-url".to_string()];
+        let results = download_urls_concurrent(&client, &urls, cancel, 0).await;
+        assert_eq!(results.len(), 1);
+        assert!(results[0].is_err());
+    }
 }
 
 pub async fn download_image_bytes(
@@ -293,10 +328,13 @@ pub async fn download_urls_concurrent(
     }
 
     let mut results = Vec::with_capacity(count);
-    for handle in handles {
+    for (original_idx, handle) in handles.into_iter().enumerate() {
         let (idx, result) = match handle.await {
             Ok(r) => r,
-            Err(_) => (0, Err("下载任务异常".to_string())),
+            Err(e) => {
+                log::error!("[downloader] task panicked at index {}: {}", original_idx, e);
+                (original_idx, Err("下载任务异常".to_string()))
+            }
         };
         results.push((idx, result));
     }

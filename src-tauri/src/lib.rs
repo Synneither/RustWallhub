@@ -1964,3 +1964,40 @@ pub fn run() {
         .run(tauri::generate_context!())
         .expect("运行 Tauri 应用时出错");
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    #[tokio::test]
+    async fn test_save_image_writes_file() {
+        let dir = TempDir::new().unwrap();
+        let thumb_dir = TempDir::new().unwrap();
+        let save_path = dir.path().join("test.jpg");
+        let data = b"fake jpeg data";
+
+        let handle = save_image(&save_path, data, thumb_dir.path(), "test.jpg").await;
+        assert!(handle.is_some(), "save_image should succeed");
+        assert!(save_path.exists(), "file should be written");
+    }
+
+    #[tokio::test]
+    async fn test_save_image_fails_on_invalid_path() {
+        let thumb_dir = TempDir::new().unwrap();
+        let save_path = std::path::Path::new("/nonexistent/dir/test.jpg");
+        let data = b"data";
+
+        let handle = save_image(save_path, data, thumb_dir.path(), "test.jpg").await;
+        assert!(handle.is_none(), "save_image should fail on unwritable path");
+    }
+
+    #[test]
+    fn test_normalize_config_path_absolute() {
+        // Absolute paths are returned unchanged
+        let abs = "/home/user/wallhaven.db".to_string();
+        let base = std::path::Path::new("/tmp");
+        let result = normalize_config_path(base, abs.clone());
+        assert_eq!(result, abs);
+    }
+}
