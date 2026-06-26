@@ -64,24 +64,23 @@ jobs:
   #         name: macos-bundle
   #         path: src-tauri/target/release/bundle/
 
-  # --- Windows ---
-  # build-windows:
-  #   runs-on: windows-latest
-  #   steps:
-  #     - uses: actions/checkout@v4
-  #     - uses: dtolnay/rust-toolchain@stable
-  #     - uses: denoland/setup-deno@v2
-  #       with:
-  #         deno-version: v2.x
-  #     - run: deno task build
-  #     - run: cargo tauri build
-  #     - uses: actions/upload-artifact@v4
-  #       with:
-  #         name: windows-bundle
-  #         path: src-tauri/target/release/bundle/
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: denoland/setup-deno@v2
+        with:
+          deno-version: v2.x
+      - run: deno task build
+      - run: cargo tauri build
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-bundle
+          path: src-tauri/target/release/bundle/
 
   create-release:
-    needs: [build-linux]
+    needs: [build-linux, build-windows]
     runs-on: ubuntu-24.04
     permissions:
       contents: write
@@ -89,7 +88,12 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           name: linux-bundle
-          path: artifacts
+          path: artifacts/linux
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: windows-bundle
+          path: artifacts/windows
 
       - name: Create Release
         uses: softprops/action-gh-release@v2
