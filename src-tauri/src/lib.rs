@@ -1223,10 +1223,13 @@ async fn list_local_images(
     source: String,
     offset: usize,
     limit: usize,
+    custom_dir: Option<String>,
 ) -> Result<serde_json::Value, AppError> {
-    log::info!("[CMD] list_local_images called: source={}, offset={}, limit={}", source, offset, limit);
+    log::info!("[CMD] list_local_images called: source={}, offset={}, limit={}, custom_dir={:?}", source, offset, limit, custom_dir);
     let config = load_config(&state)?;
-    let dir = if source == "wallhaven" {
+    let dir = if let Some(ref custom) = custom_dir {
+        custom.clone()
+    } else if source == "wallhaven" {
         config.wallhaven_save_dir.clone()
     } else {
         config.reddit_save_dir.clone()

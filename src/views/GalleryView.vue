@@ -65,6 +65,8 @@ const addingOrphanName = ref("");
 const currentWallpaper = ref("");
 const galleryToolbar = ref<HTMLElement | null>(null);
 const paginationBar = ref<HTMLElement | null>(null);
+const customDir = ref("");
+const useCustomDir = ref(false);
 
 const totalPages = computed(() => Math.max(1, Math.ceil(displayImages.value.length / imagesPerPage.value)));
 
@@ -191,6 +193,7 @@ async function loadImages() {
       source: source.value,
       offset: 0,
       limit: 9999,
+      customDir: useCustomDir.value && customDir.value.trim() ? customDir.value.trim() : null,
     });
     allImages.value = result.images;
     // 当前壁纸排最前面，孤立文件其次，其余按名称降序（后端已排好）
@@ -227,12 +230,17 @@ async function resetAndLoad() {
 
 watch(source, async (to) => {
   saveDir.value = "";
+  useCustomDir.value = false;
   logger.action("Gallery", "切换源", { source: to });
   await loadSaveDir();
   await resetAndLoad();
 });
 
 async function loadSaveDir() {
+  if (useCustomDir.value && customDir.value.trim()) {
+    saveDir.value = customDir.value.trim();
+    return;
+  }
   try {
     const config = await invoke<AppConfig>("get_config");
     saveDir.value = source.value === "wallhaven" ? config.wallhaven_save_dir : config.reddit_save_dir;
@@ -520,15 +528,49 @@ onUnmounted(() => {
   <div class="gallery-root">
     <div class="gallery-toolbar glass-card" ref="galleryToolbar">
       <div class="toolbar-inner">
-        <v-btn-toggle v-model="source" mandatory color="primary" density="compact" rounded="pill" class="toolbar-source-toggle">
+        <v-btn-toggle v-model="source" :mandatory="!useCustomDir" color="primary" density="compact" rounded="pill" class="toolbar-source-toggle">
           <v-btn value="wallhaven" prepend-icon="mdi-image-search" size="small">Wallhaven</v-btn>
           <v-btn value="reddit" prepend-icon="mdi-reddit" size="small">Reddit</v-btn>
         </v-btn-toggle>
 
-        <v-chip v-if="saveDir" size="x-small" variant="outlined" class="toolbar-dir-chip text-truncate">
-          <v-icon start size="11">mdi-folder</v-icon>
-          {{ saveDir }}
-        </v-chip>
+        <v-btn
+          variant="text"
+          size="small"
+          :color="useCustomDir ? 'primary' : 'grey'"
+          @click="useCustomDir = !useCustomDir; if (!useCustomDir) { source = 'wallhaven'; resetAndLoad(); }"
+          class="toolbar-action-btn"
+        >
+          <v-icon start size="14">mdi-folder-open</v-icon>
+          {{ useCustomDir ? '退出自定义' : '自定义目录' }}
+        </v-btn>
+
+        <template v-if="useCustomDir">
+          <v-text-field
+            v-model="customDir"
+            label="目录路径"
+            density="compact"
+            hide-details
+            variant="outlined"
+            class="toolbar-dir-input"
+            style="max-width: 280px;"
+            @keydown.enter="resetAndLoad"
+          />
+          <v-btn
+            variant="tonal"
+            size="small"
+            color="primary"
+            @click="resetAndLoad"
+            class="toolbar-action-btn"
+          >
+            <v-icon size="14">mdi-magnify</v-icon>
+          </v-btn>
+        </template>
+        <template v-else>
+          <v-chip v-if="saveDir" size="x-small" variant="outlined" class="toolbar-dir-chip text-truncate">
+            <v-icon start size="11">mdi-folder</v-icon>
+            {{ saveDir }}
+          </v-chip>
+        </template>
 
         <div class="toolbar-actions">
           <v-btn variant="text" color="default" :loading="loading" @click="() => { logger.action('Gallery', '刷新'); resetAndLoad(); }" icon="mdi-refresh" size="small" class="toolbar-action-btn" />
@@ -649,6 +691,7 @@ onUnmounted(() => {
                 />
               </div>
               <v-btn
+                v-if="!useCustomDir"
                 icon="mdi-delete"
                 size="x-small"
                 color="error"
