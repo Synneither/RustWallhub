@@ -1,0 +1,112 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  build-linux:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install system dependencies (Tauri)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libappindicator3-dev \
+            librsvg2-dev \
+            patchelf \
+            libssl-dev \
+            libgtk-3-dev \
+            libsoup-3.0-dev \
+            libjavascriptcoregtk-4.1-dev
+
+      - name: Install Deno
+        uses: denoland/setup-deno@v2
+        with:
+          deno-version: v2.x
+
+      - name: Build frontend
+        run: deno task build
+
+      - name: Build Tauri app
+        run: cargo tauri build
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-bundle
+          path: |
+            src-tauri/target/release/bundle/
+
+  # --- macOS ---
+  # build-macos:
+  #   runs-on: macos-latest
+  #   steps:
+  #     - uses: actions/checkout@v4
+  #     - uses: dtolnay/rust-toolchain@stable
+  #     - uses: denoland/setup-deno@v2
+  #       with:
+  #         deno-version: v2.x
+  #     - run: deno task build
+  #     - run: cargo tauri build
+  #     - uses: actions/upload-artifact@v4
+  #       with:
+  #         name: macos-bundle
+  #         path: src-tauri/target/release/bundle/
+
+  # --- Windows ---
+  # build-windows:
+  #   runs-on: windows-latest
+  #   steps:
+  #     - uses: actions/checkout@v4
+  #     - uses: dtolnay/rust-toolchain@stable
+  #     - uses: denoland/setup-deno@v2
+  #       with:
+  #         deno-version: v2.x
+  #     - run: deno task build
+  #     - run: cargo tauri build
+  #     - uses: actions/upload-artifact@v4
+  #       with:
+  #         name: windows-bundle
+  #         path: src-tauri/target/release/bundle/
+
+  create-release:
+    needs: [build-linux]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: linux-bundle
+          path: artifacts
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: RustWallhub ${{ github.ref_name }}
+          body: |
+            ## RustWallhub ${{ github.ref_name }}
+
+            从 Wallhaven 和 Reddit 下载动漫壁纸的桌面管理器。
+
+            ### 下载
+            - Linux: 下载 `*.AppImage` 或 `*.deb` 安装
+            - macOS / Windows: 见对应文件
+
+            ### 更新日志
+            详见 [CHANGELOG](./CHANGELOG.md)
+          files: |
+            artifacts/**/*
+          draft: true
