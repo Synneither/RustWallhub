@@ -244,30 +244,29 @@ async function loadSaveDir() {
 
 async function requestThumbnails() {
   const capturedSource = source.value;
-  const toProcess = allImages.value
+  const toProcess = visibleImages.value
     .filter(img => !img.thumb_path)
     .map(img => img.name);
   if (toProcess.length === 0) return;
 
   thumbLoading.value = true;
-  const imageMap = new Map(allImages.value.map(img => [img.name, img]));
 
-  // 并发请求，每张完成立即更新
-  await Promise.all(toProcess.map(async (name) => {
-    try {
-      const path = await invoke<string>("get_thumbnail_path", {
-        source: capturedSource,
-        filename: name,
-        dpr: dpr,
-      });
-      // 只在完成后检查 source 是否变了
-      if (source.value !== capturedSource) return;
-      const img = imageMap.get(name);
-      if (img) img.thumb_path = path;
-    } catch (e) {
-      console.error(`缩略图生成失败 ${name}:`, e);
+  try {
+    const result = await invoke<{ items: ThumbnailResult[] }>("get_thumbnail_paths", {
+      source: capturedSource,
+      filenames: toProcess,
+      dpr: dpr,
+    });
+    if (source.value !== capturedSource) return;
+
+    const imageMap = new Map(allImages.value.map(img => [img.name, img]));
+    for (const item of result.items) {
+      const img = imageMap.get(item.name);
+      if (img) img.thumb_path = item.thumb_path;
     }
-  }));
+  } catch (e) {
+    console.error("缩略图批量生成失败:", e);
+  }
 
   thumbLoading.value = false;
 }

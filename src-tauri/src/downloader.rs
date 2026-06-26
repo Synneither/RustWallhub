@@ -1,8 +1,5 @@
 use std::path::Path;
 
-/// 下载结果类型：(索引, 结果(bytes, content_type) 或 错误)
-type DownloadResult = (usize, Result<(Vec<u8>, String), String>);
-
 const IMAGE_EXTENSIONS: &[&str] = &["jpg", "jpeg", "png", "gif", "webp"];
 
 /// JPEG magic bytes: FF D8 FF
@@ -254,12 +251,10 @@ pub async fn download_image_bytes(
     Ok((bytes.to_vec(), content_type))
 }
 
-/// 并发下载多个 URL，最多 6 个同时进行。
-/// 返回与输入 `urls` 顺序一致的结果。
-pub fn download_urls_concurrent(
+pub async fn download_urls_concurrent(
     client: &reqwest::Client,
     urls: &[String],
-    cancel: &std::sync::atomic::AtomicBool,
+    cancel: std::sync::Arc<std::sync::atomic::AtomicBool>,
     max_retries: u32,
 ) -> Vec<Result<(Vec<u8>, String), String>> {
     let count = urls.len();
@@ -267,63 +262,44 @@ pub fn download_urls_concurrent(
         return Vec::new();
     }
 
-    let rt = match tokio::runtime::Handle::try_current() {
-        Ok(handle) => handle,
-        Err(_) => {
-            return urls
-                .iter()
-                .map(|url| Err(format!("没有 tokio 运行时: {url}")))
-                .collect();
-        }
-    };
+    let semaphore = std::sync::Arc::new(tokio::sync::Semaphore::new(6));
+    let mut handles = Vec::with_capacity(count);
 
-    let results: std::sync::Mutex<Vec<DownloadResult>> =
-        std::sync::Mutex::new(Vec::with_capacity(count));
-    let next_index = std::sync::atomic::AtomicUsize::new(0);
-
-    const CONCURRENT: usize = 6;
-    let max_active = std::cmp::min(CONCURRENT, count);
-
-    std::thread::scope(|s| {
-        let mut handles = Vec::with_capacity(max_active);
-        for _ in 0..max_active {
-            handles.push(s.spawn(|| {
-                loop {
-                    if cancel.load(std::sync::atomic::Ordering::Relaxed) {
-                        break;
-                    }
-                    let idx = next_index.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                    if idx >= count {
-                        break;
-                    }
-                    let url = &urls[idx];
-                    let result = (|| -> Result<(Vec<u8>, String), String> {
-                        let mut last_err = String::new();
-                        for attempt in 0..=max_retries {
-                            if cancel.load(std::sync::atomic::Ordering::Relaxed) {
-                                return Err("下载已取消".to_string());
-                            }
-                            match rt.block_on(download_image_bytes(client, url)) {
-                                Ok(res) => return Ok(res),
-                                Err(e) => {
-                                    last_err = e;
-                                    if attempt < max_retries {
-                                        std::thread::sleep(
-                                            std::time::Duration::from_secs(2u64.pow(attempt)),
-                                        );
-                                    }
-                                }
-                            }
-                        }
-                        Err(format!("下载失败（已重试 {max_retries} 次）: {last_err}"))
-                    })();
-                    results.lock().unwrap().push((idx, result));
+    for (idx, url) in urls.iter().enumerate() {
+        let semaphore = semaphore.clone();
+        let client = client.clone();
+        let url = url.clone();
+        let cancel = cancel.clone();
+        let handle = tokio::spawn(async move {
+            let _permit = semaphore.acquire().await;
+            let mut last_err = String::new();
+            for attempt in 0..=max_retries {
+                if cancel.load(std::sync::atomic::Ordering::Relaxed) {
+                    return (idx, Err("下载已取消".to_string()));
                 }
-            }));
-        }
-    });
+                match download_image_bytes(&client, &url).await {
+                    Ok(res) => return (idx, Ok(res)),
+                    Err(e) => {
+                        last_err = e;
+                        if attempt < max_retries {
+                            tokio::time::sleep(std::time::Duration::from_secs(2u64.pow(attempt))).await;
+                        }
+                    }
+                }
+            }
+            (idx, Err(format!("下载失败（已重试 {max_retries} 次）: {last_err}")))
+        });
+        handles.push(handle);
+    }
 
-    let mut sorted = results.into_inner().unwrap();
-    sorted.sort_by_key(|(idx, _)| *idx);
-    sorted.into_iter().map(|(_, r)| r).collect()
+    let mut results = Vec::with_capacity(count);
+    for handle in handles {
+        let (idx, result) = match handle.await {
+            Ok(r) => r,
+            Err(_) => (0, Err("下载任务异常".to_string())),
+        };
+        results.push((idx, result));
+    }
+    results.sort_by_key(|(idx, _)| *idx);
+    results.into_iter().map(|(_, r)| r).collect()
 }

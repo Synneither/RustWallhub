@@ -189,6 +189,60 @@ pub fn insert_reddit_image(
     Ok(result)
 }
 
+pub fn insert_wallhaven_images_batch(
+    db_path: &str,
+    images: &[(String, String, String, String, String, String)],
+) -> SqlResult<(u64, u64)> {
+    let mut conn = open(db_path)?;
+    let tx = conn.transaction()?;
+    let mut added = 0u64;
+    let mut skipped = 0u64;
+    for (wallhaven_id, name, hash, url, source_url, resolution) in images {
+        match tx.execute(
+            "INSERT INTO images (wallhaven_id, name, hash, url, source_url, resolution) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            rusqlite::params![wallhaven_id, name, hash, url, source_url, resolution],
+        ) {
+            Ok(_) => added += 1,
+            Err(rusqlite::Error::SqliteFailure(err, _))
+                if err.code == rusqlite::ErrorCode::ConstraintViolation =>
+            {
+                skipped += 1;
+            }
+            Err(e) => return Err(e),
+        }
+    }
+    tx.commit()?;
+    log::info!("[DB] insert_wallhaven_images_batch: added={} skipped={}", added, skipped);
+    Ok((added, skipped))
+}
+
+pub fn insert_reddit_images_batch(
+    db_path: &str,
+    images: &[(String, String, String, String, String)],
+) -> SqlResult<(u64, u64)> {
+    let mut conn = open(db_path)?;
+    let tx = conn.transaction()?;
+    let mut added = 0u64;
+    let mut skipped = 0u64;
+    for (name, hash, url, title, permalink) in images {
+        match tx.execute(
+            "INSERT INTO images (name, hash, url, title, permalink) VALUES (?1, ?2, ?3, ?4, ?5)",
+            rusqlite::params![name, hash, url, title, permalink],
+        ) {
+            Ok(_) => added += 1,
+            Err(rusqlite::Error::SqliteFailure(err, _))
+                if err.code == rusqlite::ErrorCode::ConstraintViolation =>
+            {
+                skipped += 1;
+            }
+            Err(e) => return Err(e),
+        }
+    }
+    tx.commit()?;
+    log::info!("[DB] insert_reddit_images_batch: added={} skipped={}", added, skipped);
+    Ok((added, skipped))
+}
+
 pub fn delete_image_by_name(db_path: &str, name: &str) -> SqlResult<bool> {
     log::info!("[DB] delete_image_by_name: name={}", name);
     let conn = open(db_path)?;

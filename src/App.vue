@@ -226,27 +226,29 @@ async function runAction(fn: () => Promise<unknown>) {
           color="#6c8cff"
         />
         <Transition name="view-fade" mode="out-in">
-          <div :key="currentView">
-            <Dashboard
-              v-if="currentView === 'dashboard'"
-              :downloading="downloading"
-              :progress-msg="progressMsg"
-              :progress-done="progressDone"
-              :progress-total="progressTotal"
-              @action="runAction"
-            />
-            <WallhavenView
-              v-if="currentView === 'wallhaven'"
-              :downloading="downloading"
-              @action="runAction"
-            />
-            <RedditView
-              v-if="currentView === 'reddit'"
-              :downloading="downloading"
-              @action="runAction"
-            />
-            <GalleryView v-if="currentView === 'gallery'" />
-          </div>
+          <KeepAlive>
+            <div :key="currentView">
+              <Dashboard
+                v-if="currentView === 'dashboard'"
+                :downloading="downloading"
+                :progress-msg="progressMsg"
+                :progress-done="progressDone"
+                :progress-total="progressTotal"
+                @action="runAction"
+              />
+              <WallhavenView
+                v-if="currentView === 'wallhaven'"
+                :downloading="downloading"
+                @action="runAction"
+              />
+              <RedditView
+                v-if="currentView === 'reddit'"
+                :downloading="downloading"
+                @action="runAction"
+              />
+              <GalleryView v-if="currentView === 'gallery'" />
+            </div>
+          </KeepAlive>
         </Transition>
       </div>
     </v-main>

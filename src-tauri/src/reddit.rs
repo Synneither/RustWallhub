@@ -52,24 +52,8 @@ pub struct RedditClient {
 }
 
 impl RedditClient {
-    pub fn new() -> Self {
-        let mut headers = reqwest::header::HeaderMap::new();
-        if let Ok(ua) = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36".parse::<reqwest::header::HeaderValue>() {
-            headers.insert(reqwest::header::USER_AGENT, ua);
-        }
-        if let Ok(accept) = "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8"
-            .parse::<reqwest::header::HeaderValue>()
-        {
-            headers.insert(reqwest::header::ACCEPT, accept);
-        }
-
-        Self {
-            client: reqwest::Client::builder()
-                .default_headers(headers)
-                .timeout(std::time::Duration::from_secs(10))
-                .build()
-                .unwrap_or_default(),
-        }
+    pub fn new(client: reqwest::Client) -> Self {
+        Self { client }
     }
 
     pub async fn fetch_posts(

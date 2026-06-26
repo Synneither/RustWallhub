@@ -39,15 +39,8 @@ pub struct WallhavenClient {
 }
 
 impl WallhavenClient {
-    pub fn new(api_key: String) -> Self {
-        Self {
-            client: reqwest::Client::builder()
-                .user_agent("RustWallhub/1.0")
-                .timeout(std::time::Duration::from_secs(15))
-                .build()
-                .unwrap_or_default(),
-            api_key,
-        }
+    pub fn new(client: reqwest::Client, api_key: String) -> Self {
+        Self { client, api_key }
     }
 
     #[allow(clippy::too_many_arguments)]

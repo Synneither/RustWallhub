@@ -5,17 +5,19 @@ use rayon::prelude::*;
 const THUMB_BASE_WIDTH: u32 = 240;
 
 /// 自定义线程池，限制并行缩略图生成的核数，避免 CPU 满载
-fn thumbnail_pool() -> rayon::ThreadPool {
-    let cpus = std::thread::available_parallelism()
-        .map(|n| n.get())
-        .unwrap_or(4);
-    // 最多用一半核心，但不超过 6 个
-    let threads = (cpus / 2).clamp(2, 6);
-    rayon::ThreadPoolBuilder::new()
-        .num_threads(threads)
-        .thread_name(|i| format!("thumb-{i}"))
-        .build()
-        .expect("创建缩略图线程池失败")
+fn thumbnail_pool() -> &'static rayon::ThreadPool {
+    static POOL: std::sync::OnceLock<rayon::ThreadPool> = std::sync::OnceLock::new();
+    POOL.get_or_init(|| {
+        let cpus = std::thread::available_parallelism()
+            .map(|n| n.get())
+            .unwrap_or(4);
+        let threads = (cpus / 2).clamp(2, 6);
+        rayon::ThreadPoolBuilder::new()
+            .num_threads(threads)
+            .thread_name(|i| format!("thumb-{i}"))
+            .build()
+            .expect("创建缩略图线程池失败")
+    })
 }
 
 /// 生成带 DPR 信息的缩略图文件名，例如 `photo__w480.webp`
@@ -144,8 +146,7 @@ pub fn ensure_batch_thumbnails(
     filenames: &[String],
     dpr: u32,
 ) -> Vec<(String, PathBuf)> {
-    let pool = thumbnail_pool();
-    pool.install(|| {
+    thumbnail_pool().install(|| {
         filenames
             .par_iter()
             .map(|name| {

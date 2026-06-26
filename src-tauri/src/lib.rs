@@ -39,17 +39,27 @@ struct ImageDownloaded {
 }
 
 struct FileListCache {
-    items: Vec<serde_json::Value>,
+    items: Vec<FileEntry>,
     total: usize,
     source: String,
     dir_path: String,
     cached_at: Instant,
 }
 
+#[derive(Clone)]
+struct FileEntry {
+    name: String,
+    path: String,
+    size: u64,
+    is_orphan: bool,
+}
+
 struct AppState {
     config_path: Mutex<PathBuf>,
     file_cache: Mutex<Option<FileListCache>>,
     cancel_flag: Mutex<Option<Arc<AtomicBool>>>,
+    http_client: reqwest::Client,
+    config_cache: Mutex<Option<AppConfig>>,
 }
 
 #[derive(thiserror::Error, Debug)]
@@ -158,6 +168,12 @@ fn normalize_config_path(base_dir: &std::path::Path, value: String) -> String {
 }
 
 fn load_config(state: &tauri::State<'_, AppState>) -> Result<AppConfig, AppError> {
+    if let Ok(guard) = state.config_cache.lock() {
+        if let Some(ref cached) = *guard {
+            return Ok(cached.clone());
+        }
+    }
+
     let path = state
         .config_path
         .lock()
@@ -170,6 +186,11 @@ fn load_config(state: &tauri::State<'_, AppState>) -> Result<AppConfig, AppError
         config.wallhaven_save_dir = normalize_config_path(base_dir, config.wallhaven_save_dir);
         config.reddit_save_dir = normalize_config_path(base_dir, config.reddit_save_dir);
     }
+
+    if let Ok(mut guard) = state.config_cache.lock() {
+        *guard = Some(config.clone());
+    }
+
     Ok(config)
 }
 
@@ -179,7 +200,11 @@ fn save_config(state: &tauri::State<'_, AppState>, config: &AppConfig) -> Result
         .lock()
         .map_err(|e| AppError::Config(format!("锁定配置失败: {e}")))?
         .clone();
-    config.save(&path).map_err(AppError::Config)
+    config.save(&path).map_err(AppError::Config)?;
+    if let Ok(mut guard) = state.config_cache.lock() {
+        *guard = Some(config.clone());
+    }
+    Ok(())
 }
 
 #[tauri::command]
@@ -252,25 +277,23 @@ async fn start_wallhaven_download(
     let config = load_config(&state)?;
     let cancel = setup_cancel_flag(&state);
     let app_clone = app.clone();
+    let client = state.http_client.clone();
 
-    let wh_handle = tokio::task::spawn_blocking(move || -> Result<(), String> {
-        let rt = tokio::runtime::Handle::current();
-        let client = reqwest::Client::builder()
-            .user_agent("RustWallhub/1.0")
-            .timeout(std::time::Duration::from_secs(15))
-            .build()
-            .map_err(|e| e.to_string())?;
+    tokio::spawn(async move {
+        let wh_client = wallhaven::WallhavenClient::new(client.clone(), config.wallhaven_api_key.clone());
 
-        let wh_client = wallhaven::WallhavenClient::new(config.wallhaven_api_key.clone());
+        let _ = tokio::fs::create_dir_all(&config.wallhaven_save_dir).await;
 
-        std::fs::create_dir_all(&config.wallhaven_save_dir)
-            .map_err(|e| format!("创建目录失败: {e}"))?;
-
-        let existing_ids =
-            db::get_existing_wallhaven_ids(&config.wallhaven_db_path).map_err(|e| e.to_string())?;
+        let existing_ids = match db::get_existing_wallhaven_ids(&config.wallhaven_db_path) {
+            Ok(ids) => ids,
+            Err(e) => {
+                log::error!("[wallhaven] 获取已有ID失败: {e}");
+                return;
+            }
+        };
         let existing_set: std::collections::HashSet<String> = existing_ids.into_iter().collect();
 
-        let mut collected: Vec<(wallhaven::WallhavenImage,)> = Vec::new();
+        let mut collected: Vec<wallhaven::WallhavenImage> = Vec::new();
         let target = config.wallhaven_max_images;
         let mut page = 1u32;
         let max_pages = 100u32;
@@ -290,7 +313,7 @@ async fn start_wallhaven_download(
                 },
             );
 
-            let resp = rt.block_on(wh_client.search(
+            let resp = wh_client.search(
                 page,
                 &config.wallhaven_categories,
                 &config.wallhaven_purity,
@@ -300,7 +323,7 @@ async fn start_wallhaven_download(
                 &config.wallhaven_atleast,
                 &config.wallhaven_ratios,
                 &config.wallhaven_q,
-            ));
+            ).await;
 
             match resp {
                 Ok(data) => {
@@ -312,7 +335,7 @@ async fn start_wallhaven_download(
                             break;
                         }
                         if !existing_set.contains(&img.id) {
-                            collected.push((img,));
+                            collected.push(img);
                         }
                     }
                 }
@@ -330,18 +353,17 @@ async fn start_wallhaven_download(
                 }
             }
             page += 1;
-            std::thread::sleep(std::time::Duration::from_secs(2));
+            tokio::time::sleep(std::time::Duration::from_secs(2)).await;
         }
 
         let total = collected.len() as u32;
         let mut success = 0u32;
 
-        // 并发下载所有图片（网络 IO 并行）
-        let urls: Vec<String> = collected.iter().map(|(img,)| img.path.clone()).collect();
+        let urls: Vec<String> = collected.iter().map(|img| img.path.clone()).collect();
         let download_results =
-            downloader::download_urls_concurrent(&client, &urls, &cancel, 3);
+            downloader::download_urls_concurrent(&client, &urls, cancel.clone(), 3).await;
 
-        for (i, (img,)) in collected.iter().enumerate() {
+        for (i, img) in collected.iter().enumerate() {
             if cancel.load(Ordering::Relaxed) {
                 log::info!("[wallhaven] download cancelled (success={}/{})", success, total);
                 let _ = app_clone.emit(
@@ -352,7 +374,7 @@ async fn start_wallhaven_download(
                         message: "下载已取消".to_string(),
                     },
                 );
-                return Ok(());
+                return;
             }
 
             let _ = app_clone.emit(
@@ -378,25 +400,40 @@ async fn start_wallhaven_download(
                         std::path::Path::new(&config.wallhaven_save_dir).join(&filename);
                     let hash = downloader::compute_md5(bytes);
 
-                    if std::fs::write(&save_path, bytes).is_ok() {
-                        thumbnail::save_thumbnail_from_bytes(
-                            &config.wallhaven_thumb_dir(),
-                            &filename,
-                            bytes,
-                            2,
-                        )
-                        .ok();
-                        if db::insert_wallhaven_image(
-                            &config.wallhaven_db_path,
-                            &img.id,
-                            &filename,
-                            &hash,
-                            &img.path,
-                            &img.short_url,
-                            &img.resolution,
-                        )
-                        .unwrap_or(false)
-                        {
+                    if tokio::fs::write(&save_path, bytes).await.is_ok() {
+                        let thumb_dir = config.wallhaven_thumb_dir();
+                        let bytes_clone = bytes.clone();
+                        let filename_clone = filename.clone();
+                        let _ = tokio::task::spawn_blocking(move || {
+                            thumbnail::save_thumbnail_from_bytes(
+                                &thumb_dir,
+                                &filename_clone,
+                                &bytes_clone,
+                                2,
+                            )
+                        }).await;
+
+                        let db_path = config.wallhaven_db_path.clone();
+                        let img_id = img.id.clone();
+                        let filename_clone = filename.clone();
+                        let hash_clone = hash.clone();
+                        let img_path = img.path.clone();
+                        let img_url = img.short_url.clone();
+                        let img_res = img.resolution.clone();
+                        let inserted = tokio::task::spawn_blocking(move || {
+                            db::insert_wallhaven_image(
+                                &db_path,
+                                &img_id,
+                                &filename_clone,
+                                &hash_clone,
+                                &img_path,
+                                &img_url,
+                                &img_res,
+                            )
+                            .unwrap_or(false)
+                        }).await.unwrap_or(false);
+
+                        if inserted {
                             success += 1;
                             let _ = app_clone.emit(
                                 "image-downloaded",
@@ -425,15 +462,6 @@ async fn start_wallhaven_download(
                 message: format!("Wallhaven 下载完成: 成功 {success}/{total}"),
             },
         );
-
-        Ok(())
-    });
-
-    // 记录后台任务的状态
-    tokio::spawn(async move {
-        if let Err(e) = wh_handle.await {
-            log::error!("[wallhaven] 下载线程异常结束: {e}");
-        }
     });
 
     Ok("Wallhaven 下载已启动".to_string())
@@ -448,25 +476,20 @@ async fn start_reddit_download(
     let config = load_config(&state)?;
     let cancel = setup_cancel_flag(&state);
     let app_clone = app.clone();
+    let client = state.http_client.clone();
 
-    let rd_handle = tokio::task::spawn_blocking(move || -> Result<(), String> {
-        let rt = tokio::runtime::Handle::current();
-        let client = reqwest::Client::builder()
-            .user_agent(
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 \
-                 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-            )
-            .timeout(std::time::Duration::from_secs(15))
-            .build()
-            .map_err(|e| e.to_string())?;
+    tokio::spawn(async move {
+        let reddit_client = reddit::RedditClient::new(client.clone());
 
-        let reddit_client = reddit::RedditClient::new();
+        let _ = tokio::fs::create_dir_all(&config.reddit_save_dir).await;
 
-        std::fs::create_dir_all(&config.reddit_save_dir)
-            .map_err(|e| format!("创建目录失败: {e}"))?;
-
-        let existing_urls =
-            db::get_existing_reddit_urls(&config.reddit_db_path).map_err(|e| e.to_string())?;
+        let existing_urls = match db::get_existing_reddit_urls(&config.reddit_db_path) {
+            Ok(urls) => urls,
+            Err(e) => {
+                log::error!("[reddit] 获取已有URL失败: {e}");
+                return;
+            }
+        };
         let existing_set: std::collections::HashSet<String> = existing_urls.into_iter().collect();
 
         let target = config.reddit_max_images;
@@ -489,7 +512,7 @@ async fn start_reddit_download(
             );
 
             let result =
-                rt.block_on(reddit_client.fetch_posts(after.as_deref(), config.reddit_max_posts));
+                reddit_client.fetch_posts(after.as_deref(), config.reddit_max_posts).await;
 
             match result {
                 Ok((images, next_after)) => {
@@ -531,16 +554,15 @@ async fn start_reddit_download(
             if cancel.load(Ordering::Relaxed) {
                 break;
             }
-            std::thread::sleep(std::time::Duration::from_secs(2));
+            tokio::time::sleep(std::time::Duration::from_secs(2)).await;
         }
 
         let total = collected.len() as u32;
         let mut success = 0u32;
 
-        // 并发下载所有图片（网络 IO 并行）
         let urls: Vec<String> = collected.iter().map(|img| img.image_url.clone()).collect();
         let download_results =
-            downloader::download_urls_concurrent(&client, &urls, &cancel, 3);
+            downloader::download_urls_concurrent(&client, &urls, cancel.clone(), 3).await;
 
         for (i, img) in collected.iter().enumerate() {
             if cancel.load(Ordering::Relaxed) {
@@ -553,7 +575,7 @@ async fn start_reddit_download(
                         message: "下载已取消".to_string(),
                     },
                 );
-                return Ok(());
+                return;
             }
 
             let _ = app_clone.emit(
@@ -573,24 +595,38 @@ async fn start_reddit_download(
                     let filename = format!("{hash}.{ext}");
                     let save_path = std::path::Path::new(&config.reddit_save_dir).join(&filename);
 
-                    if std::fs::write(&save_path, bytes).is_ok() {
-                        thumbnail::save_thumbnail_from_bytes(
-                            &config.reddit_thumb_dir(),
-                            &filename,
-                            bytes,
-                            2,
-                        )
-                        .ok();
-                        if db::insert_reddit_image(
-                            &config.reddit_db_path,
-                            &filename,
-                            &hash,
-                            &img.image_url,
-                            &img.title,
-                            &img.permalink,
-                        )
-                        .unwrap_or(false)
-                        {
+                    if tokio::fs::write(&save_path, bytes).await.is_ok() {
+                        let thumb_dir = config.reddit_thumb_dir();
+                        let bytes_clone = bytes.clone();
+                        let filename_clone = filename.clone();
+                        let _ = tokio::task::spawn_blocking(move || {
+                            thumbnail::save_thumbnail_from_bytes(
+                                &thumb_dir,
+                                &filename_clone,
+                                &bytes_clone,
+                                2,
+                            )
+                        }).await;
+
+                        let db_path = config.reddit_db_path.clone();
+                        let filename_clone = filename.clone();
+                        let hash_clone = hash.clone();
+                        let image_url = img.image_url.clone();
+                        let title = img.title.clone();
+                        let permalink = img.permalink.clone();
+                        let inserted = tokio::task::spawn_blocking(move || {
+                            db::insert_reddit_image(
+                                &db_path,
+                                &filename_clone,
+                                &hash_clone,
+                                &image_url,
+                                &title,
+                                &permalink,
+                            )
+                            .unwrap_or(false)
+                        }).await.unwrap_or(false);
+
+                        if inserted {
                             success += 1;
                             let _ = app_clone.emit(
                                 "image-downloaded",
@@ -619,14 +655,6 @@ async fn start_reddit_download(
                 message: format!("Reddit 下载完成: 成功 {success}/{total}"),
             },
         );
-
-        Ok(())
-    });
-
-    tokio::spawn(async move {
-        if let Err(e) = rd_handle.await {
-            log::error!("[reddit] 下载线程异常结束: {e}");
-        }
     });
 
     Ok("Reddit 下载已启动".to_string())
@@ -643,13 +671,9 @@ async fn start_db_download(
     let cancel = setup_cancel_flag(&state);
     let app_clone = app.clone();
     let source_clone = source.clone();
+    let client = state.http_client.clone();
 
-    let db_handle = tokio::task::spawn_blocking(move || -> Result<(), String> {
-        let client = reqwest::Client::builder()
-            .user_agent("RustWallhub/1.0")
-            .timeout(std::time::Duration::from_secs(30))
-            .build()
-            .map_err(|e| e.to_string())?;
+    tokio::spawn(async move {
 
         let (save_dir, db_path, thumb_dir) = if source_clone == "wallhaven" {
             (
@@ -664,31 +688,42 @@ async fn start_db_download(
                 config.reddit_thumb_dir(),
             )
         } else {
-            return Err("未知源".to_string());
+            log::error!("[db_download] 未知源: {}", source_clone);
+            return;
         };
 
-        std::fs::create_dir_all(&save_dir).map_err(|e| format!("创建目录失败: {e}"))?;
+        let _ = tokio::fs::create_dir_all(&save_dir).await;
 
         let images = if source_clone == "wallhaven" {
-            db::get_wallhaven_missing_love(&db_path).map_err(|e| e.to_string())?
+            match db::get_wallhaven_missing_love(&db_path) {
+                Ok(imgs) => imgs,
+                Err(e) => {
+                    log::error!("[db_download] 获取wallhaven缺失图片失败: {e}");
+                    return;
+                }
+            }
         } else {
-            db::get_reddit_missing_love(&db_path).map_err(|e| e.to_string())?
+            match db::get_reddit_missing_love(&db_path) {
+                Ok(imgs) => imgs,
+                Err(e) => {
+                    log::error!("[db_download] 获取reddit缺失图片失败: {e}");
+                    return;
+                }
+            }
         };
 
         let total = images.len() as u32;
         let mut success = 0u32;
 
-        // 预过滤已存在的文件，只下载缺失的
         let to_download: Vec<&db::ImageRecord> = images
             .iter()
             .filter(|img| !std::path::Path::new(&save_dir).join(&img.name).exists())
             .collect();
         let total_pending = to_download.len() as u32;
 
-        // 并发下载缺失图片
         let urls: Vec<String> = to_download.iter().map(|img| img.url.clone()).collect();
         let download_results =
-            downloader::download_urls_concurrent(&client, &urls, &cancel, 3);
+            downloader::download_urls_concurrent(&client, &urls, cancel.clone(), 3).await;
 
         for (i, img) in to_download.iter().enumerate() {
             let file_path = std::path::Path::new(&save_dir).join(&img.name);
@@ -713,19 +748,23 @@ async fn start_db_download(
                         message: "下载已取消".to_string(),
                     },
                 );
-                return Ok(());
+                return;
             }
 
             match &download_results[i] {
                 Ok((bytes, _content_type)) => {
-                    if std::fs::write(&file_path, bytes).is_ok() {
-                        thumbnail::save_thumbnail_from_bytes(
-                            &thumb_dir,
-                            &img.name,
-                            bytes,
-                            2,
-                        )
-                        .ok();
+                    if tokio::fs::write(&file_path, bytes).await.is_ok() {
+                        let thumb_dir = thumb_dir.clone();
+                        let img_name = img.name.clone();
+                        let bytes_clone = bytes.clone();
+                        let _ = tokio::task::spawn_blocking(move || {
+                            thumbnail::save_thumbnail_from_bytes(
+                                &thumb_dir,
+                                &img_name,
+                                &bytes_clone,
+                                2,
+                            )
+                        }).await;
                         success += 1;
                     } else {
                         log::error!("[db_download] write failed {}", file_path.display());
@@ -747,14 +786,6 @@ async fn start_db_download(
                 message: format!("数据库下载完成: 成功 {success}/{total}"),
             },
         );
-
-        Ok(())
-    });
-
-    tokio::spawn(async move {
-        if let Err(e) = db_handle.await {
-            log::error!("[db_download] 下载线程异常结束: {e}");
-        }
     });
 
     Ok(format!("{source} 数据库下载已启动"))
@@ -1012,43 +1043,43 @@ async fn add_orphan_entries(
         (config.reddit_save_dir.clone(), config.reddit_db_path.clone())
     };
 
-    let mut added = 0u64;
+    let mut wallhaven_batch: Vec<(String, String, String, String, String, String)> = Vec::new();
+    let mut reddit_batch: Vec<(String, String, String, String, String)> = Vec::new();
+
     for name in &names {
         let file_path = std::path::Path::new(&save_dir).join(name);
         if !file_path.is_file() {
-            log::warn!("[add_orphan_entries] 文件不存在: {}", file_path.display());
+            log::warn!("[add_orphan_entries] file not found: {}", file_path.display());
             continue;
         }
-
         let bytes = std::fs::read(&file_path).map_err(AppError::Io)?;
         let hash = downloader::compute_md5(&bytes);
 
-        let inserted = if source == "wallhaven" {
-            // 从文件名提取 wallhaven_id：wallhaven_<id>.ext
+        if source == "wallhaven" {
             let wallhaven_id = name
                 .strip_prefix("wallhaven_")
                 .and_then(|s| s.split('.').next())
                 .unwrap_or("");
-            db::insert_wallhaven_image(&db_path, wallhaven_id, name, &hash, "", "", "unknown")
+            wallhaven_batch.push((
+                wallhaven_id.to_string(),
+                name.clone(),
+                hash,
+                String::new(),
+                String::new(),
+                "unknown".to_string(),
+            ));
         } else {
-            db::insert_reddit_image(&db_path, name, &hash, "", "", "")
-        };
-
-        match inserted {
-            Ok(true) => {
-                added += 1;
-                log::info!("[add_orphan_entries] 已入库: name={}", name);
-            }
-            Ok(false) => {
-                log::info!("[add_orphan_entries] 跳过重复: name={}", name);
-            }
-            Err(e) => {
-                log::error!("[add_orphan_entries] 入库失败 {}: {}", name, e);
-            }
+            reddit_batch.push((name.clone(), hash, String::new(), String::new(), String::new()));
         }
     }
 
-    log::info!("[add_orphan_entries] 完成: added={}/{}", added, names.len());
+    let added = if source == "wallhaven" {
+        db::insert_wallhaven_images_batch(&db_path, &wallhaven_batch)?.0
+    } else {
+        db::insert_reddit_images_batch(&db_path, &reddit_batch)?.0
+    };
+
+    log::info!("[add_orphan_entries] done: added={}/{}", added, names.len());
     Ok(added)
 }
 
@@ -1062,6 +1093,7 @@ async fn download_missing_images(
     log::info!("[CMD] download_missing_images: source={}, count={}", source, images.len());
     let config = load_config(&state)?;
     let cancel = setup_cancel_flag(&state);
+    let client = state.http_client.clone();
 
     let (save_dir, thumb_dir) = if source == "wallhaven" {
         (
@@ -1077,22 +1109,16 @@ async fn download_missing_images(
 
     let total_images = images.len();
 
-    let handle = tokio::task::spawn_blocking(move || -> Result<(), String> {
-        let client = reqwest::Client::builder()
-            .user_agent("RustWallhub/1.0")
-            .timeout(Duration::from_secs(30))
-            .build()
-            .map_err(|e| e.to_string())?;
+    tokio::spawn(async move {
 
-        std::fs::create_dir_all(&save_dir).map_err(|e| format!("创建目录失败: {e}"))?;
+        let _ = tokio::fs::create_dir_all(&save_dir).await;
 
         let total = images.len() as u32;
         let mut success = 0u32;
 
-        // 并发下载
         let urls: Vec<String> = images.iter().map(|img| img.url.clone()).collect();
         let download_results =
-            downloader::download_urls_concurrent(&client, &urls, &cancel, 3);
+            downloader::download_urls_concurrent(&client, &urls, cancel.clone(), 3).await;
 
         for (i, img) in images.iter().enumerate() {
             let file_path = std::path::Path::new(&save_dir).join(&img.name);
@@ -1118,13 +1144,18 @@ async fn download_missing_images(
                         message: "下载已取消".to_string(),
                     },
                 );
-                return Ok(());
+                return;
             }
 
             match &download_results[i] {
                 Ok((bytes, _content_type)) => {
-                    if std::fs::write(&file_path, bytes).is_ok() {
-                        thumbnail::save_thumbnail_from_bytes(&thumb_dir, &img.name, bytes, 2).ok();
+                    if tokio::fs::write(&file_path, bytes).await.is_ok() {
+                        let thumb_dir = thumb_dir.clone();
+                        let img_name = img.name.clone();
+                        let bytes_clone = bytes.clone();
+                        let _ = tokio::task::spawn_blocking(move || {
+                            thumbnail::save_thumbnail_from_bytes(&thumb_dir, &img_name, &bytes_clone, 2)
+                        }).await;
                         success += 1;
                     } else {
                         log::error!("[download_missing] write failed {}", file_path.display());
@@ -1146,14 +1177,6 @@ async fn download_missing_images(
                 message: format!("补下载完成: 成功 {success}/{total}"),
             },
         );
-
-        Ok(())
-    });
-
-    tokio::spawn(async move {
-        if let Err(e) = handle.await {
-            log::error!("[download_missing] 下载线程异常结束: {e}");
-        }
     });
 
     Ok(format!("补下载已启动，共 {} 张", total_images))
@@ -1217,24 +1240,25 @@ async fn list_local_images(
     {
         if let Ok(cache) = state.file_cache.lock() {
             if let Some(ref cached) = *cache {
-                if cached.source == source && cached.dir_path == dir && cached.cached_at.elapsed().as_secs() < 5 {
+                if cached.source == source && cached.dir_path == dir && cached.cached_at.elapsed().as_secs() < 30 {
                     let page_start = offset.min(cached.total);
                     let page_end = (page_start + limit).min(cached.total);
-                    let page: Vec<serde_json::Value> = cached.items[page_start..page_end].to_vec();
+                    let page: Vec<serde_json::Value> = cached.items[page_start..page_end]
+                        .iter()
+                        .map(|e| serde_json::json!({
+                            "name": e.name,
+                            "path": e.path,
+                            "thumb_path": null,
+                            "size": e.size,
+                            "is_orphan": e.is_orphan,
+                        }))
+                        .collect();
                     return Ok(serde_json::json!({ "images": page, "total": cached.total }));
                 }
             }
         }
     }
 
-    struct FileEntry {
-        name: String,
-        path: String,
-        size: u64,
-        is_orphan: bool,
-    }
-
-    // 加载数据库中的文件名集合，用于判断孤立文件
     let db_names: std::collections::HashSet<String> = if source == "wallhaven" {
         db::get_all_filenames(&config.wallhaven_db_path).unwrap_or_default().into_iter().collect()
     } else if source == "reddit" {
@@ -1262,14 +1286,15 @@ async fn list_local_images(
         }
     }
 
-    // 孤立文件排前面，其余按名称降序
     entries.sort_by(|a, b| {
         a.is_orphan.cmp(&b.is_orphan).reverse().then(b.name.cmp(&a.name))
     });
     let total = entries.len();
 
-    let all_items: Vec<serde_json::Value> = entries
-        .into_iter()
+    let page_start = offset.min(total);
+    let page_end = (page_start + limit).min(total);
+    let page: Vec<serde_json::Value> = entries[page_start..page_end]
+        .iter()
         .map(|e| {
             serde_json::json!({
                 "name": e.name,
@@ -1287,15 +1312,11 @@ async fn list_local_images(
                 total,
                 source: source.clone(),
                 dir_path: dir,
-                items: all_items.clone(),
+                items: entries.clone(),
                 cached_at: Instant::now(),
             });
         }
     }
-
-    let page_start = offset.min(total);
-    let page_end = (page_start + limit).min(total);
-    let page: Vec<serde_json::Value> = all_items[page_start..page_end].to_vec();
 
     Ok(serde_json::json!({ "images": page, "total": total }))
 }
@@ -1389,7 +1410,7 @@ async fn search_wallhaven(
     let page = page.unwrap_or(1);
     log::info!("[CMD] search_wallhaven called: page={}", page);
     let config = load_config(&state)?;
-    let client = wallhaven::WallhavenClient::new(config.wallhaven_api_key.clone());
+    let client = wallhaven::WallhavenClient::new(state.http_client.clone(), config.wallhaven_api_key.clone());
 
     let resp = client.search(
         page,
@@ -1447,27 +1468,25 @@ async fn download_wallhaven_selected(
     let config = load_config(&state)?;
     let cancel = setup_cancel_flag(&state);
     let app_clone = app.clone();
+    let client = state.http_client.clone();
     let total = images.len() as u32;
     let count = total;
 
-    let handle = tokio::task::spawn_blocking(move || -> Result<(), String> {
-        let _rt = tokio::runtime::Handle::current();
-        let client = reqwest::Client::builder()
-            .user_agent("RustWallhub/1.0")
-            .timeout(std::time::Duration::from_secs(15))
-            .build()
-            .map_err(|e| e.to_string())?;
+    tokio::spawn(async move {
+        let _ = tokio::fs::create_dir_all(&config.wallhaven_save_dir).await;
 
-        std::fs::create_dir_all(&config.wallhaven_save_dir)
-            .map_err(|e| format!("\u{521b}\u{5efa}\u{76ee}\u{5f55}\u{5931}\u{8d25}: {e}"))?;
-
-        let existing_ids = db::get_existing_wallhaven_ids(&config.wallhaven_db_path)
-            .map_err(|e| e.to_string())?;
+        let existing_ids = match db::get_existing_wallhaven_ids(&config.wallhaven_db_path) {
+            Ok(ids) => ids,
+            Err(e) => {
+                log::error!("[wallhaven] 获取已有ID失败: {e}");
+                return;
+            }
+        };
         let existing_set: std::collections::HashSet<String> = existing_ids.into_iter().collect();
         let mut success = 0u32;
 
         let urls: Vec<String> = images.iter().map(|img| img.path.clone()).collect();
-        let download_results = downloader::download_urls_concurrent(&client, &urls, &cancel, 3);
+        let download_results = downloader::download_urls_concurrent(&client, &urls, cancel.clone(), 3).await;
 
         for (i, img) in images.iter().enumerate() {
             if cancel.load(std::sync::atomic::Ordering::Relaxed) {
@@ -1476,7 +1495,7 @@ async fn download_wallhaven_selected(
                     source: "wallhaven".into(), success, total,
                     message: "\u{4e0b}\u{8f7d}\u{5df2}\u{53d6}\u{6d88}".to_string(),
                 });
-                return Ok(());
+                return;
             }
 
             if existing_set.contains(&img.id) {
@@ -1495,12 +1514,29 @@ async fn download_wallhaven_selected(
                 let save_path = std::path::Path::new(&config.wallhaven_save_dir).join(&filename);
                 let hash = downloader::compute_md5(bytes);
 
-                if std::fs::write(&save_path, bytes).is_ok() {
-                    thumbnail::save_thumbnail_from_bytes(&config.wallhaven_thumb_dir(), &filename, bytes, 2).ok();
-                    if db::insert_wallhaven_image(
-                        &config.wallhaven_db_path, &img.id, &filename, &hash,
-                        &img.path, &img.short_url, &img.resolution,
-                    ).unwrap_or(false) {
+                if tokio::fs::write(&save_path, bytes).await.is_ok() {
+                    let thumb_dir = config.wallhaven_thumb_dir();
+                    let filename_clone = filename.clone();
+                    let bytes_clone = bytes.clone();
+                    let _ = tokio::task::spawn_blocking(move || {
+                        thumbnail::save_thumbnail_from_bytes(&thumb_dir, &filename_clone, &bytes_clone, 2)
+                    }).await;
+
+                    let db_path = config.wallhaven_db_path.clone();
+                    let img_id = img.id.clone();
+                    let filename_clone = filename.clone();
+                    let hash_clone = hash.clone();
+                    let img_path = img.path.clone();
+                    let img_short_url = img.short_url.clone();
+                    let img_resolution = img.resolution.clone();
+                    let inserted = tokio::task::spawn_blocking(move || {
+                        db::insert_wallhaven_image(
+                            &db_path, &img_id, &filename_clone, &hash_clone,
+                            &img_path, &img_short_url, &img_resolution,
+                        ).unwrap_or(false)
+                    }).await.unwrap_or(false);
+
+                    if inserted {
                         success += 1;
                         let _ = app_clone.emit("image-downloaded", ImageDownloaded {
                             source: "wallhaven".into(),
@@ -1517,13 +1553,6 @@ async fn download_wallhaven_selected(
             source: "wallhaven".into(), success, total,
             message: format!("Wallhaven \u{4e0b}\u{8f7d}\u{5b8c}\u{6210}: \u{6210}\u{529f} {success}/{total}"),
         });
-        Ok(())
-    });
-
-    tokio::spawn(async move {
-        if let Err(e) = handle.await {
-            log::error!("[wallhaven] \u{4e0b}\u{8f7d}\u{7ebf}\u{7a0b}\u{5f02}\u{5e38}\u{7ed3}\u{675f}: {e}");
-        }
     });
 
     Ok(format!("\u{5373}\u{5c06}\u{4e0b}\u{8f7d} {count} \u{5f20}\u{58c1}\u{7eb8}"))
@@ -1705,7 +1734,7 @@ async fn set_wallpaper(file_path: String) -> Result<String, AppError> {
         .or_else(|| set_swww_wallpaper(&path_str))
         .or_else(|| set_feh_wallpaper(&path_str))
         .ok_or_else(|| AppError::Other(
-            "未检测到支持的桌面环境。支持: GNOME, KDE, XFCE, sway, Hyprland, swww, feh".to_string(),
+            "未检测到支持的桌面环境。支持: GNOME, KDE, XFCE, sway, Hyprland, niri(swww), swww, feh".to_string(),
         ))
 }
 
@@ -1861,10 +1890,18 @@ pub fn run() {
             db::init_wallhaven_db(&wh_db).ok();
             db::init_reddit_db(&rd_db).ok();
 
+            let client = reqwest::Client::builder()
+                .user_agent("RustWallhub/1.0")
+                .timeout(Duration::from_secs(30))
+                .build()
+                .expect("创建 HTTP client 失败");
+
             app.manage(AppState {
                 config_path: Mutex::new(config_path),
                 file_cache: Mutex::new(None),
                 cancel_flag: Mutex::new(None),
+                http_client: client,
+                config_cache: Mutex::new(Some(config)),
             });
 
             Ok(())
