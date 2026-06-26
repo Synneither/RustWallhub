@@ -7,7 +7,7 @@ pub struct WallhavenImage {
     pub resolution: String,
     pub short_url: String,
     #[allow(dead_code)]
-    pub category: u8,
+    pub category: String,
     #[allow(dead_code)]
     pub purity: String,
     #[allow(dead_code)]
@@ -50,35 +50,46 @@ impl WallhavenClient {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub async fn search(
         &self,
         page: u32,
         categories: &str,
         purity: &str,
         sorting: &str,
+        order: &str,
         top_range: &str,
         atleast: &str,
         ratios: &str,
+        q: &str,
     ) -> Result<WallhavenResponse, String> {
-        let mut params = vec![
-            ("page".to_string(), page.to_string()),
-            ("categories".to_string(), categories.to_string()),
-            ("purity".to_string(), purity.to_string()),
-            ("sorting".to_string(), sorting.to_string()),
-            ("order".to_string(), "desc".to_string()),
+        log::info!("[wallhaven] search: page={} categories={} purity={} sorting={}", page, categories, purity, sorting);
+        let mut params: Vec<(&str, String)> = vec![
+            ("page", page.to_string()),
+            ("categories", categories.to_string()),
+            ("purity", purity.to_string()),
+            ("sorting", sorting.to_string()),
         ];
 
+        // order: 默认为 desc（Wallhaven API 要求当 sorting=toplist 时只能用 desc）
+        if !order.is_empty() && sorting != "toplist" {
+            params.push(("order", order.to_string()));
+        }
+
         if !self.api_key.is_empty() {
-            params.push(("apikey".to_string(), self.api_key.clone()));
+            params.push(("apikey", self.api_key.clone()));
+        }
+        if !q.is_empty() {
+            params.push(("q", q.to_string()));
         }
         if !atleast.is_empty() {
-            params.push(("atleast".to_string(), atleast.to_string()));
+            params.push(("atleast", atleast.to_string()));
         }
         if !ratios.is_empty() {
-            params.push(("ratios".to_string(), ratios.to_string()));
+            params.push(("ratios", ratios.to_string()));
         }
         if sorting == "toplist" && !top_range.is_empty() {
-            params.push(("topRange".to_string(), top_range.to_string()));
+            params.push(("topRange", top_range.to_string()));
         }
 
         let resp = self
@@ -94,6 +105,8 @@ impl WallhavenClient {
         }
 
         let body = resp.text().await.map_err(|e| format!("读取响应失败: {e}"))?;
-        serde_json::from_str(&body).map_err(|e| format!("JSON 解析失败: {e}"))
+        let parsed: WallhavenResponse = serde_json::from_str(&body).map_err(|e| format!("JSON 解析失败: {e}"))?;
+        log::info!("[wallhaven] search page {} returned {} results", page, parsed.data.len());
+        Ok(parsed)
     }
 }

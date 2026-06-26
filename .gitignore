@@ -22,3 +22,19 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+
+# SQLite databases
+*.db
+*.db-journal
+*.db-wal
+
+# Claude Code session data
+.balance.json
+.balance/
+.omo/
+check_balance.sh
+DESIGN.md
+
+# Stores and utils (generated)
+src/stores/
+src/utils/

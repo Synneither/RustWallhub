@@ -30,4 +30,10 @@ md5 = "0.7"
 dirs = "6"
 thiserror = "2"
 image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp", "gif"] }
+rayon = "1"
+log = "0.4"
+env_logger = "0.11"
+
+[dev-dependencies]
+tempfile = "3"
 

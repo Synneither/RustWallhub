@@ -84,6 +84,8 @@ impl RedditClient {
             api_url.push_str(&format!("&after={after_val}"));
         }
 
+        log::info!("[reddit] fetch_posts: after={:?} limit={}", after, limit);
+
         let resp = self
             .client
             .get(&api_url)
@@ -92,6 +94,7 @@ impl RedditClient {
             .map_err(|e| format!("请求失败: {e}"))?;
 
         if !resp.status().is_success() {
+            log::warn!("[reddit] fetch_posts bad status: {}", resp.status());
             return Err(format!("API 返回状态码: {}", resp.status()));
         }
 
@@ -103,21 +106,18 @@ impl RedditClient {
         let mut images = Vec::new();
 
         for child in &listing.data.children {
-            let flair_check = true;
-            if !flair_check {
-                continue;
-            }
-
             if let Some(img) = self.extract_image_url(child).await {
                 images.push(img);
             }
         }
 
+        log::info!("[reddit] fetch_posts: got {} images, next_after={:?}", images.len(), next_after);
         Ok((images, next_after))
     }
 
     async fn extract_image_url(&self, post: &RedditPostWrapper) -> Option<RedditImage> {
         let data = &post.data;
+        log::info!("[reddit] extract_image_url: post_id={} title={}", data.id, data.title);
 
         if data.is_gallery {
             if let Some(gallery) = &data.gallery_data {
@@ -175,6 +175,7 @@ impl RedditClient {
     }
 
     async fn get_imgur_album(&self, url: &str) -> Option<String> {
+        log::info!("[reddit] get_imgur_album: url={}", url);
         let resp = self.client.get(url).send().await.ok()?;
         let body = resp.text().await.ok()?;
 
