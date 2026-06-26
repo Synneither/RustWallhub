@@ -268,6 +268,26 @@ fn setup_cancel_flag(state: &AppState) -> Arc<AtomicBool> {
     flag
 }
 
+/// Save image bytes to disk and spawn thumbnail generation.
+/// Returns a `JoinHandle` for the thumbnail task so callers can await it
+/// concurrently with other work (e.g., DB insertion).
+async fn save_image(
+    save_path: impl AsRef<std::path::Path>,
+    bytes: &[u8],
+    thumb_dir: impl AsRef<std::path::Path>,
+    filename: &str,
+) -> Option<tokio::task::JoinHandle<()>> {
+    if tokio::fs::write(save_path.as_ref(), bytes).await.is_err() {
+        return None;
+    }
+    let thumb_dir = thumb_dir.as_ref().to_path_buf();
+    let filename = filename.to_string();
+    let bytes = bytes.to_vec();
+    Some(tokio::task::spawn_blocking(move || {
+        let _ = thumbnail::save_thumbnail_from_bytes(&thumb_dir, &filename, &bytes, 2);
+    }))
+}
+
 #[tauri::command]
 async fn start_wallhaven_download(
     app: tauri::AppHandle,
@@ -400,38 +420,25 @@ async fn start_wallhaven_download(
                         std::path::Path::new(&config.wallhaven_save_dir).join(&filename);
                     let hash = downloader::compute_md5(bytes);
 
-                    if tokio::fs::write(&save_path, bytes).await.is_ok() {
-                        let thumb_dir = config.wallhaven_thumb_dir();
-                        let bytes_clone = bytes.clone();
-                        let filename_clone = filename.clone();
-                        let _ = tokio::task::spawn_blocking(move || {
-                            thumbnail::save_thumbnail_from_bytes(
-                                &thumb_dir,
-                                &filename_clone,
-                                &bytes_clone,
-                                2,
-                            )
-                        }).await;
-
+                    let thumb_dir = config.wallhaven_thumb_dir();
+                    if let Some(thumb_handle) = save_image(&save_path, bytes, &thumb_dir, &filename).await {
                         let db_path = config.wallhaven_db_path.clone();
                         let img_id = img.id.clone();
-                        let filename_clone = filename.clone();
-                        let hash_clone = hash.clone();
+                        let filename_for_db = filename.clone();
+                        let hash_for_db = hash.clone();
                         let img_path = img.path.clone();
                         let img_url = img.short_url.clone();
                         let img_res = img.resolution.clone();
-                        let inserted = tokio::task::spawn_blocking(move || {
+
+                        let db_handle = tokio::task::spawn_blocking(move || {
                             db::insert_wallhaven_image(
-                                &db_path,
-                                &img_id,
-                                &filename_clone,
-                                &hash_clone,
-                                &img_path,
-                                &img_url,
-                                &img_res,
-                            )
-                            .unwrap_or(false)
-                        }).await.unwrap_or(false);
+                                &db_path, &img_id, &filename_for_db, &hash_for_db,
+                                &img_path, &img_url, &img_res,
+                            ).unwrap_or(false)
+                        });
+
+                        let (_, inserted) = tokio::join!(thumb_handle, db_handle);
+                        let inserted = inserted.unwrap_or(false);
 
                         if inserted {
                             success += 1;
@@ -595,36 +602,29 @@ async fn start_reddit_download(
                     let filename = format!("{hash}.{ext}");
                     let save_path = std::path::Path::new(&config.reddit_save_dir).join(&filename);
 
-                    if tokio::fs::write(&save_path, bytes).await.is_ok() {
-                        let thumb_dir = config.reddit_thumb_dir();
-                        let bytes_clone = bytes.clone();
-                        let filename_clone = filename.clone();
-                        let _ = tokio::task::spawn_blocking(move || {
-                            thumbnail::save_thumbnail_from_bytes(
-                                &thumb_dir,
-                                &filename_clone,
-                                &bytes_clone,
-                                2,
-                            )
-                        }).await;
-
+                    let thumb_dir = config.reddit_thumb_dir();
+                    if let Some(thumb_handle) = save_image(&save_path, bytes, &thumb_dir, &filename).await {
                         let db_path = config.reddit_db_path.clone();
-                        let filename_clone = filename.clone();
-                        let hash_clone = hash.clone();
+                        let filename_for_db = filename.clone();
+                        let hash_for_db = hash.clone();
                         let image_url = img.image_url.clone();
                         let title = img.title.clone();
                         let permalink = img.permalink.clone();
-                        let inserted = tokio::task::spawn_blocking(move || {
+
+                        let db_handle = tokio::task::spawn_blocking(move || {
                             db::insert_reddit_image(
                                 &db_path,
-                                &filename_clone,
-                                &hash_clone,
+                                &filename_for_db,
+                                &hash_for_db,
                                 &image_url,
                                 &title,
                                 &permalink,
                             )
                             .unwrap_or(false)
-                        }).await.unwrap_or(false);
+                        });
+
+                        let (_, inserted) = tokio::join!(thumb_handle, db_handle);
+                        let inserted = inserted.unwrap_or(false);
 
                         if inserted {
                             success += 1;
@@ -753,18 +753,8 @@ async fn start_db_download(
 
             match &download_results[i] {
                 Ok((bytes, _content_type)) => {
-                    if tokio::fs::write(&file_path, bytes).await.is_ok() {
-                        let thumb_dir = thumb_dir.clone();
-                        let img_name = img.name.clone();
-                        let bytes_clone = bytes.clone();
-                        let _ = tokio::task::spawn_blocking(move || {
-                            thumbnail::save_thumbnail_from_bytes(
-                                &thumb_dir,
-                                &img_name,
-                                &bytes_clone,
-                                2,
-                            )
-                        }).await;
+                    if let Some(thumb_handle) = save_image(&file_path, bytes, &thumb_dir, &img.name).await {
+                        let _ = thumb_handle.await;
                         success += 1;
                     } else {
                         log::error!("[db_download] write failed {}", file_path.display());
@@ -1149,13 +1139,8 @@ async fn download_missing_images(
 
             match &download_results[i] {
                 Ok((bytes, _content_type)) => {
-                    if tokio::fs::write(&file_path, bytes).await.is_ok() {
-                        let thumb_dir = thumb_dir.clone();
-                        let img_name = img.name.clone();
-                        let bytes_clone = bytes.clone();
-                        let _ = tokio::task::spawn_blocking(move || {
-                            thumbnail::save_thumbnail_from_bytes(&thumb_dir, &img_name, &bytes_clone, 2)
-                        }).await;
+                    if let Some(thumb_handle) = save_image(&file_path, bytes, &thumb_dir, &img.name).await {
+                        let _ = thumb_handle.await;
                         success += 1;
                     } else {
                         log::error!("[download_missing] write failed {}", file_path.display());
@@ -1517,27 +1502,25 @@ async fn download_wallhaven_selected(
                 let save_path = std::path::Path::new(&config.wallhaven_save_dir).join(&filename);
                 let hash = downloader::compute_md5(bytes);
 
-                if tokio::fs::write(&save_path, bytes).await.is_ok() {
-                    let thumb_dir = config.wallhaven_thumb_dir();
-                    let filename_clone = filename.clone();
-                    let bytes_clone = bytes.clone();
-                    let _ = tokio::task::spawn_blocking(move || {
-                        thumbnail::save_thumbnail_from_bytes(&thumb_dir, &filename_clone, &bytes_clone, 2)
-                    }).await;
-
+                let thumb_dir = config.wallhaven_thumb_dir();
+                if let Some(thumb_handle) = save_image(&save_path, bytes, &thumb_dir, &filename).await {
                     let db_path = config.wallhaven_db_path.clone();
                     let img_id = img.id.clone();
-                    let filename_clone = filename.clone();
-                    let hash_clone = hash.clone();
+                    let filename_for_db = filename.clone();
+                    let hash_for_db = hash.clone();
                     let img_path = img.path.clone();
                     let img_short_url = img.short_url.clone();
                     let img_resolution = img.resolution.clone();
-                    let inserted = tokio::task::spawn_blocking(move || {
+
+                    let db_handle = tokio::task::spawn_blocking(move || {
                         db::insert_wallhaven_image(
-                            &db_path, &img_id, &filename_clone, &hash_clone,
+                            &db_path, &img_id, &filename_for_db, &hash_for_db,
                             &img_path, &img_short_url, &img_resolution,
                         ).unwrap_or(false)
-                    }).await.unwrap_or(false);
+                    });
+
+                    let (_, inserted) = tokio::join!(thumb_handle, db_handle);
+                    let inserted = inserted.unwrap_or(false);
 
                     if inserted {
                         success += 1;
