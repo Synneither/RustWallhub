@@ -1970,16 +1970,30 @@ mod tests {
     use super::*;
     use tempfile::TempDir;
 
+    /// A tiny valid JPEG, 1×1 pixel, created programmatically.
+    fn tiny_jpeg() -> Vec<u8> {
+        let img = image::RgbImage::from_pixel(1, 1, image::Rgb([128u8, 64, 32]));
+        let mut buf = std::io::Cursor::new(Vec::new());
+        img.write_to(&mut buf, image::ImageFormat::Jpeg).unwrap();
+        buf.into_inner()
+    }
+
     #[tokio::test]
-    async fn test_save_image_writes_file() {
+    async fn test_save_image_writes_file_and_thumbnail() {
         let dir = TempDir::new().unwrap();
         let thumb_dir = TempDir::new().unwrap();
         let save_path = dir.path().join("test.jpg");
-        let data = b"fake jpeg data";
+        let data = tiny_jpeg();
 
-        let handle = save_image(&save_path, data, thumb_dir.path(), "test.jpg").await;
+        let handle = save_image(&save_path, &data, thumb_dir.path(), "test.jpg").await;
         assert!(handle.is_some(), "save_image should succeed");
         assert!(save_path.exists(), "file should be written");
+
+        // Await the thumbnail task and verify output
+        let _ = handle.unwrap().await;
+        // The thumbnail path matches thumbnail::thumb_path convention
+        let thumb = thumbnail::thumb_path(thumb_dir.path(), "test.jpg", 2);
+        assert!(thumb.exists(), "thumbnail should be generated at {}", thumb.display());
     }
 
     #[tokio::test]
@@ -1994,10 +2008,24 @@ mod tests {
 
     #[test]
     fn test_normalize_config_path_absolute() {
-        // Absolute paths are returned unchanged
         let abs = "/home/user/wallhaven.db".to_string();
         let base = std::path::Path::new("/tmp");
         let result = normalize_config_path(base, abs.clone());
         assert_eq!(result, abs);
+    }
+
+    #[test]
+    fn test_normalize_config_path_relative_resolved_to_base() {
+        // When the path exists relative to base_dir, resolve to base_dir absolute
+        let dir = TempDir::new().unwrap();
+        let db_path = dir.path().join("images.db");
+        db::init_wallhaven_db(&db_path.to_string_lossy()).unwrap();
+
+        let result = normalize_config_path(dir.path(), "images.db".to_string());
+        assert!(result.contains("images.db"));
+        assert!(
+            result.contains(&dir.path().to_string_lossy().to_string()),
+            "result should be under base_dir, got: {result}"
+        );
     }
 }

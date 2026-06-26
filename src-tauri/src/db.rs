@@ -896,6 +896,22 @@ mod tests {
     }
 
     #[test]
+    fn test_insert_wallhaven_batch_skips_duplicate_hash() {
+        let db = TestDb::wallhaven();
+        // Two entries with the same hash — second should be skipped
+        let images = vec![
+            ("id1".into(), "a.jpg".into(), "same_hash".into(), "u1".into(), "s1".into(), "1080p".into()),
+            ("id2".into(), "b.jpg".into(), "same_hash".into(), "u2".into(), "s2".into(), "4k".into()),
+        ];
+        let (added, skipped) = insert_wallhaven_images_batch(db.path(), &images).unwrap();
+        assert_eq!(added, 1);
+        assert_eq!(skipped, 1);
+
+        let stats = get_db_stats(db.path()).unwrap();
+        assert_eq!(stats.total, 1);
+    }
+
+    #[test]
     fn test_insert_wallhaven_batch_empty() {
         let db = TestDb::wallhaven();
         let images: Vec<(String, String, String, String, String, String)> = vec![];
