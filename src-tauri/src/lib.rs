@@ -1315,7 +1315,7 @@ async fn list_local_images(
                 total,
                 source: source.clone(),
                 dir_path: dir,
-                items: entries.clone(),
+                items: entries,
                 cached_at: Instant::now(),
             });
         }

@@ -226,7 +226,6 @@ async function runAction(fn: () => Promise<unknown>) {
           color="#6c8cff"
         />
         <Transition name="view-fade" mode="out-in">
-          <KeepAlive>
             <div :key="currentView">
               <Dashboard
                 v-if="currentView === 'dashboard'"
@@ -248,7 +247,6 @@ async function runAction(fn: () => Promise<unknown>) {
               />
               <GalleryView v-if="currentView === 'gallery'" />
             </div>
-          </KeepAlive>
         </Transition>
       </div>
     </v-main>
