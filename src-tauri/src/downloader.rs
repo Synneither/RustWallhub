@@ -40,7 +40,8 @@ pub fn get_file_extension(content_type: &str, url: &str) -> String {
     }
 
     // Fallback: extract from URL path
-    let path = url.to_lowercase().split('?').next().unwrap_or(url);
+    let lower_url = url.to_lowercase();
+    let path = lower_url.split('?').next().unwrap_or(url);
     if let Some(ext) = path.rsplit('.').next() {
         if IMAGE_EXTENSIONS.contains(&ext) {
             return ext.to_string();
