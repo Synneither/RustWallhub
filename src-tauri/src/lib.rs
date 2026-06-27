@@ -149,7 +149,7 @@ fn normalize_config_path(base_dir: &std::path::Path, value: String) -> String {
     let mut best: Option<(&std::path::PathBuf, i64)> = None;
     for candidate in &candidates {
         if let Some(score) = database_score(candidate) {
-            if best.map_or(true, |(_, s)| score > s) {
+            if best.is_none_or(|(_, s)| score > s) {
                 best = Some((candidate, score));
             }
         }
