@@ -14,16 +14,6 @@ const GIF89_HEADER: [u8; 6] = *b"GIF89a";
 const WEBP_RIFF: [u8; 4] = *b"RIFF";
 const WEBP_ID: [u8; 4] = *b"WEBP";
 
-/// Check if a URL path (without query string) has a recognized image extension.
-pub fn has_image_extension(url: &str) -> bool {
-    let path = url.split('?').next().unwrap_or(url);
-    IMAGE_EXTENSIONS.iter().any(|ext| {
-        path.rsplit('.')
-            .next()
-            .map_or(false, |e| e.eq_ignore_ascii_case(ext))
-    })
-}
-
 pub fn get_file_extension(content_type: &str, url: &str) -> String {
     let ct = content_type.to_lowercase();
     if ct.contains("image/jpeg") {
