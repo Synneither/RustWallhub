@@ -248,7 +248,7 @@ mod tests {
     async fn test_download_urls_concurrent_empty() {
         let client = reqwest::Client::new();
         let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-        let results = download_urls_concurrent(&client, &[], cancel, 3).await;
+        let results = download_urls_concurrent(&client, &[], cancel, 6, 3).await;
         assert!(results.is_empty());
     }
 
@@ -261,7 +261,7 @@ mod tests {
             "https://example.com/a.jpg".to_string(),
             "https://example.com/b.jpg".to_string(),
         ];
-        let results = download_urls_concurrent(&client, &urls, cancel, 0).await;
+        let results = download_urls_concurrent(&client, &urls, cancel, 6, 0).await;
         assert_eq!(results.len(), 2);
         for result in &results {
             let err = result.as_ref().unwrap_err();
@@ -274,7 +274,7 @@ mod tests {
         let client = reqwest::Client::new();
         let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         let urls = vec!["not-a-valid-url".to_string()];
-        let results = download_urls_concurrent(&client, &urls, cancel, 0).await;
+        let results = download_urls_concurrent(&client, &urls, cancel, 6, 0).await;
         assert_eq!(results.len(), 1);
         assert!(results[0].is_err());
     }
@@ -329,7 +329,7 @@ mod tests {
         let client = reqwest::Client::new();
         let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         let url = format!("http://127.0.0.1:{}/test.jpg", port);
-        let results = download_urls_concurrent(&client, &[url], cancel, 0).await;
+        let results = download_urls_concurrent(&client, &[url], cancel, 6, 0).await;
 
         assert_eq!(results.len(), 1);
         let (bytes, content_type) = results[0].as_ref().expect("download should succeed");
@@ -388,6 +388,7 @@ pub async fn download_urls_concurrent(
     client: &reqwest::Client,
     urls: &[String],
     cancel: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    concurrency: u32,
     max_retries: u32,
 ) -> Vec<Result<(Vec<u8>, String), String>> {
     let count = urls.len();
@@ -395,7 +396,8 @@ pub async fn download_urls_concurrent(
         return Vec::new();
     }
 
-    let semaphore = std::sync::Arc::new(tokio::sync::Semaphore::new(6));
+    let limit = concurrency.max(1) as usize;
+    let semaphore = std::sync::Arc::new(tokio::sync::Semaphore::new(limit));
     let mut handles = Vec::with_capacity(count);
 
     for (idx, url) in urls.iter().enumerate() {

@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, onUnmounted, watch } from "vue";
 import { invoke } from "@tauri-apps/api/core";
+import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { logger } from "../utils/logger";
 
 const props = defineProps<{
@@ -28,6 +29,7 @@ const missingCount = ref(0);
 const showMissingList = ref(false);
 const missingSource = ref("all");
 const missingImages = ref<ImageRecord[]>([]);
+let unlistenSettings: UnlistenFn | null = null;
 const missingListLoading = ref(false);
 const dislikeAllLoading = ref(false);
 
@@ -131,6 +133,15 @@ watch(() => props.downloading, (now, prev) => {
 onMounted(async () => {
   await loadStats();
   await loadMissingCount();
+  unlistenSettings = await listen("settings-changed", () => {
+    logger.info("Dashboard", "设置已变更，刷新仪表盘");
+    loadStats();
+    loadMissingCount();
+  });
+});
+
+onUnmounted(() => {
+  if (unlistenSettings) unlistenSettings();
 });
 
 function useAnimatedNumber(target: { value: number }) {

@@ -11,6 +11,7 @@ const Dashboard = defineAsyncComponent(() => import("./views/Dashboard.vue"));
 const WallhavenView = defineAsyncComponent(() => import("./views/WallhavenView.vue"));
 const RedditView = defineAsyncComponent(() => import("./views/RedditView.vue"));
 const GalleryView = defineAsyncComponent(() => import("./views/GalleryView.vue"));
+const DbSettingsView = defineAsyncComponent(() => import("./views/DbSettingsView.vue"));
 
 // Theme sync
 const { theme: appTheme, toggle: toggleTheme } = useTheme();
@@ -125,6 +126,7 @@ const navItems = [
   { key: "dashboard", title: "仪表盘", icon: "mdi-view-dashboard" },
   { key: "wallhaven", title: "Wallhaven", icon: "mdi-image-search" },
   { key: "reddit", title: "Reddit", icon: "mdi-reddit" },
+  { key: "db", title: "数据库", icon: "mdi-database-cog" },
   { key: "gallery", title: "图库", icon: "mdi-image-multiple" },
 ];
 
@@ -246,6 +248,7 @@ async function runAction(fn: () => Promise<unknown>) {
                 @action="runAction"
               />
               <GalleryView v-if="currentView === 'gallery'" />
+              <DbSettingsView v-if="currentView === 'db'" />
             </div>
         </Transition>
       </div>

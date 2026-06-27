@@ -1,11 +1,13 @@
 <script setup lang="ts">
 import { ref, onMounted } from "vue";
 import { invoke } from "@tauri-apps/api/core";
+import { open } from "@tauri-apps/plugin-dialog";
 import { logger } from "../utils/logger";
 
 interface AppConfig {
   wallhaven_save_dir: string;
   reddit_save_dir: string;
+  db_dir: string;
   wallhaven_db_path: string;
   reddit_db_path: string;
   wallhaven_api_key: string;
@@ -19,6 +21,10 @@ interface AppConfig {
   reddit_url: string;
   reddit_max_posts: number;
   reddit_max_images: number;
+  thumbnails_dir: string;
+  download_concurrency: number;
+  thumbnail_dpr: number;
+  request_timeout: number;
 }
 
 const config = ref<AppConfig | null>(null);
@@ -31,13 +37,41 @@ const requiredRule = (v: string) => !!v || '此项不能为空';
 const positiveInt = (v: number) => {
   if (v === undefined || v === null || v === 0) return true; // 0 = 无限制
   if (typeof v !== 'number' || isNaN(v)) return '请输入有效数字';
-  if (v < 0) return '不能为负数';
+  if (v < 1) return '不能小于 1';
+  if (v > 100) return '不能超过 100';
+  return true;
+};
+const dprRule = (v: number) => {
+  if (v === undefined || v === null) return true;
+  const allowed = [1, 2, 3];
+  if (!allowed.includes(v)) return '仅支持 1、2、3';
+  return true;
+};
+const timeoutRule = (v: number) => {
+  if (!v) return '请输入超时秒数';
+  if (v < 5) return '不能低于 5 秒';
+  if (v > 120) return '不能超过 120 秒';
   return true;
 };
 const resolutionRule = (v: string) => {
   if (!v) return true;
   return /^\d+x\d+$/.test(v) || '格式如 1920x1080';
 };
+
+async function selectDirectory(field: keyof AppConfig) {
+  try {
+    const selected = await open({
+      directory: true,
+      multiple: false,
+      title: "选择目录",
+    });
+    if (selected && config.value) {
+      (config.value as any)[field] = selected;
+    }
+  } catch (e) {
+    logger.error("Settings", "目录选择失败", e);
+  }
+}
 
 async function loadConfig() {
   try {
@@ -48,8 +82,9 @@ async function loadConfig() {
     config.value = {
       wallhaven_save_dir: "",
       reddit_save_dir: "",
-      wallhaven_db_path: "wallhaven_images.db",
-      reddit_db_path: "reddit_images.db",
+      wallhaven_db_path: "",
+      reddit_db_path: "",
+      db_dir: "",
       wallhaven_api_key: "",
       wallhaven_categories: "010",
       wallhaven_purity: "111",
@@ -61,6 +96,10 @@ async function loadConfig() {
       reddit_url: "",
       reddit_max_posts: 100,
       reddit_max_images: 100,
+      thumbnails_dir: "",
+      download_concurrency: 6,
+      thumbnail_dpr: 2,
+      request_timeout: 30,
     };
   }
 }
@@ -105,12 +144,8 @@ onMounted(loadConfig);
             label="图片保存目录"
             class="settings-field"
             :rules="[requiredRule]"
-          />
-          <v-text-field
-            v-model="config.wallhaven_db_path"
-            label="数据库路径"
-            class="settings-field"
-            :rules="[requiredRule]"
+            append-inner-icon="mdi-folder-open"
+            @click:append-inner="selectDirectory('wallhaven_save_dir')"
           />
         </div>
 
@@ -224,14 +259,8 @@ onMounted(loadConfig);
                 label="图片保存目录"
                 class="settings-field"
                 :rules="[requiredRule]"
-              />
-            </v-col>
-            <v-col cols="12" sm="6">
-              <v-text-field
-                v-model="config.reddit_db_path"
-                label="数据库路径"
-                class="settings-field"
-                :rules="[requiredRule]"
+                append-inner-icon="mdi-folder-open"
+                @click:append-inner="selectDirectory('reddit_save_dir')"
               />
             </v-col>
           </v-row>
@@ -260,6 +289,110 @@ onMounted(loadConfig);
                 max="500"
                 :rules="[positiveInt]"
                 class="settings-field"
+              />
+            </v-col>
+          </v-row>
+        </div>
+      </v-card-text>
+    </v-card>
+
+    <v-card class="glass-card settings-card animate-in stagger-3">
+      <div class="settings-card-header db-header-bg">
+        <div class="settings-header-icon db-header-icon">
+          <v-icon color="#43e97b">mdi-database</v-icon>
+        </div>
+        <div>
+          <div class="text-heading">数据库设置</div>
+          <div class="text-caption">统一管理 Wallhaven 和 Reddit 数据库存储目录</div>
+        </div>
+      </div>
+      <v-card-text class="pa-6 pt-4">
+        <div class="settings-group-label">存储位置</div>
+        <div class="settings-group">
+          <v-text-field
+            v-model="config.db_dir"
+            label="数据库目录"
+            hint="存放 wallhaven_images.db 和 reddit_images.db"
+            persistent-hint
+            class="settings-field"
+            :rules="[requiredRule]"
+            append-inner-icon="mdi-folder-open"
+            @click:append-inner="selectDirectory('db_dir')"
+          />
+        </div>
+      </v-card-text>
+    </v-card>
+
+    <v-card class="glass-card settings-card animate-in stagger-4">
+      <div class="settings-card-header adv-header-bg">
+        <div class="settings-header-icon adv-header-icon">
+          <v-icon color="#a78bfa">mdi-tune-variant</v-icon>
+        </div>
+        <div>
+          <div class="text-heading">高级设置</div>
+          <div class="text-caption">下载、缩略图与网络参数</div>
+        </div>
+      </div>
+      <v-card-text class="pa-6 pt-4">
+        <div class="settings-group-label">下载与网络</div>
+        <div class="settings-group">
+          <v-row>
+            <v-col cols="6" sm="4">
+              <v-text-field
+                v-model.number="config.download_concurrency"
+                label="并发下载数"
+                type="number"
+                min="1"
+                max="20"
+                hint="同时下载的文件数 (1-20)"
+                persistent-hint
+                :rules="[positiveInt]"
+                class="settings-field"
+              />
+            </v-col>
+            <v-col cols="6" sm="4">
+              <v-text-field
+                v-model.number="config.request_timeout"
+                label="请求超时(秒)"
+                type="number"
+                min="5"
+                max="120"
+                hint="单个 HTTP 请求超时 (5-120s)"
+                persistent-hint
+                :rules="[timeoutRule]"
+                class="settings-field"
+              />
+            </v-col>
+          </v-row>
+        </div>
+
+        <div class="settings-group-label">缩略图</div>
+        <div class="settings-group">
+          <v-row>
+            <v-col cols="6" sm="4">
+              <v-select
+                v-model.number="config.thumbnail_dpr"
+                label="缩略图质量"
+                :items="[
+                  { title: '1x (省空间)', value: 1 },
+                  { title: '2x (推荐)', value: 2 },
+                  { title: '3x (高清)', value: 3 },
+                ]"
+                hint="质量越高占用存储越多"
+                persistent-hint
+                :rules="[dprRule]"
+                class="settings-field"
+              />
+            </v-col>
+            <v-col cols="6" sm="4">
+              <v-text-field
+                v-model="config.thumbnails_dir"
+                label="缩略图存储目录"
+                hint="留空使用默认缓存路径"
+                persistent-hint
+                class="settings-field"
+                append-inner-icon="mdi-folder-open"
+                @click:append-inner="selectDirectory('thumbnails_dir')"
               />
             </v-col>
           </v-row>
@@ -316,6 +449,12 @@ onMounted(loadConfig);
 .rd-header-bg {
   background: linear-gradient(135deg, rgba(255,107,53,0.08) 0%, transparent 60%);
 }
+.db-header-bg {
+  background: linear-gradient(135deg, rgba(67,233,123,0.08) 0%, transparent 60%);
+}
+.adv-header-bg {
+  background: linear-gradient(135deg, rgba(167,139,250,0.08) 0%, transparent 60%);
+}
 
 .settings-header-icon {
   width: 40px;
@@ -332,6 +471,12 @@ onMounted(loadConfig);
 }
 .rd-header-icon {
   background: rgba(255,107,53,0.15);
+}
+.db-header-icon {
+  background: rgba(67,233,123,0.15);
+}
+.adv-header-icon {
+  background: rgba(167,139,250,0.15);
 }
 
 .settings-group-label {

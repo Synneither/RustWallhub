@@ -186,9 +186,11 @@ fn load_config(state: &tauri::State<'_, AppState>) -> Result<AppConfig, AppError
         .map_err(|e| AppError::Config(format!("锁定配置失败: {e}")))?
         .clone();
     let mut config = AppConfig::load(&path).map_err(AppError::Config)?;
+    config.sync_db_dir(); // 合并 db_dir（仅在非空时生效）
     if let Some(base_dir) = path.parent() {
         config.wallhaven_db_path = normalize_config_path(base_dir, config.wallhaven_db_path);
         config.reddit_db_path = normalize_config_path(base_dir, config.reddit_db_path);
+        config.db_dir = normalize_config_path(base_dir, config.db_dir);
         config.wallhaven_save_dir = normalize_config_path(base_dir, config.wallhaven_save_dir);
         config.reddit_save_dir = normalize_config_path(base_dir, config.reddit_save_dir);
     }
@@ -226,6 +228,7 @@ async fn get_config(state: tauri::State<'_, AppState>) -> Result<AppConfig, AppE
 
 #[tauri::command]
 async fn save_settings(
+    app: tauri::AppHandle,
     state: tauri::State<'_, AppState>,
     config: AppConfig,
 ) -> Result<(), AppError> {
@@ -233,15 +236,32 @@ async fn save_settings(
     if config.wallhaven_save_dir.is_empty() || config.reddit_save_dir.is_empty() {
         return Err(AppError::Config("保存目录不能为空".into()));
     }
-    if config.wallhaven_db_path.is_empty() || config.reddit_db_path.is_empty() {
-        return Err(AppError::Config("数据库路径不能为空".into()));
+    if config.db_dir.is_empty() {
+        return Err(AppError::Config("数据库目录不能为空".into()));
     }
-    let result = save_config(&state, &config);
-    log::info!(
-        "[CMD] save_settings {}",
-        if result.is_ok() { "ok" } else { "failed" }
-    );
-    result
+    if (config.download_concurrency as usize) < 1 || config.download_concurrency > 100 {
+        return Err(AppError::Config("并发下载数超出范围 (1-100)".into()));
+    }
+    if config.request_timeout < 5 || config.request_timeout > 120 {
+        return Err(AppError::Config("请求超时超出范围 (5-120 秒)".into()));
+    }
+    if config.thumbnail_dpr < 1 || config.thumbnail_dpr > 3 {
+        return Err(AppError::Config("缩略图 DPR 超出范围 (1-3)".into()));
+    }
+    // 保存配置 & 清空缓存，下次 load_config 会重新同步
+    save_config(&state, &config)?;
+    // 清空文件缓存，让各视图重新加载
+    if let Ok(mut cache) = state.file_cache.lock() {
+        *cache = None;
+    }
+    // 确保新目录存在并初始化数据库
+    std::fs::create_dir_all(std::path::Path::new(&config.db_dir)).ok();
+    db::init_wallhaven_db(&config.wallhaven_db_path).ok();
+    db::init_reddit_db(&config.reddit_db_path).ok();
+    // 通知前端各视图刷新
+    let _ = app.emit("settings-changed", &config);
+    log::info!("[CMD] save_settings done");
+    Ok(())
 }
 
 #[derive(serde::Serialize)]
@@ -286,6 +306,7 @@ async fn save_image(
     bytes: &[u8],
     thumb_dir: impl AsRef<std::path::Path>,
     filename: &str,
+    dpr: u32,
 ) -> Option<tokio::task::JoinHandle<()>> {
     if tokio::fs::write(save_path.as_ref(), bytes).await.is_err() {
         return None;
@@ -294,7 +315,7 @@ async fn save_image(
     let filename = filename.to_string();
     let bytes = bytes.to_vec();
     Some(tokio::task::spawn_blocking(move || {
-        let _ = thumbnail::save_thumbnail_from_bytes(&thumb_dir, &filename, &bytes, 2);
+        let _ = thumbnail::save_thumbnail_from_bytes(&thumb_dir, &filename, &bytes, dpr);
     }))
 }
 
@@ -393,8 +414,14 @@ async fn start_wallhaven_download(
         let mut success = 0u32;
 
         let urls: Vec<String> = collected.iter().map(|img| img.path.clone()).collect();
-        let download_results =
-            downloader::download_urls_concurrent(&client, &urls, cancel.clone(), 3).await;
+        let download_results = downloader::download_urls_concurrent(
+            &client,
+            &urls,
+            cancel.clone(),
+            config.download_concurrency,
+            3,
+        )
+        .await;
 
         for (i, img) in collected.iter().enumerate() {
             if cancel.load(Ordering::Relaxed) {
@@ -439,8 +466,14 @@ async fn start_wallhaven_download(
                     let hash = downloader::compute_md5(bytes);
 
                     let thumb_dir = config.wallhaven_thumb_dir();
-                    if let Some(thumb_handle) =
-                        save_image(&save_path, bytes, &thumb_dir, &filename).await
+                    if let Some(thumb_handle) = save_image(
+                        &save_path,
+                        bytes,
+                        &thumb_dir,
+                        &filename,
+                        config.thumbnail_dpr,
+                    )
+                    .await
                     {
                         let db_path = config.wallhaven_db_path.clone();
                         let img_id = img.id.clone();
@@ -599,8 +632,14 @@ async fn start_reddit_download(
         let mut success = 0u32;
 
         let urls: Vec<String> = collected.iter().map(|img| img.image_url.clone()).collect();
-        let download_results =
-            downloader::download_urls_concurrent(&client, &urls, cancel.clone(), 3).await;
+        let download_results = downloader::download_urls_concurrent(
+            &client,
+            &urls,
+            cancel.clone(),
+            config.download_concurrency,
+            3,
+        )
+        .await;
 
         for (i, img) in collected.iter().enumerate() {
             if cancel.load(Ordering::Relaxed) {
@@ -639,8 +678,14 @@ async fn start_reddit_download(
                     let save_path = std::path::Path::new(&config.reddit_save_dir).join(&filename);
 
                     let thumb_dir = config.reddit_thumb_dir();
-                    if let Some(thumb_handle) =
-                        save_image(&save_path, bytes, &thumb_dir, &filename).await
+                    if let Some(thumb_handle) = save_image(
+                        &save_path,
+                        bytes,
+                        &thumb_dir,
+                        &filename,
+                        config.thumbnail_dpr,
+                    )
+                    .await
                     {
                         let db_path = config.reddit_db_path.clone();
                         let filename_for_db = filename.clone();
@@ -759,8 +804,14 @@ async fn start_db_download(
         let total_pending = to_download.len() as u32;
 
         let urls: Vec<String> = to_download.iter().map(|img| img.url.clone()).collect();
-        let download_results =
-            downloader::download_urls_concurrent(&client, &urls, cancel.clone(), 3).await;
+        let download_results = downloader::download_urls_concurrent(
+            &client,
+            &urls,
+            cancel.clone(),
+            config.download_concurrency,
+            3,
+        )
+        .await;
 
         for (i, img) in to_download.iter().enumerate() {
             let file_path = std::path::Path::new(&save_dir).join(&img.name);
@@ -796,8 +847,14 @@ async fn start_db_download(
 
             match &download_results[i] {
                 Ok((bytes, _content_type)) => {
-                    if let Some(thumb_handle) =
-                        save_image(&file_path, bytes, &thumb_dir, &img.name).await
+                    if let Some(thumb_handle) = save_image(
+                        &file_path,
+                        bytes,
+                        &thumb_dir,
+                        &img.name,
+                        config.thumbnail_dpr,
+                    )
+                    .await
                     {
                         let _ = thumb_handle.await;
                         success += 1;
@@ -1192,8 +1249,14 @@ async fn download_missing_images(
         let mut success = 0u32;
 
         let urls: Vec<String> = images.iter().map(|img| img.url.clone()).collect();
-        let download_results =
-            downloader::download_urls_concurrent(&client, &urls, cancel.clone(), 3).await;
+        let download_results = downloader::download_urls_concurrent(
+            &client,
+            &urls,
+            cancel.clone(),
+            config.download_concurrency,
+            3,
+        )
+        .await;
 
         for (i, img) in images.iter().enumerate() {
             let file_path = std::path::Path::new(&save_dir).join(&img.name);
@@ -1228,8 +1291,14 @@ async fn download_missing_images(
 
             match &download_results[i] {
                 Ok((bytes, _content_type)) => {
-                    if let Some(thumb_handle) =
-                        save_image(&file_path, bytes, &thumb_dir, &img.name).await
+                    if let Some(thumb_handle) = save_image(
+                        &file_path,
+                        bytes,
+                        &thumb_dir,
+                        &img.name,
+                        config.thumbnail_dpr,
+                    )
+                    .await
                     {
                         let _ = thumb_handle.await;
                         success += 1;
@@ -1606,8 +1675,14 @@ async fn download_wallhaven_selected(
         let mut success = 0u32;
 
         let urls: Vec<String> = images.iter().map(|img| img.path.clone()).collect();
-        let download_results =
-            downloader::download_urls_concurrent(&client, &urls, cancel.clone(), 3).await;
+        let download_results = downloader::download_urls_concurrent(
+            &client,
+            &urls,
+            cancel.clone(),
+            config.download_concurrency,
+            3,
+        )
+        .await;
 
         for (i, img) in images.iter().enumerate() {
             if cancel.load(std::sync::atomic::Ordering::Relaxed) {
@@ -1655,8 +1730,14 @@ async fn download_wallhaven_selected(
                 let hash = downloader::compute_md5(bytes);
 
                 let thumb_dir = config.wallhaven_thumb_dir();
-                if let Some(thumb_handle) =
-                    save_image(&save_path, bytes, &thumb_dir, &filename).await
+                if let Some(thumb_handle) = save_image(
+                    &save_path,
+                    bytes,
+                    &thumb_dir,
+                    &filename,
+                    config.thumbnail_dpr,
+                )
+                .await
                 {
                     let db_path = config.wallhaven_db_path.clone();
                     let img_id = img.id.clone();
@@ -1823,6 +1904,37 @@ async fn get_current_wallpaper() -> Result<serde_json::Value, AppError> {
     Ok(serde_json::json!({ "path": path }))
 }
 
+#[derive(serde::Serialize)]
+struct FileInfo {
+    name: String,
+    path: String,
+    size: u64,
+}
+
+#[tauri::command]
+async fn list_files(dir: String) -> Result<Vec<FileInfo>, AppError> {
+    log::info!("[CMD] list_files: dir={}", dir);
+    let path = std::path::Path::new(&dir);
+    if !path.is_dir() {
+        return Ok(Vec::new());
+    }
+    let mut files = Vec::new();
+    if let Ok(entries) = std::fs::read_dir(path) {
+        for entry in entries.flatten() {
+            let file_path = entry.path();
+            if file_path.is_file() {
+                files.push(FileInfo {
+                    name: entry.file_name().to_string_lossy().to_string(),
+                    path: file_path.to_string_lossy().to_string(),
+                    size: entry.metadata().map_or(0, |m| m.len()),
+                });
+            }
+        }
+    }
+    log::info!("[CMD] list_files: found {} files", files.len());
+    Ok(files)
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info"))
@@ -1831,6 +1943,7 @@ pub fn run() {
     log::info!("RustWallhub 启动");
 
     tauri::Builder::default()
+        .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_fs::init())
         .setup(|app| {
@@ -1841,11 +1954,11 @@ pub fn run() {
             let config_path = config_dir.join("rustwallhub").join("config.json");
 
             let mut config = AppConfig::load(&config_path).unwrap_or_default();
+            config.sync_db_dir(); // 统一数据库目录
             // 统一归一化路径（与 load_config 一致）
             if let Some(base_dir) = config_path.parent() {
-                config.wallhaven_db_path =
-                    normalize_config_path(base_dir, config.wallhaven_db_path);
-                config.reddit_db_path = normalize_config_path(base_dir, config.reddit_db_path);
+                config.db_dir = normalize_config_path(base_dir, config.db_dir);
+                config.sync_db_dir();
                 config.wallhaven_save_dir =
                     normalize_config_path(base_dir, config.wallhaven_save_dir);
                 config.reddit_save_dir = normalize_config_path(base_dir, config.reddit_save_dir);
@@ -1872,7 +1985,7 @@ pub fn run() {
 
             let client = reqwest::Client::builder()
                 .user_agent("RustWallhub/1.0")
-                .timeout(Duration::from_secs(30))
+                .timeout(Duration::from_secs(config.request_timeout))
                 .build()
                 .expect("创建 HTTP client 失败");
 
@@ -1913,6 +2026,7 @@ pub fn run() {
             delete_image,
             clean_thumbnails,
             get_current_wallpaper,
+            list_files,
         ])
         .run(tauri::generate_context!())
         .expect("运行 Tauri 应用时出错");
@@ -1938,7 +2052,7 @@ mod tests {
         let save_path = dir.path().join("test.jpg");
         let data = tiny_jpeg();
 
-        let handle = save_image(&save_path, &data, thumb_dir.path(), "test.jpg").await;
+        let handle = save_image(&save_path, &data, thumb_dir.path(), "test.jpg", 2).await;
         assert!(handle.is_some(), "save_image should succeed");
         assert!(save_path.exists(), "file should be written");
 
@@ -1959,7 +2073,7 @@ mod tests {
         let save_path = std::path::Path::new("/nonexistent/dir/test.jpg");
         let data = b"data";
 
-        let handle = save_image(save_path, data, thumb_dir.path(), "test.jpg").await;
+        let handle = save_image(save_path, data, thumb_dir.path(), "test.jpg", 2).await;
         assert!(
             handle.is_none(),
             "save_image should fail on unwritable path"

@@ -3,12 +3,9 @@ use std::path::{Path, PathBuf};
 
 #[derive(Clone, Serialize, Deserialize, Debug)]
 pub struct AppConfig {
+    // --- Wallhaven ---
     pub wallhaven_save_dir: String,
-    pub reddit_save_dir: String,
     pub wallhaven_db_path: String,
-    pub reddit_db_path: String,
-    #[serde(default = "default_thumbnails_dir")]
-    pub thumbnails_dir: String,
     pub wallhaven_api_key: String,
     pub wallhaven_categories: String,
     pub wallhaven_purity: String,
@@ -21,9 +18,32 @@ pub struct AppConfig {
     #[serde(default)]
     pub wallhaven_order: String,
     pub wallhaven_max_images: u32,
+    // --- Reddit ---
+    pub reddit_save_dir: String,
+    pub reddit_db_path: String,
+    #[serde(default = "default_reddit_url")]
     pub reddit_url: String,
     pub reddit_max_posts: u32,
     pub reddit_max_images: u32,
+    // --- 通用 ---
+    #[serde(default = "default_thumbnails_dir")]
+    pub thumbnails_dir: String,
+    /// 数据库目录 (统一存放 WALLHAVEN 和 Reddit 数据库文件)
+    #[serde(default = "default_db_dir")]
+    pub db_dir: String,
+    /// 并发下载数 (默认 6)
+    #[serde(default = "default_download_concurrency")]
+    pub download_concurrency: u32,
+    /// 缩略图 DPR (1/2/3, 默认 2)
+    #[serde(default = "default_thumbnail_dpr")]
+    pub thumbnail_dpr: u32,
+    /// HTTP 请求超时 (秒, 默认 30)
+    #[serde(default = "default_request_timeout")]
+    pub request_timeout: u64,
+}
+
+fn default_reddit_url() -> String {
+    "https://www.reddit.com/r/Animewallpaper/?f=flair_name%3A%22Desktop%22".into()
 }
 
 fn default_thumbnails_dir() -> String {
@@ -35,6 +55,26 @@ fn default_thumbnails_dir() -> String {
         .to_string()
 }
 
+fn default_db_dir() -> String {
+    dirs::data_dir()
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join("rustwallhub")
+        .to_string_lossy()
+        .to_string()
+}
+
+fn default_download_concurrency() -> u32 {
+    6
+}
+
+fn default_thumbnail_dpr() -> u32 {
+    2
+}
+
+fn default_request_timeout() -> u64 {
+    30
+}
+
 impl AppConfig {
     pub fn wallhaven_thumb_dir(&self) -> PathBuf {
         PathBuf::from(&self.thumbnails_dir).join("wallhaven")
@@ -42,6 +82,23 @@ impl AppConfig {
 
     pub fn reddit_thumb_dir(&self) -> PathBuf {
         PathBuf::from(&self.thumbnails_dir).join("reddit")
+    }
+
+    /// 以 db_dir 为准，同步 wallhaven_db_path / reddit_db_path
+    pub fn sync_db_dir(&mut self) {
+        // 仅在 db_dir 非空时同步（即用户在界面中显式设置了统一目录）
+        // 旧配置中 db_dir 为空，沿用原有的个体路径以保证向后兼容
+        if !self.db_dir.is_empty() {
+            let dir = PathBuf::from(&self.db_dir);
+            self.wallhaven_db_path = dir
+                .join("wallhaven_images.db")
+                .to_string_lossy()
+                .to_string();
+            self.reddit_db_path = dir
+                .join("reddit_images.db")
+                .to_string_lossy()
+                .to_string();
+        }
     }
 }
 
@@ -68,10 +125,12 @@ impl AppConfig {
     /// 保存配置到文件。自动创建父目录。
     pub fn save(&self, path: &Path) -> Result<(), String> {
         log::info!("[config] save: saving to {}", path.display());
+        let mut config = self.clone();
+        config.sync_db_dir(); // 写入前同步数据库路径
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
         }
-        let content = serde_json::to_string_pretty(self).map_err(|e| e.to_string())?;
+        let content = serde_json::to_string_pretty(&config).map_err(|e| e.to_string())?;
         std::fs::write(path, content).map_err(|e| e.to_string())?;
         log::info!("[config] save: done");
         Ok(())
@@ -95,16 +154,12 @@ impl Default for AppConfig {
 
         Self {
             wallhaven_save_dir: format!("{home}/Pictures/背景/wallhaven"),
-            reddit_save_dir: format!("{home}/Pictures/背景/reddit"),
             wallhaven_db_path: data_dir
                 .join("wallhaven_images.db")
                 .to_string_lossy()
                 .to_string(),
-            reddit_db_path: data_dir
-                .join("reddit_images.db")
-                .to_string_lossy()
-                .to_string(),
             thumbnails_dir: cache_dir.to_string_lossy().to_string(),
+            db_dir: data_dir.to_string_lossy().to_string(),
             wallhaven_api_key: String::new(),
             wallhaven_categories: "010".into(),
             wallhaven_purity: "111".into(),
@@ -115,10 +170,17 @@ impl Default for AppConfig {
             wallhaven_q: String::new(),
             wallhaven_order: "desc".into(),
             wallhaven_max_images: 100,
-            reddit_url: "https://www.reddit.com/r/Animewallpaper/?f=flair_name%3A%22Desktop%22"
-                .into(),
+            reddit_save_dir: format!("{home}/Pictures/背景/reddit"),
+            reddit_db_path: data_dir
+                .join("reddit_images.db")
+                .to_string_lossy()
+                .to_string(),
+            reddit_url: default_reddit_url(),
             reddit_max_posts: 100,
             reddit_max_images: 100,
+            download_concurrency: 6,
+            thumbnail_dpr: 2,
+            request_timeout: 30,
         }
     }
 }
@@ -137,6 +199,19 @@ mod tests {
         assert_eq!(cfg.wallhaven_sorting, "toplist");
         assert_eq!(cfg.wallhaven_max_images, 100);
         assert_eq!(cfg.reddit_max_images, 100);
+        assert_eq!(cfg.download_concurrency, 6);
+        assert_eq!(cfg.thumbnail_dpr, 2);
+        assert_eq!(cfg.request_timeout, 30);
+    }
+
+    #[test]
+    fn test_thumb_dirs() {
+        let cfg = AppConfig::default();
+        assert!(cfg
+            .wallhaven_thumb_dir()
+            .to_string_lossy()
+            .contains("wallhaven"));
+        assert!(cfg.reddit_thumb_dir().to_string_lossy().contains("reddit"));
     }
 
     #[test]
@@ -174,6 +249,8 @@ mod tests {
         cfg.wallhaven_categories = "111".into();
         cfg.wallhaven_max_images = 50;
         cfg.reddit_url = "https://reddit.com/r/test".into();
+        cfg.download_concurrency = 12;
+        cfg.thumbnail_dpr = 3;
         cfg.save(&path).unwrap();
 
         let loaded = AppConfig::load(&path).unwrap();
@@ -181,5 +258,7 @@ mod tests {
         assert_eq!(loaded.wallhaven_categories, "111");
         assert_eq!(loaded.wallhaven_max_images, 50);
         assert_eq!(loaded.reddit_url, "https://reddit.com/r/test");
+        assert_eq!(loaded.download_concurrency, 12);
+        assert_eq!(loaded.thumbnail_dpr, 3);
     }
 }
