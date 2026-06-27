@@ -7,7 +7,6 @@ mod wallhaven;
 mod wallpaper;
 
 use config::AppConfig;
-use wallpaper::set_wallpaper;
 use rusqlite::Connection;
 use serde::Serialize;
 use std::path::PathBuf;
@@ -16,6 +15,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tauri::{Emitter, Manager};
+use wallpaper::set_wallpaper;
 
 #[derive(Clone, Serialize)]
 struct DownloadProgress {
@@ -96,7 +96,11 @@ fn find_upward(
             return Some(candidate);
         }
         if depth >= MAX_UPWARD_DEPTH {
-            log::warn!("[find_upward] exceeded max depth {} at {}", MAX_UPWARD_DEPTH, current.display());
+            log::warn!(
+                "[find_upward] exceeded max depth {} at {}",
+                MAX_UPWARD_DEPTH,
+                current.display()
+            );
             break;
         }
         if !current.pop() {
@@ -213,7 +217,10 @@ fn save_config(state: &tauri::State<'_, AppState>, config: &AppConfig) -> Result
 async fn get_config(state: tauri::State<'_, AppState>) -> Result<AppConfig, AppError> {
     log::info!("[CMD] get_config called");
     let result = load_config(&state);
-    log::info!("[CMD] get_config {}", if result.is_ok() { "ok" } else { "failed" });
+    log::info!(
+        "[CMD] get_config {}",
+        if result.is_ok() { "ok" } else { "failed" }
+    );
     result
 }
 
@@ -230,7 +237,10 @@ async fn save_settings(
         return Err(AppError::Config("数据库路径不能为空".into()));
     }
     let result = save_config(&state, &config);
-    log::info!("[CMD] save_settings {}", if result.is_ok() { "ok" } else { "failed" });
+    log::info!(
+        "[CMD] save_settings {}",
+        if result.is_ok() { "ok" } else { "failed" }
+    );
     result
 }
 
@@ -248,14 +258,12 @@ async fn get_stats(state: tauri::State<'_, AppState>) -> Result<StatsResponse, A
     let rd_db_path = config.reddit_db_path.clone();
     log::info!(
         "[CMD] get_stats: resolving db paths wh={}, rd={}",
-        wh_db_path, rd_db_path
+        wh_db_path,
+        rd_db_path
     );
     let wh_stats = db::get_db_stats(&wh_db_path)?;
     let rd_stats = db::get_db_stats(&rd_db_path)?;
-    log::info!(
-        "[CMD] get_stats: wh={:?}, rd={:?}",
-        wh_stats, rd_stats
-    );
+    log::info!("[CMD] get_stats: wh={:?}, rd={:?}", wh_stats, rd_stats);
     Ok(StatsResponse {
         wallhaven: wh_stats,
         reddit: rd_stats,
@@ -302,7 +310,8 @@ async fn start_wallhaven_download(
     let client = state.http_client.clone();
 
     tokio::spawn(async move {
-        let wh_client = wallhaven::WallhavenClient::new(client.clone(), config.wallhaven_api_key.clone());
+        let wh_client =
+            wallhaven::WallhavenClient::new(client.clone(), config.wallhaven_api_key.clone());
 
         let _ = tokio::fs::create_dir_all(&config.wallhaven_save_dir).await;
 
@@ -335,17 +344,19 @@ async fn start_wallhaven_download(
                 },
             );
 
-            let resp = wh_client.search(
-                page,
-                &config.wallhaven_categories,
-                &config.wallhaven_purity,
-                &config.wallhaven_sorting,
-                &config.wallhaven_order,
-                &config.wallhaven_top_range,
-                &config.wallhaven_atleast,
-                &config.wallhaven_ratios,
-                &config.wallhaven_q,
-            ).await;
+            let resp = wh_client
+                .search(
+                    page,
+                    &config.wallhaven_categories,
+                    &config.wallhaven_purity,
+                    &config.wallhaven_sorting,
+                    &config.wallhaven_order,
+                    &config.wallhaven_top_range,
+                    &config.wallhaven_atleast,
+                    &config.wallhaven_ratios,
+                    &config.wallhaven_q,
+                )
+                .await;
 
             match resp {
                 Ok(data) => {
@@ -387,12 +398,17 @@ async fn start_wallhaven_download(
 
         for (i, img) in collected.iter().enumerate() {
             if cancel.load(Ordering::Relaxed) {
-                log::info!("[wallhaven] download cancelled (success={}/{})", success, total);
+                log::info!(
+                    "[wallhaven] download cancelled (success={}/{})",
+                    success,
+                    total
+                );
                 let _ = app_clone.emit(
                     "download-complete",
                     DownloadComplete {
                         source: "wallhaven".into(),
-                        success, total,
+                        success,
+                        total,
                         message: "下载已取消".to_string(),
                     },
                 );
@@ -423,7 +439,9 @@ async fn start_wallhaven_download(
                     let hash = downloader::compute_md5(bytes);
 
                     let thumb_dir = config.wallhaven_thumb_dir();
-                    if let Some(thumb_handle) = save_image(&save_path, bytes, &thumb_dir, &filename).await {
+                    if let Some(thumb_handle) =
+                        save_image(&save_path, bytes, &thumb_dir, &filename).await
+                    {
                         let db_path = config.wallhaven_db_path.clone();
                         let img_id = img.id.clone();
                         let filename_for_db = filename.clone();
@@ -434,9 +452,15 @@ async fn start_wallhaven_download(
 
                         let db_handle = tokio::task::spawn_blocking(move || {
                             db::insert_wallhaven_image(
-                                &db_path, &img_id, &filename_for_db, &hash_for_db,
-                                &img_path, &img_url, &img_res,
-                            ).unwrap_or(false)
+                                &db_path,
+                                &img_id,
+                                &filename_for_db,
+                                &hash_for_db,
+                                &img_path,
+                                &img_url,
+                                &img_res,
+                            )
+                            .unwrap_or(false)
                         });
 
                         let (_, inserted) = tokio::join!(thumb_handle, db_handle);
@@ -461,7 +485,11 @@ async fn start_wallhaven_download(
             }
         }
 
-        log::info!("[wallhaven] download complete (success={}/{})", success, total);
+        log::info!(
+            "[wallhaven] download complete (success={}/{})",
+            success,
+            total
+        );
         let _ = app_clone.emit(
             "download-complete",
             DownloadComplete {
@@ -520,8 +548,9 @@ async fn start_reddit_download(
                 },
             );
 
-            let result =
-                reddit_client.fetch_posts(after.as_deref(), config.reddit_max_posts).await;
+            let result = reddit_client
+                .fetch_posts(after.as_deref(), config.reddit_max_posts)
+                .await;
 
             match result {
                 Ok((images, next_after)) => {
@@ -575,12 +604,17 @@ async fn start_reddit_download(
 
         for (i, img) in collected.iter().enumerate() {
             if cancel.load(Ordering::Relaxed) {
-                log::info!("[reddit] download cancelled (success={}/{})", success, total);
+                log::info!(
+                    "[reddit] download cancelled (success={}/{})",
+                    success,
+                    total
+                );
                 let _ = app_clone.emit(
                     "download-complete",
                     DownloadComplete {
                         source: "reddit".into(),
-                        success, total,
+                        success,
+                        total,
                         message: "下载已取消".to_string(),
                     },
                 );
@@ -605,7 +639,9 @@ async fn start_reddit_download(
                     let save_path = std::path::Path::new(&config.reddit_save_dir).join(&filename);
 
                     let thumb_dir = config.reddit_thumb_dir();
-                    if let Some(thumb_handle) = save_image(&save_path, bytes, &thumb_dir, &filename).await {
+                    if let Some(thumb_handle) =
+                        save_image(&save_path, bytes, &thumb_dir, &filename).await
+                    {
                         let db_path = config.reddit_db_path.clone();
                         let filename_for_db = filename.clone();
                         let hash_for_db = hash.clone();
@@ -676,7 +712,6 @@ async fn start_db_download(
     let client = state.http_client.clone();
 
     tokio::spawn(async move {
-
         let (save_dir, db_path, thumb_dir) = if source_clone == "wallhaven" {
             (
                 config.wallhaven_save_dir.clone(),
@@ -741,12 +776,18 @@ async fn start_db_download(
             );
 
             if cancel.load(Ordering::Relaxed) {
-                log::info!("[db_download] cancelled: source={} (success={}/{})", source_clone, success, total_pending);
+                log::info!(
+                    "[db_download] cancelled: source={} (success={}/{})",
+                    source_clone,
+                    success,
+                    total_pending
+                );
                 let _ = app_clone.emit(
                     "download-complete",
                     DownloadComplete {
                         source: source_clone.clone(),
-                        success, total,
+                        success,
+                        total,
                         message: "下载已取消".to_string(),
                     },
                 );
@@ -755,7 +796,9 @@ async fn start_db_download(
 
             match &download_results[i] {
                 Ok((bytes, _content_type)) => {
-                    if let Some(thumb_handle) = save_image(&file_path, bytes, &thumb_dir, &img.name).await {
+                    if let Some(thumb_handle) =
+                        save_image(&file_path, bytes, &thumb_dir, &img.name).await
+                    {
                         let _ = thumb_handle.await;
                         success += 1;
                     } else {
@@ -825,10 +868,7 @@ async fn count_missing_images(
             &config.reddit_save_dir,
         )?)
     } else {
-        let w = db::count_missing_wallhaven(
-            &config.wallhaven_db_path,
-            &config.wallhaven_save_dir,
-        )?;
+        let w = db::count_missing_wallhaven(&config.wallhaven_db_path, &config.wallhaven_save_dir)?;
         let r = db::count_missing_reddit(&config.reddit_db_path, &config.reddit_save_dir)?;
         Ok(w + r)
     }
@@ -867,10 +907,8 @@ async fn list_missing_images(
             &config.reddit_save_dir,
         )?)
     } else {
-        let mut all = db::get_wallhaven_missing_files(
-            &config.wallhaven_db_path,
-            &config.wallhaven_save_dir,
-        )?;
+        let mut all =
+            db::get_wallhaven_missing_files(&config.wallhaven_db_path, &config.wallhaven_save_dir)?;
         all.extend(db::get_reddit_missing_files(
             &config.reddit_db_path,
             &config.reddit_save_dir,
@@ -895,41 +933,54 @@ async fn list_orphan_files(
     log::info!("[CMD] list_orphan_files called: source={}", source);
     let config = load_config(&state)?;
 
-    let check_source = |src: &str, save_dir: &str, db_path: &str| -> Result<Vec<OrphanFile>, AppError> {
-        let dir = std::path::Path::new(save_dir);
-        if !dir.is_dir() {
-            return Ok(Vec::new());
-        }
-        let db_names: std::collections::HashSet<String> =
-            db::get_all_filenames(db_path)?.into_iter().collect();
+    let check_source =
+        |src: &str, save_dir: &str, db_path: &str| -> Result<Vec<OrphanFile>, AppError> {
+            let dir = std::path::Path::new(save_dir);
+            if !dir.is_dir() {
+                return Ok(Vec::new());
+            }
+            let db_names: std::collections::HashSet<String> =
+                db::get_all_filenames(db_path)?.into_iter().collect();
 
-        let mut orphans = Vec::new();
-        if let Ok(entries) = std::fs::read_dir(dir) {
-            for entry in entries.flatten() {
-                let file_path = entry.path();
-                if file_path.is_file() && downloader::file_is_image(&file_path) {
-                    let name = entry.file_name().to_string_lossy().to_string();
-                    if !db_names.contains(&name) {
-                        orphans.push(OrphanFile {
-                            name,
-                            path: file_path.to_string_lossy().to_string(),
-                            size: entry.metadata().map_or(0, |m| m.len()),
-                            source: src.to_string(),
-                        });
+            let mut orphans = Vec::new();
+            if let Ok(entries) = std::fs::read_dir(dir) {
+                for entry in entries.flatten() {
+                    let file_path = entry.path();
+                    if file_path.is_file() && downloader::file_is_image(&file_path) {
+                        let name = entry.file_name().to_string_lossy().to_string();
+                        if !db_names.contains(&name) {
+                            orphans.push(OrphanFile {
+                                name,
+                                path: file_path.to_string_lossy().to_string(),
+                                size: entry.metadata().map_or(0, |m| m.len()),
+                                source: src.to_string(),
+                            });
+                        }
                     }
                 }
             }
-        }
-        Ok(orphans)
-    };
+            Ok(orphans)
+        };
 
     if source == "wallhaven" {
-        check_source("wallhaven", &config.wallhaven_save_dir, &config.wallhaven_db_path)
+        check_source(
+            "wallhaven",
+            &config.wallhaven_save_dir,
+            &config.wallhaven_db_path,
+        )
     } else if source == "reddit" {
         check_source("reddit", &config.reddit_save_dir, &config.reddit_db_path)
     } else {
-        let mut all = check_source("wallhaven", &config.wallhaven_save_dir, &config.wallhaven_db_path)?;
-        all.extend(check_source("reddit", &config.reddit_save_dir, &config.reddit_db_path)?);
+        let mut all = check_source(
+            "wallhaven",
+            &config.wallhaven_save_dir,
+            &config.wallhaven_db_path,
+        )?;
+        all.extend(check_source(
+            "reddit",
+            &config.reddit_save_dir,
+            &config.reddit_db_path,
+        )?);
         Ok(all)
     }
 }
@@ -963,18 +1014,26 @@ async fn mark_dislike_image(
     let file_path = std::path::Path::new(&save_dir).join(&name);
     if file_path.exists() {
         std::fs::remove_file(&file_path).map_err(|e| {
-            log::error!("[mark_dislike_image] 删除文件失败 {}: {}", file_path.display(), e);
+            log::error!(
+                "[mark_dislike_image] 删除文件失败 {}: {}",
+                file_path.display(),
+                e
+            );
             AppError::Io(e)
         })?;
     }
 
     // 删除缩略图（兼容新旧格式）
     let thumb_old = thumb_dir.join(&name);
-    if thumb_old.exists() { std::fs::remove_file(&thumb_old).ok(); }
+    if thumb_old.exists() {
+        std::fs::remove_file(&thumb_old).ok();
+    }
     // 新格式：name__w240, name__w480, name__w720
     for dpr in [1u32, 2, 3] {
         let tp = thumb_dir.join(thumbnail::thumb_filename_for_dpr(&name, dpr));
-        if tp.exists() { std::fs::remove_file(&tp).ok(); }
+        if tp.exists() {
+            std::fs::remove_file(&tp).ok();
+        }
     }
 
     Ok(db_ok)
@@ -994,10 +1053,7 @@ async fn delete_orphan_file(
             config.wallhaven_thumb_dir(),
         )
     } else {
-        (
-            config.reddit_save_dir.clone(),
-            config.reddit_thumb_dir(),
-        )
+        (config.reddit_save_dir.clone(), config.reddit_thumb_dir())
     };
 
     // 删除文件
@@ -1005,17 +1061,25 @@ async fn delete_orphan_file(
     let existed = file_path.exists();
     if existed {
         std::fs::remove_file(&file_path).map_err(|e| {
-            log::error!("[delete_orphan_file] 删除文件失败 {}: {}", file_path.display(), e);
+            log::error!(
+                "[delete_orphan_file] 删除文件失败 {}: {}",
+                file_path.display(),
+                e
+            );
             AppError::Io(e)
         })?;
     }
 
     // 删除缩略图（兼容新旧格式）
     let thumb_old = thumb_dir.join(&name);
-    if thumb_old.exists() { std::fs::remove_file(&thumb_old).ok(); }
+    if thumb_old.exists() {
+        std::fs::remove_file(&thumb_old).ok();
+    }
     for dpr in [1u32, 2, 3] {
         let tp = thumb_dir.join(thumbnail::thumb_filename_for_dpr(&name, dpr));
-        if tp.exists() { std::fs::remove_file(&tp).ok(); }
+        if tp.exists() {
+            std::fs::remove_file(&tp).ok();
+        }
     }
 
     Ok(existed)
@@ -1027,12 +1091,22 @@ async fn add_orphan_entries(
     source: String,
     names: Vec<String>,
 ) -> Result<u64, AppError> {
-    log::info!("[CMD] add_orphan_entries: source={}, count={}", source, names.len());
+    log::info!(
+        "[CMD] add_orphan_entries: source={}, count={}",
+        source,
+        names.len()
+    );
     let config = load_config(&state)?;
     let (save_dir, db_path) = if source == "wallhaven" {
-        (config.wallhaven_save_dir.clone(), config.wallhaven_db_path.clone())
+        (
+            config.wallhaven_save_dir.clone(),
+            config.wallhaven_db_path.clone(),
+        )
     } else {
-        (config.reddit_save_dir.clone(), config.reddit_db_path.clone())
+        (
+            config.reddit_save_dir.clone(),
+            config.reddit_db_path.clone(),
+        )
     };
 
     let mut wallhaven_batch: Vec<(String, String, String, String, String, String)> = Vec::new();
@@ -1041,7 +1115,10 @@ async fn add_orphan_entries(
     for name in &names {
         let file_path = std::path::Path::new(&save_dir).join(name);
         if !file_path.is_file() {
-            log::warn!("[add_orphan_entries] file not found: {}", file_path.display());
+            log::warn!(
+                "[add_orphan_entries] file not found: {}",
+                file_path.display()
+            );
             continue;
         }
         let bytes = std::fs::read(&file_path).map_err(AppError::Io)?;
@@ -1061,7 +1138,13 @@ async fn add_orphan_entries(
                 "unknown".to_string(),
             ));
         } else {
-            reddit_batch.push((name.clone(), hash, String::new(), String::new(), String::new()));
+            reddit_batch.push((
+                name.clone(),
+                hash,
+                String::new(),
+                String::new(),
+                String::new(),
+            ));
         }
     }
 
@@ -1082,7 +1165,11 @@ async fn download_missing_images(
     source: String,
     images: Vec<db::ImageRecord>,
 ) -> Result<String, AppError> {
-    log::info!("[CMD] download_missing_images: source={}, count={}", source, images.len());
+    log::info!(
+        "[CMD] download_missing_images: source={}, count={}",
+        source,
+        images.len()
+    );
     let config = load_config(&state)?;
     let cancel = setup_cancel_flag(&state);
     let client = state.http_client.clone();
@@ -1093,16 +1180,12 @@ async fn download_missing_images(
             config.wallhaven_thumb_dir(),
         )
     } else {
-        (
-            config.reddit_save_dir.clone(),
-            config.reddit_thumb_dir(),
-        )
+        (config.reddit_save_dir.clone(), config.reddit_thumb_dir())
     };
 
     let total_images = images.len();
 
     tokio::spawn(async move {
-
         let _ = tokio::fs::create_dir_all(&save_dir).await;
 
         let total = images.len() as u32;
@@ -1126,7 +1209,11 @@ async fn download_missing_images(
             );
 
             if cancel.load(std::sync::atomic::Ordering::Relaxed) {
-                log::info!("[download_missing] cancelled (success={}/{})", success, total);
+                log::info!(
+                    "[download_missing] cancelled (success={}/{})",
+                    success,
+                    total
+                );
                 let _ = app.emit(
                     "download-complete",
                     DownloadComplete {
@@ -1141,7 +1228,9 @@ async fn download_missing_images(
 
             match &download_results[i] {
                 Ok((bytes, _content_type)) => {
-                    if let Some(thumb_handle) = save_image(&file_path, bytes, &thumb_dir, &img.name).await {
+                    if let Some(thumb_handle) =
+                        save_image(&file_path, bytes, &thumb_dir, &img.name).await
+                    {
                         let _ = thumb_handle.await;
                         success += 1;
                     } else {
@@ -1187,7 +1276,12 @@ async fn get_images(
     limit: i64,
     offset: i64,
 ) -> Result<Vec<db::ImageRecord>, AppError> {
-    log::info!("[CMD] get_images called: source={}, limit={}, offset={}", source, limit, offset);
+    log::info!(
+        "[CMD] get_images called: source={}, limit={}, offset={}",
+        source,
+        limit,
+        offset
+    );
     let config = load_config(&state)?;
     if source == "wallhaven" {
         Ok(db::get_wallhaven_images(
@@ -1212,7 +1306,13 @@ async fn list_local_images(
     limit: usize,
     custom_dir: Option<String>,
 ) -> Result<serde_json::Value, AppError> {
-    log::info!("[CMD] list_local_images called: source={}, offset={}, limit={}, custom_dir={:?}", source, offset, limit, custom_dir);
+    log::info!(
+        "[CMD] list_local_images called: source={}, offset={}, limit={}, custom_dir={:?}",
+        source,
+        offset,
+        limit,
+        custom_dir
+    );
     let config = load_config(&state)?;
     let dir = if let Some(ref custom) = custom_dir {
         custom.clone()
@@ -1230,18 +1330,23 @@ async fn list_local_images(
     {
         if let Ok(cache) = state.file_cache.lock() {
             if let Some(ref cached) = *cache {
-                if cached.source == source && cached.dir_path == dir && cached.cached_at.elapsed().as_secs() < 30 {
+                if cached.source == source
+                    && cached.dir_path == dir
+                    && cached.cached_at.elapsed().as_secs() < 30
+                {
                     let page_start = offset.min(cached.total);
                     let page_end = (page_start + limit).min(cached.total);
                     let page: Vec<serde_json::Value> = cached.items[page_start..page_end]
                         .iter()
-                        .map(|e| serde_json::json!({
-                            "name": e.name,
-                            "path": e.path,
-                            "thumb_path": null,
-                            "size": e.size,
-                            "is_orphan": e.is_orphan,
-                        }))
+                        .map(|e| {
+                            serde_json::json!({
+                                "name": e.name,
+                                "path": e.path,
+                                "thumb_path": null,
+                                "size": e.size,
+                                "is_orphan": e.is_orphan,
+                            })
+                        })
                         .collect();
                     return Ok(serde_json::json!({ "images": page, "total": cached.total }));
                 }
@@ -1250,11 +1355,21 @@ async fn list_local_images(
     }
 
     let db_names: std::collections::HashSet<String> = if source == "wallhaven" {
-        db::get_all_filenames(&config.wallhaven_db_path).unwrap_or_default().into_iter().collect()
+        db::get_all_filenames(&config.wallhaven_db_path)
+            .unwrap_or_default()
+            .into_iter()
+            .collect()
     } else if source == "reddit" {
-        db::get_all_filenames(&config.reddit_db_path).unwrap_or_default().into_iter().collect()
+        db::get_all_filenames(&config.reddit_db_path)
+            .unwrap_or_default()
+            .into_iter()
+            .collect()
     } else {
-        let mut names: std::collections::HashSet<String> = db::get_all_filenames(&config.wallhaven_db_path).unwrap_or_default().into_iter().collect();
+        let mut names: std::collections::HashSet<String> =
+            db::get_all_filenames(&config.wallhaven_db_path)
+                .unwrap_or_default()
+                .into_iter()
+                .collect();
         names.extend(db::get_all_filenames(&config.reddit_db_path).unwrap_or_default());
         names
     };
@@ -1277,7 +1392,10 @@ async fn list_local_images(
     }
 
     entries.sort_by(|a, b| {
-        a.is_orphan.cmp(&b.is_orphan).reverse().then(b.name.cmp(&a.name))
+        a.is_orphan
+            .cmp(&b.is_orphan)
+            .reverse()
+            .then(b.name.cmp(&a.name))
     });
     let total = entries.len();
 
@@ -1400,36 +1518,48 @@ async fn search_wallhaven(
     let page = page.unwrap_or(1);
     log::info!("[CMD] search_wallhaven called: page={}", page);
     let config = load_config(&state)?;
-    let client = wallhaven::WallhavenClient::new(state.http_client.clone(), config.wallhaven_api_key.clone());
+    let client = wallhaven::WallhavenClient::new(
+        state.http_client.clone(),
+        config.wallhaven_api_key.clone(),
+    );
 
-    let resp = client.search(
-        page,
-        &config.wallhaven_categories,
-        &config.wallhaven_purity,
-        &config.wallhaven_sorting,
-        &config.wallhaven_order,
-        &config.wallhaven_top_range,
-        &config.wallhaven_atleast,
-        &config.wallhaven_ratios,
-        &config.wallhaven_q,
-    )
-    .await
-    .map_err(AppError::Config)?;
+    let resp = client
+        .search(
+            page,
+            &config.wallhaven_categories,
+            &config.wallhaven_purity,
+            &config.wallhaven_sorting,
+            &config.wallhaven_order,
+            &config.wallhaven_top_range,
+            &config.wallhaven_atleast,
+            &config.wallhaven_ratios,
+            &config.wallhaven_q,
+        )
+        .await
+        .map_err(AppError::Config)?;
 
     let meta = resp.meta.as_ref();
-    let images: Vec<serde_json::Value> = resp.data.iter().map(|img| {
-        let prefix = if img.id.len() >= 2 { &img.id[..2] } else { &img.id[..1] };
-        let thumbnail_url = format!("https://th.wallhaven.cc/small/{prefix}/{}.jpg", img.id);
-        serde_json::json!({
-            "id": img.id,
-            "thumbnail_url": thumbnail_url,
-            "path": img.path,
-            "resolution": img.resolution,
-            "short_url": img.short_url,
-            "file_size": img.file_size,
-            "file_type": img.file_type,
+    let images: Vec<serde_json::Value> = resp
+        .data
+        .iter()
+        .map(|img| {
+            let prefix = if img.id.len() >= 2 {
+                &img.id[..2]
+            } else {
+                &img.id[..1]
+            };
+            let thumbnail_url = format!("https://th.wallhaven.cc/small/{prefix}/{}.jpg", img.id);
+            serde_json::json!({
+                "id": img.id,
+                "thumbnail_url": thumbnail_url,
+                "path": img.path,
+                "resolution": img.resolution,
+                "short_url": img.short_url,
+                "file_size": img.file_size,
+                "file_type": img.file_type,
+            })
         })
-    }).collect();
+        .collect();
 
     Ok(serde_json::json!({
         "images": images,
@@ -1476,15 +1606,25 @@ async fn download_wallhaven_selected(
         let mut success = 0u32;
 
         let urls: Vec<String> = images.iter().map(|img| img.path.clone()).collect();
-        let download_results = downloader::download_urls_concurrent(&client, &urls, cancel.clone(), 3).await;
+        let download_results =
+            downloader::download_urls_concurrent(&client, &urls, cancel.clone(), 3).await;
 
         for (i, img) in images.iter().enumerate() {
             if cancel.load(std::sync::atomic::Ordering::Relaxed) {
-                log::info!("[wallhaven] download cancelled (success={}/{})", success, total);
-                let _ = app_clone.emit("download-complete", DownloadComplete {
-                    source: "wallhaven".into(), success, total,
-                    message: "\u{4e0b}\u{8f7d}\u{5df2}\u{53d6}\u{6d88}".to_string(),
-                });
+                log::info!(
+                    "[wallhaven] download cancelled (success={}/{})",
+                    success,
+                    total
+                );
+                let _ = app_clone.emit(
+                    "download-complete",
+                    DownloadComplete {
+                        source: "wallhaven".into(),
+                        success,
+                        total,
+                        message: "\u{4e0b}\u{8f7d}\u{5df2}\u{53d6}\u{6d88}".to_string(),
+                    },
+                );
                 return;
             }
 
@@ -1492,10 +1632,20 @@ async fn download_wallhaven_selected(
                 continue;
             }
 
-            let _ = app_clone.emit("download-progress", DownloadProgress {
-                source: "wallhaven".into(), done: i as u32, total,
-                message: format!("\u{6b63}\u{5728}\u{4e0b}\u{8f7d} {} ({}/{})", img.id, i + 1, total),
-            });
+            let _ = app_clone.emit(
+                "download-progress",
+                DownloadProgress {
+                    source: "wallhaven".into(),
+                    done: i as u32,
+                    total,
+                    message: format!(
+                        "\u{6b63}\u{5728}\u{4e0b}\u{8f7d} {} ({}/{})",
+                        img.id,
+                        i + 1,
+                        total
+                    ),
+                },
+            );
 
             if let Ok((bytes, content_type)) = &download_results[i] {
                 let ext = downloader::get_file_extension(content_type, &img.path);
@@ -1505,7 +1655,9 @@ async fn download_wallhaven_selected(
                 let hash = downloader::compute_md5(bytes);
 
                 let thumb_dir = config.wallhaven_thumb_dir();
-                if let Some(thumb_handle) = save_image(&save_path, bytes, &thumb_dir, &filename).await {
+                if let Some(thumb_handle) =
+                    save_image(&save_path, bytes, &thumb_dir, &filename).await
+                {
                     let db_path = config.wallhaven_db_path.clone();
                     let img_id = img.id.clone();
                     let filename_for_db = filename.clone();
@@ -1516,9 +1668,15 @@ async fn download_wallhaven_selected(
 
                     let db_handle = tokio::task::spawn_blocking(move || {
                         db::insert_wallhaven_image(
-                            &db_path, &img_id, &filename_for_db, &hash_for_db,
-                            &img_path, &img_short_url, &img_resolution,
-                        ).unwrap_or(false)
+                            &db_path,
+                            &img_id,
+                            &filename_for_db,
+                            &hash_for_db,
+                            &img_path,
+                            &img_short_url,
+                            &img_resolution,
+                        )
+                        .unwrap_or(false)
                     });
 
                     let (_, inserted) = tokio::join!(thumb_handle, db_handle);
@@ -1526,29 +1684,37 @@ async fn download_wallhaven_selected(
 
                     if inserted {
                         success += 1;
-                        let _ = app_clone.emit("image-downloaded", ImageDownloaded {
-                            source: "wallhaven".into(),
-                            name: filename,
-                            path: save_path.to_string_lossy().to_string(),
-                        });
+                        let _ = app_clone.emit(
+                            "image-downloaded",
+                            ImageDownloaded {
+                                source: "wallhaven".into(),
+                                name: filename,
+                                path: save_path.to_string_lossy().to_string(),
+                            },
+                        );
                     }
                 }
             }
         }
 
-        log::info!("[wallhaven] download complete (success={}/{})", success, total);
+        log::info!(
+            "[wallhaven] download complete (success={}/{})",
+            success,
+            total
+        );
         let _ = app_clone.emit("download-complete", DownloadComplete {
             source: "wallhaven".into(), success, total,
             message: format!("Wallhaven \u{4e0b}\u{8f7d}\u{5b8c}\u{6210}: \u{6210}\u{529f} {success}/{total}"),
         });
     });
 
-    Ok(format!("\u{5373}\u{5c06}\u{4e0b}\u{8f7d} {count} \u{5f20}\u{58c1}\u{7eb8}"))
+    Ok(format!(
+        "\u{5373}\u{5c06}\u{4e0b}\u{8f7d} {count} \u{5f20}\u{58c1}\u{7eb8}"
+    ))
 }
 
 // ---------------------------------------------------------------------------
 // \u{58c1}\u{7eb8}\u{8bbe}\u{7f6e} — \u{6bcf}\u{4e2a}\u{684c}\u{9762}\u{73af}\u{5883}\u{4e00}\u{4e2a}\u{72ec}\u{7acb}\u{7684}\u{68c0}\u{6d4b}\u{51fd}\u{6570}
-
 
 #[tauri::command]
 async fn delete_image(
@@ -1591,10 +1757,14 @@ async fn delete_image(
 
     // 删除缩略图（兼容新旧格式）
     let thumb_old = thumb_dir.join(&name);
-    if thumb_old.exists() { std::fs::remove_file(&thumb_old).ok(); }
+    if thumb_old.exists() {
+        std::fs::remove_file(&thumb_old).ok();
+    }
     for dpr in [1u32, 2, 3] {
         let tp = thumb_dir.join(thumbnail::thumb_filename_for_dpr(&name, dpr));
-        if tp.exists() { std::fs::remove_file(&tp).ok(); }
+        if tp.exists() {
+            std::fs::remove_file(&tp).ok();
+        }
     }
 
     Ok(db_ok)
@@ -1607,15 +1777,11 @@ async fn clean_thumbnails(
     log::info!("[CMD] clean_thumbnails called");
     let config = load_config(&state)?;
     let wh_thumb_dir = config.wallhaven_thumb_dir();
-    let wh_cleaned = db::clean_stale_thumbnails(
-        &wh_thumb_dir.to_string_lossy(),
-        &config.wallhaven_save_dir,
-    );
+    let wh_cleaned =
+        db::clean_stale_thumbnails(&wh_thumb_dir.to_string_lossy(), &config.wallhaven_save_dir);
     let rd_thumb_dir = config.reddit_thumb_dir();
-    let rd_cleaned = db::clean_stale_thumbnails(
-        &rd_thumb_dir.to_string_lossy(),
-        &config.reddit_save_dir,
-    );
+    let rd_cleaned =
+        db::clean_stale_thumbnails(&rd_thumb_dir.to_string_lossy(), &config.reddit_save_dir);
     Ok(serde_json::json!({
         "wallhaven": wh_cleaned,
         "reddit": rd_cleaned,
@@ -1642,7 +1808,11 @@ async fn get_current_wallpaper() -> Result<serde_json::Value, AppError> {
         .args(["get", "org.gnome.desktop.interface", "color-scheme"])
         .output()
         .ok()
-        .is_none_or(|o| String::from_utf8_lossy(&o.stdout).to_lowercase().contains("dark"));
+        .is_none_or(|o| {
+            String::from_utf8_lossy(&o.stdout)
+                .to_lowercase()
+                .contains("dark")
+        });
 
     let key = if is_dark { "dark" } else { "light" };
     let path = json
@@ -1673,9 +1843,11 @@ pub fn run() {
             let mut config = AppConfig::load(&config_path).unwrap_or_default();
             // 统一归一化路径（与 load_config 一致）
             if let Some(base_dir) = config_path.parent() {
-                config.wallhaven_db_path = normalize_config_path(base_dir, config.wallhaven_db_path);
+                config.wallhaven_db_path =
+                    normalize_config_path(base_dir, config.wallhaven_db_path);
                 config.reddit_db_path = normalize_config_path(base_dir, config.reddit_db_path);
-                config.wallhaven_save_dir = normalize_config_path(base_dir, config.wallhaven_save_dir);
+                config.wallhaven_save_dir =
+                    normalize_config_path(base_dir, config.wallhaven_save_dir);
                 config.reddit_save_dir = normalize_config_path(base_dir, config.reddit_save_dir);
             }
 
@@ -1774,7 +1946,11 @@ mod tests {
         let _ = handle.unwrap().await;
         // The thumbnail path matches thumbnail::thumb_path convention
         let thumb = thumbnail::thumb_path(thumb_dir.path(), "test.jpg", 2);
-        assert!(thumb.exists(), "thumbnail should be generated at {}", thumb.display());
+        assert!(
+            thumb.exists(),
+            "thumbnail should be generated at {}",
+            thumb.display()
+        );
     }
 
     #[tokio::test]
@@ -1784,7 +1960,10 @@ mod tests {
         let data = b"data";
 
         let handle = save_image(save_path, data, thumb_dir.path(), "test.jpg").await;
-        assert!(handle.is_none(), "save_image should fail on unwritable path");
+        assert!(
+            handle.is_none(),
+            "save_image should fail on unwritable path"
+        );
     }
 
     #[test]

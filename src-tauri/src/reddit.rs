@@ -61,9 +61,7 @@ impl RedditClient {
         after: Option<&str>,
         limit: u32,
     ) -> Result<(Vec<RedditImage>, Option<String>), String> {
-        let mut api_url = format!(
-            "https://www.reddit.com/r/Animewallpaper/.json?limit={limit}"
-        );
+        let mut api_url = format!("https://www.reddit.com/r/Animewallpaper/.json?limit={limit}");
         if let Some(after_val) = after {
             use std::fmt::Write;
             let _ = write!(api_url, "&after={after_val}");
@@ -83,7 +81,10 @@ impl RedditClient {
             return Err(format!("API 返回状态码: {}", resp.status()));
         }
 
-        let body = resp.text().await.map_err(|e| format!("读取响应失败: {e}"))?;
+        let body = resp
+            .text()
+            .await
+            .map_err(|e| format!("读取响应失败: {e}"))?;
         let listing: RedditListing =
             serde_json::from_str(&body).map_err(|e| format!("JSON 解析失败: {e}"))?;
 
@@ -96,13 +97,21 @@ impl RedditClient {
             }
         }
 
-        log::info!("[reddit] fetch_posts: got {} images, next_after={:?}", images.len(), next_after);
+        log::info!(
+            "[reddit] fetch_posts: got {} images, next_after={:?}",
+            images.len(),
+            next_after
+        );
         Ok((images, next_after))
     }
 
     async fn extract_image_url(&self, post: &RedditPostWrapper) -> Option<RedditImage> {
         let data = &post.data;
-        log::info!("[reddit] extract_image_url: post_id={} title={}", data.id, data.title);
+        log::info!(
+            "[reddit] extract_image_url: post_id={} title={}",
+            data.id,
+            data.title
+        );
 
         if data.is_gallery {
             if let Some(gallery) = &data.gallery_data {
@@ -144,9 +153,7 @@ impl RedditClient {
         }
 
         if url.contains("i.imgur.com")
-            && (url.ends_with(".jpg")
-                || url.ends_with(".png")
-                || url.ends_with(".webp"))
+            && (url.ends_with(".jpg") || url.ends_with(".png") || url.ends_with(".webp"))
         {
             return Some(RedditImage {
                 post_id: data.id.clone(),

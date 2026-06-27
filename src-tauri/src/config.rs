@@ -55,7 +55,10 @@ impl AppConfig {
             log::info!("[config] load: loaded ok");
             Ok(config)
         } else {
-            log::info!("[config] load: {} not found, creating default", path.display());
+            log::info!(
+                "[config] load: {} not found, creating default",
+                path.display()
+            );
             let config = Self::default();
             config.save(path)?;
             Ok(config)
@@ -93,8 +96,14 @@ impl Default for AppConfig {
         Self {
             wallhaven_save_dir: format!("{home}/Pictures/背景/wallhaven"),
             reddit_save_dir: format!("{home}/Pictures/背景/reddit"),
-            wallhaven_db_path: data_dir.join("wallhaven_images.db").to_string_lossy().to_string(),
-            reddit_db_path: data_dir.join("reddit_images.db").to_string_lossy().to_string(),
+            wallhaven_db_path: data_dir
+                .join("wallhaven_images.db")
+                .to_string_lossy()
+                .to_string(),
+            reddit_db_path: data_dir
+                .join("reddit_images.db")
+                .to_string_lossy()
+                .to_string(),
             thumbnails_dir: cache_dir.to_string_lossy().to_string(),
             wallhaven_api_key: String::new(),
             wallhaven_categories: "010".into(),

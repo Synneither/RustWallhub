@@ -10,7 +10,8 @@ use std::process::Command;
 fn set_gnome_wallpaper(path_str: &str) -> Option<String> {
     if Command::new("gsettings")
         .args(["get", "org.gnome.desktop.background", "picture-uri"])
-        .output().is_err()
+        .output()
+        .is_err()
     {
         return None;
     }
@@ -21,7 +22,12 @@ fn set_gnome_wallpaper(path_str: &str) -> Option<String> {
     {
         if output.status.success() {
             Command::new("gsettings")
-                .args(["set", "org.gnome.desktop.background", "picture-uri-dark", &uri])
+                .args([
+                    "set",
+                    "org.gnome.desktop.background",
+                    "picture-uri-dark",
+                    &uri,
+                ])
                 .output()
                 .ok();
             return Some("\u{58c1}\u{7eb8}\u{5df2}\u{8bbe}\u{7f6e} (GNOME)".to_string());
@@ -55,8 +61,14 @@ fn set_xfce_wallpaper(path_str: &str) -> Option<String> {
 
 /// KDE Plasma (qdbus)
 fn set_kde_wallpaper(path_str: &str) -> Option<String> {
-    let has_kde = Command::new("kwriteconfig5").args(["--help"]).output().is_ok()
-        || Command::new("kwriteconfig6").args(["--help"]).output().is_ok();
+    let has_kde = Command::new("kwriteconfig5")
+        .args(["--help"])
+        .output()
+        .is_ok()
+        || Command::new("kwriteconfig6")
+            .args(["--help"])
+            .output()
+            .is_ok();
     if !has_kde {
         return None;
     }
@@ -71,7 +83,12 @@ for (var i = 0; i < allDesktops.length; i++) {{
 }}"
     );
     let output = Command::new("qdbus")
-        .args(["org.kde.plasmashell", "/PlasmaShell", "org.kde.PlasmaShell.evaluateScript", &script])
+        .args([
+            "org.kde.plasmashell",
+            "/PlasmaShell",
+            "org.kde.PlasmaShell.evaluateScript",
+            &script,
+        ])
         .output()
         .ok()?;
     if output.status.success() {
@@ -82,7 +99,10 @@ for (var i = 0; i < allDesktops.length; i++) {{
 
 /// sway (swaymsg)
 fn set_sway_wallpaper(path_str: &str) -> Option<String> {
-    let output = Command::new("swaymsg").args(["-t", "get_outputs"]).output().ok()?;
+    let output = Command::new("swaymsg")
+        .args(["-t", "get_outputs"])
+        .output()
+        .ok()?;
     if output.status.success() {
         Command::new("swaymsg")
             .args(["output", "*", "bg", path_str, "fill"])
@@ -104,11 +124,18 @@ fn set_hyprland_wallpaper(path_str: &str) -> Option<String> {
         .ok()
         .map(|output| {
             let stdout = String::from_utf8_lossy(&output.stdout);
-            stdout.lines()
+            stdout
+                .lines()
                 .filter(|l| l.contains("\"name\":"))
                 .filter_map(|l| {
                     let parts: Vec<&str> = l.splitn(2, ':').collect();
-                    (parts.len() == 2).then(|| parts[1].trim().trim_matches('"').trim_matches(',').to_string())
+                    (parts.len() == 2).then(|| {
+                        parts[1]
+                            .trim()
+                            .trim_matches('"')
+                            .trim_matches(',')
+                            .to_string()
+                    })
                 })
                 .collect::<Vec<_>>()
         })
@@ -142,17 +169,32 @@ fn set_swww_wallpaper(path_str: &str) -> Option<String> {
         return None;
     }
     let output = Command::new("swww")
-        .args(["img", "--transition-type", "fade", "--transition-step", "60", path_str])
+        .args([
+            "img",
+            "--transition-type",
+            "fade",
+            "--transition-step",
+            "60",
+            path_str,
+        ])
         .output()
         .ok()?;
-    output.status.success().then(|| "\u{58c1}\u{7eb8}\u{5df2}\u{8bbe}\u{7f6e} (swww)".to_string())
+    output
+        .status
+        .success()
+        .then(|| "\u{58c1}\u{7eb8}\u{5df2}\u{8bbe}\u{7f6e} (swww)".to_string())
 }
-
 
 /// feh（最后回退）
 fn set_feh_wallpaper(path_str: &str) -> Option<String> {
-    let output = Command::new("feh").args(["--bg-fill", path_str]).output().ok()?;
-    output.status.success().then(|| "\u{58c1}\u{7eb8}\u{5df2}\u{8bbe}\u{7f6e} (feh)".to_string())
+    let output = Command::new("feh")
+        .args(["--bg-fill", path_str])
+        .output()
+        .ok()?;
+    output
+        .status
+        .success()
+        .then(|| "\u{58c1}\u{7eb8}\u{5df2}\u{8bbe}\u{7f6e} (feh)".to_string())
 }
 
 /// Windows — 通过 SystemParametersInfoW 设置壁纸
@@ -190,7 +232,6 @@ fn set_windows_wallpaper(path_str: &str) -> Option<String> {
     (result != 0).then(|| "\u{58c1}\u{7eb8}\u{5df2}\u{8bbe}\u{7f6e} (Windows)".to_string())
 }
 
-
 #[tauri::command]
 pub(crate) async fn set_wallpaper(file_path: String) -> Result<String, AppError> {
     log::info!("[CMD] set_wallpaper: file={}", file_path);
@@ -219,4 +260,3 @@ pub(crate) async fn set_wallpaper(file_path: String) -> Result<String, AppError>
             "未检测到支持的桌面环境。支持: Windows, GNOME, KDE, XFCE, sway, Hyprland, niri(swww), swww, feh".to_string(),
         ))
 }
-

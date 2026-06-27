@@ -56,7 +56,13 @@ impl WallhavenClient {
         ratios: &str,
         q: &str,
     ) -> Result<WallhavenResponse, String> {
-        log::info!("[wallhaven] search: page={} categories={} purity={} sorting={}", page, categories, purity, sorting);
+        log::info!(
+            "[wallhaven] search: page={} categories={} purity={} sorting={}",
+            page,
+            categories,
+            purity,
+            sorting
+        );
         let mut params: Vec<(&str, String)> = vec![
             ("page", page.to_string()),
             ("categories", categories.to_string()),
@@ -97,9 +103,17 @@ impl WallhavenClient {
             return Err(format!("API 返回状态码: {}", resp.status()));
         }
 
-        let body = resp.text().await.map_err(|e| format!("读取响应失败: {e}"))?;
-        let parsed: WallhavenResponse = serde_json::from_str(&body).map_err(|e| format!("JSON 解析失败: {e}"))?;
-        log::info!("[wallhaven] search page {} returned {} results", page, parsed.data.len());
+        let body = resp
+            .text()
+            .await
+            .map_err(|e| format!("读取响应失败: {e}"))?;
+        let parsed: WallhavenResponse =
+            serde_json::from_str(&body).map_err(|e| format!("JSON 解析失败: {e}"))?;
+        log::info!(
+            "[wallhaven] search page {} returned {} results",
+            page,
+            parsed.data.len()
+        );
         Ok(parsed)
     }
 }

@@ -1,5 +1,5 @@
-use std::path::{Path, PathBuf};
 use rayon::prelude::*;
+use std::path::{Path, PathBuf};
 
 /// 基础缩略图宽度（按 1x DPR）。前端传入 devicePixelRatio 后按比例放大。
 const THUMB_BASE_WIDTH: u32 = 240;
@@ -8,8 +8,7 @@ const THUMB_BASE_WIDTH: u32 = 240;
 fn thumbnail_pool() -> &'static rayon::ThreadPool {
     static POOL: std::sync::OnceLock<rayon::ThreadPool> = std::sync::OnceLock::new();
     POOL.get_or_init(|| {
-        let cpus = std::thread::available_parallelism()
-            .map_or(4, |n| n.get());
+        let cpus = std::thread::available_parallelism().map_or(4, |n| n.get());
         let threads = (cpus / 2).clamp(2, 6);
         rayon::ThreadPoolBuilder::new()
             .num_threads(threads)
@@ -98,8 +97,7 @@ pub fn ensure_thumbnail(
         dst.file_name().unwrap_or_default().to_string_lossy()
     );
     let src = source_dir.join(filename);
-    std::fs::create_dir_all(thumb_dir)
-        .map_err(|e| format!("create thumb dir failed: {e}"))?;
+    std::fs::create_dir_all(thumb_dir).map_err(|e| format!("create thumb dir failed: {e}"))?;
 
     let max_w = thumb_max_width(dpr);
     let img = image::ImageReader::open(&src)
@@ -127,8 +125,7 @@ pub fn save_thumbnail_from_bytes(
         filename,
         dst.file_name().unwrap_or_default().to_string_lossy()
     );
-    std::fs::create_dir_all(thumb_dir)
-        .map_err(|e| format!("create thumb dir failed: {e}"))?;
+    std::fs::create_dir_all(thumb_dir).map_err(|e| format!("create thumb dir failed: {e}"))?;
 
     let max_w = thumb_max_width(dpr);
     let img = image::load_from_memory(bytes)
@@ -191,7 +188,9 @@ mod tests {
         let mut buf = std::io::Cursor::new(Vec::new());
         let mut encoder = image::codecs::jpeg::JpegEncoder::new(&mut buf);
         let img = image::DynamicImage::new_rgb8(800, 600);
-        encoder.encode(img.as_bytes(), 800, 600, image::ExtendedColorType::Rgb8).unwrap();
+        encoder
+            .encode(img.as_bytes(), 800, 600, image::ExtendedColorType::Rgb8)
+            .unwrap();
         let bytes = buf.into_inner();
 
         let result = save_thumbnail_from_bytes(dir.path(), "test.jpg", &bytes, 1);
@@ -208,7 +207,9 @@ mod tests {
         let mut buf = std::io::Cursor::new(Vec::new());
         let mut encoder = image::codecs::jpeg::JpegEncoder::new(&mut buf);
         let img = image::DynamicImage::new_rgb8(800, 600);
-        encoder.encode(img.as_bytes(), 800, 600, image::ExtendedColorType::Rgb8).unwrap();
+        encoder
+            .encode(img.as_bytes(), 800, 600, image::ExtendedColorType::Rgb8)
+            .unwrap();
         let bytes = buf.into_inner();
 
         let result = save_thumbnail_from_bytes(dir.path(), "test.jpg", &bytes, 2);
@@ -224,7 +225,9 @@ mod tests {
         let mut buf = std::io::Cursor::new(Vec::new());
         let mut encoder = image::codecs::jpeg::JpegEncoder::new(&mut buf);
         let img = image::DynamicImage::new_rgb8(800, 600);
-        encoder.encode(img.as_bytes(), 800, 600, image::ExtendedColorType::Rgb8).unwrap();
+        encoder
+            .encode(img.as_bytes(), 800, 600, image::ExtendedColorType::Rgb8)
+            .unwrap();
         let bytes = buf.into_inner();
 
         let r1 = save_thumbnail_from_bytes(dir.path(), "same.jpg", &bytes, 2);
@@ -241,7 +244,9 @@ mod tests {
         let mut buf = std::io::Cursor::new(Vec::new());
         let mut encoder = image::codecs::jpeg::JpegEncoder::new(&mut buf);
         let img = image::DynamicImage::new_rgb8(800, 600);
-        encoder.encode(img.as_bytes(), 800, 600, image::ExtendedColorType::Rgb8).unwrap();
+        encoder
+            .encode(img.as_bytes(), 800, 600, image::ExtendedColorType::Rgb8)
+            .unwrap();
         let bytes = buf.into_inner();
         let src_path = src_dir.path().join("source.jpg");
         std::fs::write(&src_path, &bytes).unwrap();
@@ -258,7 +263,9 @@ mod tests {
         let mut buf = std::io::Cursor::new(Vec::new());
         let mut encoder = image::codecs::jpeg::JpegEncoder::new(&mut buf);
         let img = image::DynamicImage::new_rgb8(800, 600);
-        encoder.encode(img.as_bytes(), 800, 600, image::ExtendedColorType::Rgb8).unwrap();
+        encoder
+            .encode(img.as_bytes(), 800, 600, image::ExtendedColorType::Rgb8)
+            .unwrap();
         let bytes = buf.into_inner();
         let src_path = src_dir.path().join("img.jpg");
         std::fs::write(&src_path, &bytes).unwrap();

@@ -107,8 +107,10 @@ pub fn init_reddit_db(db_path: &str) -> SqlResult<()> {
         CREATE INDEX IF NOT EXISTS idx_url ON images(url);
         CREATE INDEX IF NOT EXISTS idx_hash ON images(hash);",
     )?;
-    conn.execute_batch("ALTER TABLE images ADD COLUMN title TEXT;").ok();
-    conn.execute_batch("ALTER TABLE images ADD COLUMN permalink TEXT;").ok();
+    conn.execute_batch("ALTER TABLE images ADD COLUMN title TEXT;")
+        .ok();
+    conn.execute_batch("ALTER TABLE images ADD COLUMN permalink TEXT;")
+        .ok();
     ensure_love_column(&conn)
 }
 
@@ -118,7 +120,11 @@ pub fn get_existing_wallhaven_ids(db_path: &str) -> SqlResult<Vec<String>> {
     let ids = stmt
         .query_map([], |row| row.get(0))?
         .collect::<SqlResult<Vec<String>>>()?;
-    log::info!("[DB] get_existing_wallhaven_ids: {} ids from {}", ids.len(), db_path);
+    log::info!(
+        "[DB] get_existing_wallhaven_ids: {} ids from {}",
+        ids.len(),
+        db_path
+    );
     Ok(ids)
 }
 
@@ -128,7 +134,11 @@ pub fn get_existing_reddit_urls(db_path: &str) -> SqlResult<Vec<String>> {
     let urls = stmt
         .query_map([], |row| row.get(0))?
         .collect::<SqlResult<Vec<String>>>()?;
-    log::info!("[DB] get_existing_reddit_urls: {} urls from {}", urls.len(), db_path);
+    log::info!(
+        "[DB] get_existing_reddit_urls: {} urls from {}",
+        urls.len(),
+        db_path
+    );
     Ok(urls)
 }
 
@@ -156,7 +166,11 @@ pub fn insert_wallhaven_image(
         Err(e) => return Err(e),
     };
     if result {
-        log::info!("[DB] insert_wallhaven_image: id={} name={}", wallhaven_id, name);
+        log::info!(
+            "[DB] insert_wallhaven_image: id={} name={}",
+            wallhaven_id,
+            name
+        );
     }
     Ok(result)
 }
@@ -212,7 +226,11 @@ pub fn insert_wallhaven_images_batch(
         }
     }
     tx.commit()?;
-    log::info!("[DB] insert_wallhaven_images_batch: added={} skipped={}", added, skipped);
+    log::info!(
+        "[DB] insert_wallhaven_images_batch: added={} skipped={}",
+        added,
+        skipped
+    );
     Ok((added, skipped))
 }
 
@@ -239,14 +257,21 @@ pub fn insert_reddit_images_batch(
         }
     }
     tx.commit()?;
-    log::info!("[DB] insert_reddit_images_batch: added={} skipped={}", added, skipped);
+    log::info!(
+        "[DB] insert_reddit_images_batch: added={} skipped={}",
+        added,
+        skipped
+    );
     Ok((added, skipped))
 }
 
 pub fn delete_image_by_name(db_path: &str, name: &str) -> SqlResult<bool> {
     log::info!("[DB] delete_image_by_name: name={}", name);
     let conn = open(db_path)?;
-    let count = conn.execute("DELETE FROM images WHERE name = ?1", rusqlite::params![name])?;
+    let count = conn.execute(
+        "DELETE FROM images WHERE name = ?1",
+        rusqlite::params![name],
+    )?;
     log::info!("[DB] delete_image_by_name: deleted={}", count > 0);
     Ok(count > 0)
 }
@@ -289,7 +314,11 @@ pub fn get_db_stats(db_path: &str) -> SqlResult<DbStats> {
         [],
         |row| Ok((row.get(0)?, row.get(1)?)),
     )?;
-    let stats = DbStats { total, love, dislike: total - love };
+    let stats = DbStats {
+        total,
+        love,
+        dislike: total - love,
+    };
     log::info!("[DB] get_db_stats({}): {:?}", db_path, stats);
     Ok(stats)
 }
@@ -355,10 +384,7 @@ pub fn mark_missing_dislike_reddit(db_path: &str, save_dir: &str) -> SqlResult<u
 
 fn restore_love(db_path: &str) -> SqlResult<u64> {
     let conn = open(db_path)?;
-    let count = conn.execute(
-        "UPDATE images SET love = 1 WHERE love = 0",
-        [],
-    )?;
+    let count = conn.execute("UPDATE images SET love = 1 WHERE love = 0", [])?;
     log::info!("[DB] restore_love: restored={}", count);
     Ok(count as u64)
 }
@@ -581,28 +607,55 @@ mod tests {
     #[test]
     fn test_init_wallhaven_db() {
         let db = TestDb::wallhaven();
-        let count: i64 = db.conn().query_row("SELECT COUNT(*) FROM images", [], |r| r.get(0)).unwrap();
+        let count: i64 = db
+            .conn()
+            .query_row("SELECT COUNT(*) FROM images", [], |r| r.get(0))
+            .unwrap();
         assert_eq!(count, 0);
     }
 
     #[test]
     fn test_init_reddit_db() {
         let db = TestDb::reddit();
-        let count: i64 = db.conn().query_row("SELECT COUNT(*) FROM images", [], |r| r.get(0)).unwrap();
+        let count: i64 = db
+            .conn()
+            .query_row("SELECT COUNT(*) FROM images", [], |r| r.get(0))
+            .unwrap();
         assert_eq!(count, 0);
     }
 
     #[test]
     fn test_insert_wallhaven_image() {
         let db = TestDb::wallhaven();
-        assert!(insert_wallhaven_image(db.path(), "wh001", "wh001.jpg", "abc123", "https://wh.cc/i/wh001", "https://wh.cc/s/wh001", "1920x1080").unwrap());
+        assert!(insert_wallhaven_image(
+            db.path(),
+            "wh001",
+            "wh001.jpg",
+            "abc123",
+            "https://wh.cc/i/wh001",
+            "https://wh.cc/s/wh001",
+            "1920x1080"
+        )
+        .unwrap());
     }
 
     #[test]
     fn test_insert_wallhaven_duplicate() {
         let db = TestDb::wallhaven();
-        assert!(insert_wallhaven_image(db.path(), "wh001", "a.jpg", "h1", "u1", "s1", "1920x1080").unwrap());
-        assert!(!insert_wallhaven_image(db.path(), "wh001", "b.jpg", "h2", "u2", "s2", "1920x1080").unwrap());
+        assert!(
+            insert_wallhaven_image(db.path(), "wh001", "a.jpg", "h1", "u1", "s1", "1920x1080")
+                .unwrap()
+        );
+        assert!(!insert_wallhaven_image(
+            db.path(),
+            "wh001",
+            "b.jpg",
+            "h2",
+            "u2",
+            "s2",
+            "1920x1080"
+        )
+        .unwrap());
     }
 
     #[test]
@@ -622,30 +675,76 @@ mod tests {
 
         let dir = tempfile::TempDir::new().unwrap();
         std::fs::write(dir.path().join("a.jpg"), b"fake").unwrap();
-        assert_eq!(count_missing_wallhaven(db.path(), &dir.path().to_string_lossy()).unwrap(), 0);
+        assert_eq!(
+            count_missing_wallhaven(db.path(), &dir.path().to_string_lossy()).unwrap(),
+            0
+        );
 
         std::fs::remove_file(dir.path().join("a.jpg")).unwrap();
-        assert_eq!(count_missing_wallhaven(db.path(), &dir.path().to_string_lossy()).unwrap(), 1);
+        assert_eq!(
+            count_missing_wallhaven(db.path(), &dir.path().to_string_lossy()).unwrap(),
+            1
+        );
     }
 
     #[test]
     fn test_insert_reddit_image() {
         let db = TestDb::reddit();
-        assert!(insert_reddit_image(db.path(), "img.jpg", "def456", "https://reddit.com/img.jpg", "title", "/r/123").unwrap());
+        assert!(insert_reddit_image(
+            db.path(),
+            "img.jpg",
+            "def456",
+            "https://reddit.com/img.jpg",
+            "title",
+            "/r/123"
+        )
+        .unwrap());
     }
 
     #[test]
     fn test_insert_reddit_duplicate_url() {
         let db = TestDb::reddit();
-        assert!(insert_reddit_image(db.path(), "a.jpg", "h1", "https://reddit.com/1", "t", "/r/1").unwrap());
-        assert!(!insert_reddit_image(db.path(), "b.jpg", "h2", "https://reddit.com/1", "t", "/r/2").unwrap());
+        assert!(insert_reddit_image(
+            db.path(),
+            "a.jpg",
+            "h1",
+            "https://reddit.com/1",
+            "t",
+            "/r/1"
+        )
+        .unwrap());
+        assert!(!insert_reddit_image(
+            db.path(),
+            "b.jpg",
+            "h2",
+            "https://reddit.com/1",
+            "t",
+            "/r/2"
+        )
+        .unwrap());
     }
 
     #[test]
     fn test_get_existing_reddit_urls() {
         let db = TestDb::reddit();
-        insert_reddit_image(db.path(), "a.jpg", "h1", "https://reddit.com/1", "t1", "/r/1").unwrap();
-        insert_reddit_image(db.path(), "b.jpg", "h2", "https://reddit.com/2", "t2", "/r/2").unwrap();
+        insert_reddit_image(
+            db.path(),
+            "a.jpg",
+            "h1",
+            "https://reddit.com/1",
+            "t1",
+            "/r/1",
+        )
+        .unwrap();
+        insert_reddit_image(
+            db.path(),
+            "b.jpg",
+            "h2",
+            "https://reddit.com/2",
+            "t2",
+            "/r/2",
+        )
+        .unwrap();
         assert_eq!(get_existing_reddit_urls(db.path()).unwrap().len(), 2);
     }
 
@@ -662,12 +761,17 @@ mod tests {
     #[test]
     fn test_mark_dislike_and_restore_wallhaven() {
         let db = TestDb::wallhaven();
-        insert_wallhaven_image(db.path(), "id1", "keep.jpg", "h1", "u1", "s1", "1920x1080").unwrap();
-        insert_wallhaven_image(db.path(), "id2", "gone.jpg", "h2", "u2", "s2", "3840x2160").unwrap();
+        insert_wallhaven_image(db.path(), "id1", "keep.jpg", "h1", "u1", "s1", "1920x1080")
+            .unwrap();
+        insert_wallhaven_image(db.path(), "id2", "gone.jpg", "h2", "u2", "s2", "3840x2160")
+            .unwrap();
 
         let img_dir = TempDir::new().unwrap();
         std::fs::write(img_dir.path().join("keep.jpg"), b"fake").unwrap();
-        assert_eq!(mark_missing_dislike_wallhaven(db.path(), &img_dir.path().to_string_lossy()).unwrap(), 1);
+        assert_eq!(
+            mark_missing_dislike_wallhaven(db.path(), &img_dir.path().to_string_lossy()).unwrap(),
+            1
+        );
 
         assert_eq!(get_db_stats(db.path()).unwrap().love, 1);
         assert_eq!(restore_love_db(db.path()).unwrap(), 1);
@@ -691,7 +795,15 @@ mod tests {
     #[test]
     fn test_reddit_missing_love() {
         let db = TestDb::reddit();
-        insert_reddit_image(db.path(), "a.jpg", "h1", "https://reddit.com/1", "t1", "/r/1").unwrap();
+        insert_reddit_image(
+            db.path(),
+            "a.jpg",
+            "h1",
+            "https://reddit.com/1",
+            "t1",
+            "/r/1",
+        )
+        .unwrap();
 
         let img_dir = TempDir::new().unwrap();
         std::fs::write(img_dir.path().join("a.jpg"), b"data").unwrap();
@@ -715,7 +827,15 @@ mod tests {
     #[test]
     fn test_delete_reddit() {
         let db = TestDb::reddit();
-        insert_reddit_image(db.path(), "del.jpg", "h1", "https://reddit.com/1", "t1", "/r/1").unwrap();
+        insert_reddit_image(
+            db.path(),
+            "del.jpg",
+            "h1",
+            "https://reddit.com/1",
+            "t1",
+            "/r/1",
+        )
+        .unwrap();
         assert!(delete_reddit_image(db.path(), "del.jpg").unwrap());
         assert_eq!(get_db_stats(db.path()).unwrap().total, 0);
     }
@@ -724,7 +844,16 @@ mod tests {
     fn test_get_wallhaven_images_pagination() {
         let db = TestDb::wallhaven();
         for i in 0..5 {
-            insert_wallhaven_image(db.path(), &format!("id{i}"), &format!("{i}.jpg"), &format!("h{i}"), &format!("u{i}"), &format!("s{i}"), "1920x1080").unwrap();
+            insert_wallhaven_image(
+                db.path(),
+                &format!("id{i}"),
+                &format!("{i}.jpg"),
+                &format!("h{i}"),
+                &format!("u{i}"),
+                &format!("s{i}"),
+                "1920x1080",
+            )
+            .unwrap();
         }
         assert_eq!(get_wallhaven_images(db.path(), 2, 0).unwrap().len(), 2);
         assert_eq!(get_wallhaven_images(db.path(), 10, 0).unwrap().len(), 5);
@@ -733,7 +862,15 @@ mod tests {
     #[test]
     fn test_get_reddit_images() {
         let db = TestDb::reddit();
-        insert_reddit_image(db.path(), "a.jpg", "h1", "https://reddit.com/1", "title1", "/r/1").unwrap();
+        insert_reddit_image(
+            db.path(),
+            "a.jpg",
+            "h1",
+            "https://reddit.com/1",
+            "title1",
+            "/r/1",
+        )
+        .unwrap();
         let images = get_reddit_images(db.path(), 10, 0).unwrap();
         assert_eq!(images.len(), 1);
         assert_eq!(images[0].title, Some("title1".to_string()));
@@ -752,7 +889,15 @@ mod tests {
     #[test]
     fn test_mark_dislike_by_name_reddit() {
         let db = TestDb::reddit();
-        insert_reddit_image(db.path(), "a.jpg", "h1", "https://reddit.com/1", "t1", "/r/1").unwrap();
+        insert_reddit_image(
+            db.path(),
+            "a.jpg",
+            "h1",
+            "https://reddit.com/1",
+            "t1",
+            "/r/1",
+        )
+        .unwrap();
         assert!(mark_dislike_by_name(db.path(), "a.jpg").unwrap());
         let stats = get_db_stats(db.path()).unwrap();
         assert_eq!(stats.love, 0);
@@ -768,13 +913,32 @@ mod tests {
     #[test]
     fn test_get_wallhaven_missing_files_with_dir() {
         let db = TestDb::wallhaven();
-        insert_wallhaven_image(db.path(), "id1", "exists.jpg", "h1", "u1", "s1", "1920x1080").unwrap();
-        insert_wallhaven_image(db.path(), "id2", "missing.jpg", "h2", "u2", "s2", "3840x2160").unwrap();
+        insert_wallhaven_image(
+            db.path(),
+            "id1",
+            "exists.jpg",
+            "h1",
+            "u1",
+            "s1",
+            "1920x1080",
+        )
+        .unwrap();
+        insert_wallhaven_image(
+            db.path(),
+            "id2",
+            "missing.jpg",
+            "h2",
+            "u2",
+            "s2",
+            "3840x2160",
+        )
+        .unwrap();
 
         let img_dir = TempDir::new().unwrap();
         std::fs::write(img_dir.path().join("exists.jpg"), b"real file").unwrap();
 
-        let missing = get_wallhaven_missing_files(db.path(), &img_dir.path().to_string_lossy()).unwrap();
+        let missing =
+            get_wallhaven_missing_files(db.path(), &img_dir.path().to_string_lossy()).unwrap();
         assert_eq!(missing.len(), 1);
         assert_eq!(missing[0].name, "missing.jpg");
     }
@@ -782,13 +946,30 @@ mod tests {
     #[test]
     fn test_get_reddit_missing_files_with_dir() {
         let db = TestDb::reddit();
-        insert_reddit_image(db.path(), "exists.jpg", "h1", "https://reddit.com/1", "t1", "/r/1").unwrap();
-        insert_reddit_image(db.path(), "missing.png", "h2", "https://reddit.com/2", "t2", "/r/2").unwrap();
+        insert_reddit_image(
+            db.path(),
+            "exists.jpg",
+            "h1",
+            "https://reddit.com/1",
+            "t1",
+            "/r/1",
+        )
+        .unwrap();
+        insert_reddit_image(
+            db.path(),
+            "missing.png",
+            "h2",
+            "https://reddit.com/2",
+            "t2",
+            "/r/2",
+        )
+        .unwrap();
 
         let img_dir = TempDir::new().unwrap();
         std::fs::write(img_dir.path().join("exists.jpg"), b"real file").unwrap();
 
-        let missing = get_reddit_missing_files(db.path(), &img_dir.path().to_string_lossy()).unwrap();
+        let missing =
+            get_reddit_missing_files(db.path(), &img_dir.path().to_string_lossy()).unwrap();
         assert_eq!(missing.len(), 1);
         assert_eq!(missing[0].name, "missing.png");
     }
@@ -807,8 +988,24 @@ mod tests {
     #[test]
     fn test_get_all_filenames_reddit() {
         let db = TestDb::reddit();
-        insert_reddit_image(db.path(), "x.jpg", "h1", "https://reddit.com/1", "t1", "/r/1").unwrap();
-        insert_reddit_image(db.path(), "y.jpg", "h2", "https://reddit.com/2", "t2", "/r/2").unwrap();
+        insert_reddit_image(
+            db.path(),
+            "x.jpg",
+            "h1",
+            "https://reddit.com/1",
+            "t1",
+            "/r/1",
+        )
+        .unwrap();
+        insert_reddit_image(
+            db.path(),
+            "y.jpg",
+            "h2",
+            "https://reddit.com/2",
+            "t2",
+            "/r/2",
+        )
+        .unwrap();
         let names = get_all_filenames(db.path()).unwrap();
         assert_eq!(names.len(), 2);
     }
@@ -816,14 +1013,25 @@ mod tests {
     #[test]
     fn test_get_missing_files_excludes_disliked() {
         let db = TestDb::wallhaven();
-        insert_wallhaven_image(db.path(), "id1", "liked.jpg", "h1", "u1", "s1", "1920x1080").unwrap();
-        insert_wallhaven_image(db.path(), "id2", "disliked.jpg", "h2", "u2", "s2", "3840x2160").unwrap();
+        insert_wallhaven_image(db.path(), "id1", "liked.jpg", "h1", "u1", "s1", "1920x1080")
+            .unwrap();
+        insert_wallhaven_image(
+            db.path(),
+            "id2",
+            "disliked.jpg",
+            "h2",
+            "u2",
+            "s2",
+            "3840x2160",
+        )
+        .unwrap();
 
         let img_dir = TempDir::new().unwrap();
         // 标记 dislike 为不喜欢
         mark_dislike_by_name(db.path(), "disliked.jpg").unwrap();
 
-        let missing = get_wallhaven_missing_files(db.path(), &img_dir.path().to_string_lossy()).unwrap();
+        let missing =
+            get_wallhaven_missing_files(db.path(), &img_dir.path().to_string_lossy()).unwrap();
         assert_eq!(missing.len(), 1);
         assert_eq!(missing[0].name, "liked.jpg");
     }
@@ -836,7 +1044,11 @@ mod tests {
         conn.execute_batch("CREATE TABLE images (id INTEGER PRIMARY KEY, name TEXT, hash TEXT, url TEXT, stable INTEGER DEFAULT 1);").unwrap();
         ensure_love_column(&conn).unwrap();
         let mut stmt = conn.prepare("PRAGMA table_info(images)").unwrap();
-        let cols: Vec<String> = stmt.query_map([], |r| r.get(1)).unwrap().filter_map(|c| c.ok()).collect();
+        let cols: Vec<String> = stmt
+            .query_map([], |r| r.get(1))
+            .unwrap()
+            .filter_map(|c| c.ok())
+            .collect();
         assert!(cols.contains(&"love".to_string()));
     }
 
@@ -846,7 +1058,9 @@ mod tests {
         let thumb_dir = TempDir::new().unwrap();
         let td = thumb_dir.path().to_path_buf();
         std::fs::write(td.join("orphan.jpg"), b"fake").unwrap();
-        assert!(clean_stale_thumbnails(&td.to_string_lossy(), &save_dir.path().to_string_lossy()) > 0);
+        assert!(
+            clean_stale_thumbnails(&td.to_string_lossy(), &save_dir.path().to_string_lossy()) > 0
+        );
     }
 
     #[test]
@@ -856,16 +1070,40 @@ mod tests {
         let td = thumb_dir.path().to_path_buf();
         std::fs::write(save_dir.path().join("valid.jpg"), b"data").unwrap();
         std::fs::write(td.join("valid.jpg"), b"thumb").unwrap();
-        assert_eq!(clean_stale_thumbnails(&td.to_string_lossy(), &save_dir.path().to_string_lossy()), 0);
+        assert_eq!(
+            clean_stale_thumbnails(&td.to_string_lossy(), &save_dir.path().to_string_lossy()),
+            0
+        );
     }
 
     #[test]
     fn test_insert_wallhaven_batch() {
         let db = TestDb::wallhaven();
         let images = vec![
-            ("id1".into(), "a.jpg".into(), "h1".into(), "u1".into(), "s1".into(), "1920x1080".into()),
-            ("id2".into(), "b.jpg".into(), "h2".into(), "u2".into(), "s2".into(), "3840x2160".into()),
-            ("id3".into(), "c.png".into(), "h3".into(), "u3".into(), "s3".into(), "2560x1440".into()),
+            (
+                "id1".into(),
+                "a.jpg".into(),
+                "h1".into(),
+                "u1".into(),
+                "s1".into(),
+                "1920x1080".into(),
+            ),
+            (
+                "id2".into(),
+                "b.jpg".into(),
+                "h2".into(),
+                "u2".into(),
+                "s2".into(),
+                "3840x2160".into(),
+            ),
+            (
+                "id3".into(),
+                "c.png".into(),
+                "h3".into(),
+                "u3".into(),
+                "s3".into(),
+                "2560x1440".into(),
+            ),
         ];
         let (added, skipped) = insert_wallhaven_images_batch(db.path(), &images).unwrap();
         assert_eq!(added, 3);
@@ -880,9 +1118,30 @@ mod tests {
     fn test_insert_wallhaven_batch_with_duplicates() {
         let db = TestDb::wallhaven();
         let images = vec![
-            ("dup".into(), "a.jpg".into(), "h1".into(), "u1".into(), "s1".into(), "1080p".into()),
-            ("dup".into(), "b.jpg".into(), "h2".into(), "u2".into(), "s2".into(), "4k".into()),
-            ("id2".into(), "c.jpg".into(), "h3".into(), "u3".into(), "s3".into(), "2k".into()),
+            (
+                "dup".into(),
+                "a.jpg".into(),
+                "h1".into(),
+                "u1".into(),
+                "s1".into(),
+                "1080p".into(),
+            ),
+            (
+                "dup".into(),
+                "b.jpg".into(),
+                "h2".into(),
+                "u2".into(),
+                "s2".into(),
+                "4k".into(),
+            ),
+            (
+                "id2".into(),
+                "c.jpg".into(),
+                "h3".into(),
+                "u3".into(),
+                "s3".into(),
+                "2k".into(),
+            ),
         ];
         let (added, skipped) = insert_wallhaven_images_batch(db.path(), &images).unwrap();
         assert_eq!(added, 2);
@@ -900,8 +1159,22 @@ mod tests {
         let db = TestDb::wallhaven();
         // Two entries with the same hash — second should be skipped
         let images = vec![
-            ("id1".into(), "a.jpg".into(), "same_hash".into(), "u1".into(), "s1".into(), "1080p".into()),
-            ("id2".into(), "b.jpg".into(), "same_hash".into(), "u2".into(), "s2".into(), "4k".into()),
+            (
+                "id1".into(),
+                "a.jpg".into(),
+                "same_hash".into(),
+                "u1".into(),
+                "s1".into(),
+                "1080p".into(),
+            ),
+            (
+                "id2".into(),
+                "b.jpg".into(),
+                "same_hash".into(),
+                "u2".into(),
+                "s2".into(),
+                "4k".into(),
+            ),
         ];
         let (added, skipped) = insert_wallhaven_images_batch(db.path(), &images).unwrap();
         assert_eq!(added, 1);
@@ -927,8 +1200,20 @@ mod tests {
     fn test_insert_reddit_batch() {
         let db = TestDb::reddit();
         let images = vec![
-            ("a.jpg".into(), "h1".into(), "https://r.com/1".into(), "t1".into(), "/r/a".into()),
-            ("b.jpg".into(), "h2".into(), "https://r.com/2".into(), "t2".into(), "/r/b".into()),
+            (
+                "a.jpg".into(),
+                "h1".into(),
+                "https://r.com/1".into(),
+                "t1".into(),
+                "/r/a".into(),
+            ),
+            (
+                "b.jpg".into(),
+                "h2".into(),
+                "https://r.com/2".into(),
+                "t2".into(),
+                "/r/b".into(),
+            ),
         ];
         let (added, skipped) = insert_reddit_images_batch(db.path(), &images).unwrap();
         assert_eq!(added, 2);
@@ -943,8 +1228,20 @@ mod tests {
     fn test_insert_reddit_batch_skips_duplicate_url() {
         let db = TestDb::reddit();
         let images = vec![
-            ("a.jpg".into(), "h1".into(), "https://r.com/1".into(), "t1".into(), "/r/a".into()),
-            ("b.jpg".into(), "h2".into(), "https://r.com/1".into(), "t2".into(), "/r/b".into()),
+            (
+                "a.jpg".into(),
+                "h1".into(),
+                "https://r.com/1".into(),
+                "t1".into(),
+                "/r/a".into(),
+            ),
+            (
+                "b.jpg".into(),
+                "h2".into(),
+                "https://r.com/1".into(),
+                "t2".into(),
+                "/r/b".into(),
+            ),
         ];
         let (added, skipped) = insert_reddit_images_batch(db.path(), &images).unwrap();
         assert_eq!(added, 1);
@@ -954,11 +1251,23 @@ mod tests {
     #[test]
     fn test_insert_reddit_batch_skips_duplicate_hash() {
         let db = TestDb::reddit();
-        insert_reddit_image(db.path(), "existing.jpg", "same_hash", "https://r.com/a", "t", "/r/a").unwrap();
+        insert_reddit_image(
+            db.path(),
+            "existing.jpg",
+            "same_hash",
+            "https://r.com/a",
+            "t",
+            "/r/a",
+        )
+        .unwrap();
 
-        let images = vec![
-            ("new.jpg".into(), "same_hash".into(), "https://r.com/b".into(), "t2".into(), "/r/b".into()),
-        ];
+        let images = vec![(
+            "new.jpg".into(),
+            "same_hash".into(),
+            "https://r.com/b".into(),
+            "t2".into(),
+            "/r/b".into(),
+        )];
         let (added, skipped) = insert_reddit_images_batch(db.path(), &images).unwrap();
         assert_eq!(added, 0);
         assert_eq!(skipped, 1);
