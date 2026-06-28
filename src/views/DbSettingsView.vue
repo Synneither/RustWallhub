@@ -3,6 +3,7 @@ import { ref, onMounted } from "vue";
 import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
 import { logger } from "../utils/logger";
+import { VForm } from "vuetify/components";
 
 interface AppConfig {
   wallhaven_save_dir: string;
@@ -37,7 +38,7 @@ const config = ref<AppConfig | null>(null);
 const saving = ref(false);
 const saved = ref(false);
 const formValid = ref(false);
-const formRef = ref<any>(null);
+const formRef = ref<VForm | null>(null);
 const whStats = ref<DbStats>({ total: 0, love: 0, dislike: 0 });
 const rdStats = ref<DbStats>({ total: 0, love: 0, dislike: 0 });
 
@@ -73,7 +74,7 @@ function formatSize(bytes: number): string {
 async function checkDbFiles() {
   if (!config.value) return;
   try {
-    const files: { name: string; path: string; size: number }[] = await invoke("list_files", { dir: config.value.db_dir });
+    const files: { name: string; path: string; size: number }[] = await invoke("scan_directory", { dir: config.value.db_dir });
     const whFile = files.find((f) => f.name === "wallhaven_images.db");
     const rdFile = files.find((f) => f.name === "reddit_images.db");
     whPathExists.value = !!whFile;

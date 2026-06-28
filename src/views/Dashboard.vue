@@ -3,6 +3,7 @@ import { ref, computed, onMounted, onUnmounted, watch } from "vue";
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { logger } from "../utils/logger";
+import DataTerminal from "../components/DataTerminal.vue";
 
 const props = defineProps<{
   downloading: boolean;
@@ -93,7 +94,7 @@ async function markAllMissingDislike() {
   let count = 0;
   for (const img of filteredMissing.value) {
     try {
-      await invoke<boolean>("mark_dislike_image", { source: img.source, name: img.name });
+      await invoke<boolean>("dislike_file", { source: img.source, name: img.name });
       count++;
     } catch (e) {
       logger.error("Dashboard", "标记失败", { name: img.name, error: e });
@@ -108,8 +109,8 @@ async function markAllMissingDislike() {
 }
 
 function truncate(str: string, len: number): string {
-  if (str.length <= len) return str.substring(0, len) + "…";
-  return str;
+  if (str.length <= len) return str;
+  return str.substring(0, len) + "…";
 }
 
 async function loadMissingCount() {
@@ -179,256 +180,207 @@ const rdDislike = useAnimatedNumber(computed(() => rdStats.value.dislike));
 
 <template>
   <div>
+    <!-- Arknights 数据面板 - 双终端布局 -->
     <v-row class="stagger-cards">
-      <v-col cols="12" md="6" class="animate-in stagger-1">
-        <v-card
-          class="glass-card card-accent-top wh-card card-hover"
-          elevation="0"
-        >
-          <div class="card-bg-icon">
-            <v-icon size="112" color="white">mdi-image-search</v-icon>
-          </div>
-          <v-card-text class="pa-5 pb-4">
-            <div class="d-flex align-center mb-4">
-              <div class="accent-dot wh-dot" />
-              <span class="text-heading font-weight-medium wh-label">Wallhaven</span>
-            </div>
-            <v-row>
-              <v-col cols="4" class="text-center py-0">
-                <div class="stat-number text-display">{{ whTotal }}</div>
-                <div class="text-caption text-medium-emphasis mt-1">总计</div>
-              </v-col>
-              <v-col cols="4" class="text-center py-0">
-                <div class="stat-number text-display" style="color: #4ade80">{{ whLove }}</div>
-                <div class="text-caption text-medium-emphasis mt-1">喜欢</div>
-              </v-col>
-              <v-col cols="4" class="text-center py-0">
-                <div class="stat-number text-display" style="color: #fbbf24">{{ whDislike }}</div>
-                <div class="text-caption text-medium-emphasis mt-1">不喜欢</div>
-              </v-col>
-            </v-row>
-          </v-card-text>
-          <v-divider style="border-color: rgba(255,255,255,0.06)" />
-          <v-card-actions class="pa-4 pt-3">
-            <v-btn
-              class="gradient-btn text-none px-5"
-              color="primary"
-              variant="flat"
-              :disabled="downloading"
-              @click="() => { logger.action('Dashboard', '开始下载', { source: 'wallhaven' }); emit('action', () => invoke('start_wallhaven_download')); }"
-            >
-              <v-icon start>mdi-download</v-icon>
-              开始下载
-            </v-btn>
-            <v-btn
-              variant="tonal"
-              class="text-none px-4"
-              :disabled="downloading"
-              @click="() => { logger.action('Dashboard', '从数据库补下载', { source: 'wallhaven' }); emit('action', () => invoke('start_db_download', { source: 'wallhaven' })); }"
-            >
-              <v-icon start>mdi-database-sync</v-icon>
-              从数据库补下载
-            </v-btn>
-          </v-card-actions>
-        </v-card>
-      </v-col>
-
-      <v-col cols="12" md="6" class="animate-in stagger-2">
-        <v-card
-          class="glass-card card-accent-top rd-card card-hover"
-          elevation="0"
-        >
-          <div class="card-bg-icon">
-            <v-icon size="112" color="white">mdi-reddit</v-icon>
-          </div>
-          <v-card-text class="pa-5 pb-4">
-            <div class="d-flex align-center mb-4">
-              <div class="accent-dot rd-dot" />
-              <span class="text-heading font-weight-medium rd-label">Reddit</span>
-            </div>
-            <v-row>
-              <v-col cols="4" class="text-center py-0">
-                <div class="stat-number text-display">{{ rdTotal }}</div>
-                <div class="text-caption text-medium-emphasis mt-1">总计</div>
-              </v-col>
-              <v-col cols="4" class="text-center py-0">
-                <div class="stat-number text-display" style="color: #4ade80">{{ rdLove }}</div>
-                <div class="text-caption text-medium-emphasis mt-1">喜欢</div>
-              </v-col>
-              <v-col cols="4" class="text-center py-0">
-                <div class="stat-number text-display" style="color: #fbbf24">{{ rdDislike }}</div>
-                <div class="text-caption text-medium-emphasis mt-1">不喜欢</div>
-              </v-col>
-            </v-row>
-          </v-card-text>
-          <v-divider style="border-color: rgba(255,255,255,0.06)" />
-          <v-card-actions class="pa-4 pt-3">
-            <v-btn
-              class="gradient-btn text-none px-5"
-              color="primary"
-              variant="flat"
-              :disabled="downloading"
-              @click="() => { logger.action('Dashboard', '开始下载', { source: 'reddit' }); emit('action', () => invoke('start_reddit_download')); }"
-            >
-              <v-icon start>mdi-download</v-icon>
-              开始下载
-            </v-btn>
-            <v-btn
-              variant="tonal"
-              class="text-none px-4"
-              :disabled="downloading"
-              @click="() => { logger.action('Dashboard', '从数据库补下载', { source: 'reddit' }); emit('action', () => invoke('start_db_download', { source: 'reddit' })); }"
-            >
-              <v-icon start>mdi-database-sync</v-icon>
-              从数据库补下载
-            </v-btn>
-          </v-card-actions>
-        </v-card>
-      </v-col>
+      <DataTerminal
+        badge="WH" title="Wallhaven" accent-color="#3b82f6"
+        :total="whTotal" :love="whLove" :dislike="whDislike"
+        :disabled="downloading" :stagger="1"
+        @start-download="logger.action('Dashboard', '开始下载', { source: 'wallhaven' }); emit('action', () => invoke('start_wallhaven_download'))"
+        @recover-files="logger.action('Dashboard', '下载所有喜欢的文件', { source: 'wallhaven' }); emit('action', () => invoke('recover_database_files', { source: 'wallhaven' }))"
+      />
+      <DataTerminal
+        badge="RD" title="Reddit" accent-color="#f97316"
+        :total="rdTotal" :love="rdLove" :dislike="rdDislike"
+        :disabled="downloading" :stagger="2"
+        @start-download="logger.action('Dashboard', '开始下载', { source: 'reddit' }); emit('action', () => invoke('start_reddit_download'))"
+        @recover-files="logger.action('Dashboard', '下载所有喜欢的文件', { source: 'reddit' }); emit('action', () => invoke('recover_database_files', { source: 'reddit' }))"
+      />
     </v-row>
 
-    <v-row class="mt-4">
-      <v-col cols="12">
-        <v-card class="glass-card maintenance-card animate-in stagger-3" elevation="0">
-          <v-card-text class="pa-5">
-            <div class="d-flex align-center mb-4">
-              <v-icon class="me-2" color="text-secondary">mdi-wrench</v-icon>
-              <span class="text-heading font-weight-medium text-secondary">维护操作</span>
-            </div>
-            <div class="d-flex flex-wrap ga-3">
-              <v-btn
-                variant="tonal"
-                color="warning"
-                class="text-none px-4"
-                :disabled="downloading"
-                @click="emit('action', async () => {
-                  const count = await invoke('mark_dislike', { source: 'all' }) as number;
-                  localSnackbarText.value = `已标记 ${count} 张缺失图片为不喜欢`;
-                  localSnackbar.value = true;
-                  logger.action('Dashboard', '标记缺失图片为不喜欢', { count });
-                  await loadStats();
-                  await loadMissingCount();
-                })"
-              >
-                <v-icon start>mdi-alert-circle</v-icon>
-                标记缺失图片为不喜欢<template v-if="missingCount > 0">&nbsp;({{ missingCount }})</template>
-              </v-btn>
-              <v-btn
-                variant="tonal"
-                color="success"
-                class="text-none px-4"
-                :disabled="downloading"
-                @click="emit('action', async () => {
-                  const count = await invoke('restore_love', { source: 'all' }) as number;
-                  localSnackbarText.value = `已还原 ${count} 张图片为喜欢`;
-                  localSnackbar.value = true;
-                  logger.action('Dashboard', '全部恢复为喜欢', { count });
-                  await loadStats();
-                })"
-              >
-                <v-icon start>mdi-check-circle</v-icon>
-                全部恢复为喜欢
-              </v-btn>
-            </div>
-          </v-card-text>
-        </v-card>
-      </v-col>
-    </v-row>
-
+    <!-- 下载进度面板 -->
     <v-row v-if="downloading" class="mt-4">
       <v-col cols="12">
-        <v-card class="glass-card" elevation="0">
-          <v-card-text class="pa-5">
-            <v-progress-linear
-              :model-value="props.progressTotal > 0 ? (props.progressDone / props.progressTotal) * 100 : 0"
-              color="primary"
-              height="4"
-              rounded
-              class="mb-3"
+        <div class="data-panel progress-panel animate-in stagger-3">
+          <div class="panel-header">
+            <div class="panel-header-left">
+              <span class="panel-title">传输队列</span>
+            </div>
+            <div class="panel-progress-text">
+              <span class="stat-number" style="font-size: 0.75rem; color: var(--accent-primary);">
+                {{ Math.round(progressTotal > 0 ? (progressDone / progressTotal) * 100 : 0) }}%
+              </span>
+            </div>
+          </div>
+          <div class="progress-bar-container">
+            <div
+              class="progress-bar-fill"
+              :style="{ width: progressTotal > 0 ? (progressDone / progressTotal) * 100 + '%' : '0%' }"
             />
-            <div class="text-body-2 text-secondary">{{ progressMsg }}</div>
-          </v-card-text>
-        </v-card>
+          </div>
+          <div class="progress-meta">
+            <span class="panel-subtitle">{{ progressMsg }}</span>
+            <span class="stat-label">{{ progressDone }}/{{ progressTotal }}</span>
+          </div>
+        </div>
       </v-col>
     </v-row>
 
-    <!-- 缺失文件列表 -->
+    <!-- 维护操作面板 -->
     <v-row class="mt-4">
       <v-col cols="12">
-        <v-card class="glass-card animate-in stagger-4" elevation="0">
-          <v-card-text class="pa-5">
-            <div class="d-flex align-center mb-3">
-              <v-icon class="me-2" :color="missingCount > 0 ? 'warning' : 'success'">
+        <div class="data-panel operations-panel animate-in stagger-3">
+          <div class="panel-header">
+            <div class="panel-header-left">
+              <v-icon size="16" color="#f59e0b" class="me-2">mdi-wrench</v-icon>
+              <span class="panel-title">维护操作</span>
+            </div>
+          </div>
+
+          <div class="panel-ops-grid">
+            <button
+              class="ops-btn ops-btn--warning"
+              :disabled="downloading"
+              @click="emit('action', async () => {
+                const count = await invoke<number>('mark_disliked_files', { source: 'all' });
+                localSnackbarText.value = `已标记 ${count} 张缺失图片为不喜欢`;
+                localSnackbar.value = true;
+                logger.action('Dashboard', '标记缺失图片为不喜欢', { count });
+                await loadStats();
+                await loadMissingCount();
+              })"
+            >
+              <v-icon size="14">mdi-alert-circle</v-icon>
+              <span>标记缺失为不喜欢 <template v-if="missingCount > 0">({{ missingCount }})</template></span>
+            </button>
+            <button
+              class="ops-btn ops-btn--success"
+              :disabled="downloading"
+              @click="emit('action', async () => {
+                const count = await invoke<number>('restore_all_files', { source: 'all' });
+                localSnackbarText.value = `已还原 ${count} 张图片为喜欢`;
+                localSnackbar.value = true;
+                logger.action('Dashboard', '全部恢复为喜欢', { count });
+                await loadStats();
+              })"
+            >
+              <v-icon size="14">mdi-check-circle</v-icon>
+              <span>全部恢复为喜欢</span>
+            </button>
+          </div>
+        </div>
+      </v-col>
+    </v-row>
+
+    <!-- 缺失文件终端 -->
+    <v-row class="mt-4">
+      <v-col cols="12">
+        <div class="data-panel animate-in stagger-4">
+          <div class="panel-header">
+            <div class="panel-header-left">
+              <v-icon size="16" :color="missingCount > 0 ? '#f59e0b' : '#10b981'" class="me-2">
                 {{ missingCount > 0 ? 'mdi-alert-circle' : 'mdi-check-circle' }}
               </v-icon>
-              <span class="text-heading font-weight-medium text-secondary">
-                缺失文件 <v-chip v-if="missingCount > 0" size="x-small" color="warning" variant="tonal" class="ms-1">{{ missingCount }}</v-chip>
-              </span>
-              <v-spacer />
-              <v-btn
-                variant="text"
-                size="small"
-                color="grey"
-                :loading="missingListLoading"
-                @click="showMissingList ? (showMissingList = false) : loadMissingList()"
-              >
-                <v-icon start size="14">{{ showMissingList ? 'mdi-chevron-up' : 'mdi-chevron-down' }}</v-icon>
-                {{ showMissingList ? '收起' : '查看详情' }}
-              </v-btn>
+              <span class="panel-title">缺失文件</span>
+              <span v-if="missingCount > 0" class="missing-badge">{{ missingCount }}</span>
             </div>
+            <button
+              class="panel-toggle-btn"
+              @click="showMissingList ? (showMissingList = false) : loadMissingList()"
+            >
+              <span>{{ showMissingList ? '收起' : '查看详情' }}</span>
+              <v-icon size="12">{{ showMissingList ? 'mdi-chevron-up' : 'mdi-chevron-down' }}</v-icon>
+            </button>
+          </div>
 
-            <v-expand-transition>
-              <div v-if="showMissingList">
-                <div v-if="missingImages.length === 0 && !missingListLoading" class="text-center pa-4">
-                  <v-icon size="40" color="success" class="mb-2">mdi-check-circle-outline</v-icon>
-                  <p class="text-body-2 text-secondary">没有缺失文件</p>
+          <v-expand-transition>
+            <div v-if="showMissingList">
+              <div class="panel-divider" />
+
+              <div v-if="missingImages.length === 0 && !missingListLoading" class="panel-empty">
+                <v-icon size="28" color="#10b981">mdi-check-circle-outline</v-icon>
+                <span class="panel-subtitle">没有缺失文件</span>
+              </div>
+
+              <template v-else-if="missingImages.length > 0">
+                <div class="missing-toolbar">
+                  <div class="missing-filter-group">
+                    <button
+                      class="filter-chip"
+                      :class="{ 'filter-chip--active': missingSource === 'all' }"
+                      @click="missingSource = 'all'"
+                    >全部</button>
+                    <button
+                      class="filter-chip"
+                      :class="{ 'filter-chip--active': missingSource === 'wallhaven' }"
+                      @click="missingSource = 'wallhaven'"
+                    >WH</button>
+                    <button
+                      class="filter-chip"
+                      :class="{ 'filter-chip--active': missingSource === 'reddit' }"
+                      @click="missingSource = 'reddit'"
+                    >RD</button>
+                    <span class="filter-count">{{ filteredMissing.length }} 张</span>
+                  </div>
+                  <div class="missing-bulk-actions">
+                    <button
+                      class="bulk-btn bulk-btn--danger"
+                      :disabled="filteredMissing.length === 0"
+                      :class="{ 'bulk-btn--loading': dislikeAllLoading }"
+                      @click="markAllMissingDislike"
+                    >
+                      <v-icon size="12">mdi-close-circle</v-icon>
+                      <span>全部标记不喜欢</span>
+                    </button>
+                    <button
+                      class="bulk-btn bulk-btn--primary"
+                      :disabled="downloading || filteredMissing.length === 0"
+                      @click="downloadAllMissing"
+                    >
+                      <v-icon size="12">mdi-database-sync</v-icon>
+                      <span>全部补下载 ({{ filteredMissing.length }})</span>
+                    </button>
+                  </div>
                 </div>
 
-                <template v-else-if="missingImages.length > 0">
-                  <div class="d-flex align-center ga-2 mb-3 flex-wrap">
-                    <v-btn-toggle v-model="missingSource" mandatory color="primary" density="compact" rounded="pill">
-                      <v-btn value="all" size="x-small">全部</v-btn>
-                      <v-btn value="wallhaven" size="x-small">WH</v-btn>
-                      <v-btn value="reddit" size="x-small">RD</v-btn>
-                    </v-btn-toggle>
-                    <v-chip variant="tonal" size="x-small" color="warning">{{ filteredMissing.length }} 张</v-chip>
-                    <v-spacer />
-                    <v-btn size="x-small" color="error" variant="tonal" :loading="dislikeAllLoading" :disabled="filteredMissing.length === 0" @click="markAllMissingDislike">
-                      <v-icon start size="12">mdi-close-circle</v-icon>
-                      全部标记不喜欢
-                    </v-btn>
-                    <v-btn size="x-small" color="primary" variant="flat" class="gradient-btn" :disabled="downloading || filteredMissing.length === 0" @click="downloadAllMissing">
-                      <v-icon start size="12">mdi-database-sync</v-icon>
-                      全部补下载 ({{ filteredMissing.length }})
-                    </v-btn>
-                  </div>
-
-                  <div class="missing-file-list">
-                    <div v-for="img in filteredMissing" :key="img.id" class="missing-file-item">
-                      <v-chip size="x-small" :color="img.source === 'wallhaven' ? '#6c8cff' : '#ff6b35'" variant="tonal" class="me-2">
-                        {{ img.source === 'wallhaven' ? 'WH' : 'RD' }}
-                      </v-chip>
-                      <span class="text-caption missing-file-name">{{ img.name }}</span>
-                      <span class="text-caption text-disabled text-truncate missing-file-url" :title="img.url">{{ truncate(img.url, 50) }}</span>
-                      <div class="missing-file-actions">
-                        <v-btn size="x-small" variant="text" color="error" @click="emit('action', async () => { await invoke('mark_dislike_image', { source: img.source, name: img.name }); await loadMissingCount(); await loadMissingList(); })">
-                          <v-icon size="12">mdi-close-circle</v-icon>
-                        </v-btn>
-                        <v-btn size="x-small" variant="text" color="primary" :disabled="downloading" @click="emit('action', () => invoke('download_missing_images', { source: img.source, images: [img] }))">
-                          <v-icon size="12">mdi-download</v-icon>
-                        </v-btn>
-                      </div>
+                <div class="missing-list">
+                  <div v-for="img in filteredMissing" :key="img.id" class="data-row missing-item">
+                    <div
+                      class="missing-source-tag"
+                      :class="img.source === 'wallhaven' ? 'source-wh' : 'source-rd'"
+                    >
+                      {{ img.source === 'wallhaven' ? 'WH' : 'RD' }}
+                    </div>
+                    <span class="missing-name">{{ img.name }}</span>
+                    <span class="missing-url" :title="img.url">{{ truncate(img.url, 45) }}</span>
+                    <div class="missing-actions">
+                      <button
+                        class="row-action-btn row-action-btn--danger"
+                        :title="'标记不喜欢'"
+                        @click="emit('action', async () => { await invoke('dislike_file', { source: img.source, name: img.name }); await loadMissingCount(); await loadMissingList(); })"
+                      >
+                        <v-icon size="12">mdi-close-circle</v-icon>
+                      </button>
+                      <button
+                        class="row-action-btn row-action-btn--primary"
+                        :disabled="downloading"
+                        :title="'补下载'"
+                        @click="emit('action', () => invoke('download_missing_images', { source: img.source, images: [img] }))"
+                      >
+                        <v-icon size="12">mdi-download</v-icon>
+                      </button>
                     </div>
                   </div>
-                </template>
-
-                <div v-if="missingListLoading" class="text-center pa-4">
-                  <v-progress-circular indeterminate size="20" width="2" color="primary" />
                 </div>
+              </template>
+
+              <div v-if="missingListLoading" class="panel-loading">
+                <div class="loading-spinner" />
+                <span class="panel-subtitle">扫描中...</span>
               </div>
-            </v-expand-transition>
-          </v-card-text>
-        </v-card>
+            </div>
+          </v-expand-transition>
+        </div>
       </v-col>
     </v-row>
 
@@ -443,81 +395,486 @@ const rdDislike = useAnimatedNumber(computed(() => rdStats.value.dislike));
   position: relative;
 }
 
-.wh-card {
-  background: linear-gradient(135deg, rgba(108,140,255,0.08) 0%, rgba(var(--surface-card-rgb), 0.7) 100%) !important;
-}
-.rd-card {
-  background: linear-gradient(135deg, rgba(255,107,53,0.08) 0%, rgba(var(--surface-card-rgb), 0.7) 100%) !important;
-}
-
-.wh-dot {
-  background: #6c8cff;
-  box-shadow: 0 0 8px #6c8cff;
-}
-.rd-dot {
-  background: #ff6b35;
-  box-shadow: 0 0 8px #ff6b35;
+/* ── Arknights 数据终端面板 ── */
+.data-panel {
+  position: relative;
+  background: rgba(var(--surface-card-rgb), 0.55) !important;
+  backdrop-filter: blur(16px) saturate(140%);
+  -webkit-backdrop-filter: blur(16px) saturate(140%);
+  border: var(--border-card);
+  border-radius: var(--radius-md);
+  overflow: hidden;
+  box-shadow: var(--shadow-sm);
 }
 
-.wh-label {
-  color: #6c8cff;
-}
-.rd-label {
-  color: #ff6b35;
+.operations-panel {
+  border-left: 2px solid rgba(245, 158, 11, 0.4) !important;
 }
 
-.card-bg-icon {
-  position: absolute;
-  right: -8px;
-  bottom: -8px;
-  opacity: 0.04;
-  pointer-events: none;
-  line-height: 1;
+.progress-panel {
+  border-left: 2px solid rgba(59, 130, 246, 0.4) !important;
 }
 
-.maintenance-card {
-  border-left: 3px solid var(--accent-warning);
-}
-
-.missing-file-list {
+/* ── 面板头部 ── */
+.panel-header {
   display: flex;
-  flex-direction: column;
-  gap: 4px;
-  max-height: 320px;
-  overflow-y: auto;
+  align-items: center;
+  justify-content: space-between;
+  padding: 14px 16px 12px;
 }
-.missing-file-item {
+
+.panel-header-left {
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 6px 10px;
-  border-radius: 8px;
-  background: rgba(255, 255, 255, 0.02);
-  transition: background 0.15s;
 }
-.missing-file-item:hover {
+
+.panel-header-text {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.panel-title {
+  font-family: 'Rajdhani', 'Inter', system-ui, sans-serif;
+  font-size: 0.875rem;
+  font-weight: 700;
+  color: var(--text-primary);
+  letter-spacing: 0.03em;
+}
+
+.panel-subtitle {
+  font-family: 'Rajdhani', 'Inter', system-ui, sans-serif;
+  font-size: 0.625rem;
+  font-weight: 500;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-tertiary);
+}
+
+/* ── 信号指示器 ── */
+.panel-signal {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  opacity: 0.6;
+}
+/* ── 统计数据行 ── */
+.panel-stats {
+  display: flex;
+  align-items: center;
+  padding: 4px 16px 16px;
+}
+
+.stat-cell {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+}
+
+.stat-value {
+  font-size: 1.75rem;
+  font-weight: 700;
+  color: var(--text-primary);
+}
+
+.stat-label {
+  font-family: 'Rajdhani', 'Inter', system-ui, sans-serif;
+  font-size: 0.625rem;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-tertiary);
+}
+
+.stat-divider {
+  width: 1px;
+  height: 32px;
+  background: var(--border-subtle);
+  flex-shrink: 0;
+}
+
+/* ── 面板分隔线 ── */
+.panel-divider {
+  height: 1px;
+  background: linear-gradient(
+    90deg,
+    var(--accent-primary) 0%,
+    var(--border-subtle) 30%,
+    transparent 100%
+  );
+  opacity: 0.3;
+}
+
+/* ── 操作按钮 ── */
+.panel-actions {
+  display: flex;
+  gap: 8px;
+  padding: 12px 16px;
+}
+
+.panel-action-btn {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 14px;
+  border: none;
+  border-radius: var(--radius-sm);
+  font-family: 'Rajdhani', 'Inter', system-ui, sans-serif;
+  font-size: 0.75rem;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  cursor: pointer;
+  transition: all 0.2s var(--ease-out);
+}
+.panel-action-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.panel-action-btn--primary {
+  background: linear-gradient(135deg, var(--accent-primary) 0%, #2563eb 100%);
+  color: #fff;
+}
+.panel-action-btn--primary:hover:not(:disabled) {
+  box-shadow: var(--shadow-glow-strong);
+  transform: translateY(-1px);
+}
+.panel-action-btn--primary:active:not(:disabled) {
+  transform: scale(0.97);
+}
+
+.panel-action-btn--ghost {
+  background: transparent;
+  color: var(--text-secondary);
+  border: var(--border-card);
+}
+.panel-action-btn--ghost:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--text-primary);
+  border-color: var(--border-default);
+}
+
+/* ── 进度面板 ── */
+.panel-progress-text {
+  display: flex;
+  align-items: center;
+}
+
+.progress-bar-container {
+  height: 3px;
   background: rgba(255, 255, 255, 0.05);
+  margin: 0 16px;
+  border-radius: 2px;
+  overflow: hidden;
 }
-.missing-file-name {
+
+.progress-bar-fill {
+  height: 100%;
+  background: linear-gradient(90deg, var(--accent-primary), #60a5fa);
+  border-radius: 2px;
+  transition: width 0.3s ease;
+}
+
+.progress-meta {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 8px 16px 14px;
+}
+
+/* ── 维护操作 ── */
+.panel-ops-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 12px 16px 16px;
+}
+
+.ops-btn {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 14px;
+  border-radius: var(--radius-sm);
+  font-family: 'Rajdhani', 'Inter', system-ui, sans-serif;
+  font-size: 0.75rem;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  cursor: pointer;
+  transition: all 0.2s var(--ease-out);
+  border: var(--border-card);
+  background: transparent;
+  color: var(--text-secondary);
+}
+.ops-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.ops-btn--warning {
+  border-color: rgba(245, 158, 11, 0.2);
+  color: #f59e0b;
+}
+.ops-btn--warning:hover:not(:disabled) {
+  background: rgba(245, 158, 11, 0.08);
+  border-color: rgba(245, 158, 11, 0.35);
+}
+
+.ops-btn--success {
+  border-color: rgba(16, 185, 129, 0.2);
+  color: #10b981;
+}
+.ops-btn--success:hover:not(:disabled) {
+  background: rgba(16, 185, 129, 0.08);
+  border-color: rgba(16, 185, 129, 0.35);
+}
+
+/* ── 缺失文件标记 ── */
+.missing-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
+  border-radius: var(--radius-sm);
+  background: rgba(245, 158, 11, 0.15);
+  font-family: 'Rajdhani', 'Inter', system-ui, sans-serif;
+  font-size: 0.625rem;
+  font-weight: 700;
+  color: #f59e0b;
+  line-height: 1;
+}
+
+.panel-toggle-btn {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 10px;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  font-family: 'Rajdhani', 'Inter', system-ui, sans-serif;
+  font-size: 0.6875rem;
+  font-weight: 600;
+  color: var(--text-tertiary);
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+.panel-toggle-btn:hover {
+  color: var(--text-secondary);
+  background: rgba(255, 255, 255, 0.03);
+}
+
+/* ── 空状态 ── */
+.panel-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  padding: 24px;
+}
+
+/* ── 加载状态 ── */
+.panel-loading {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 16px;
+}
+
+.loading-spinner {
+  width: 16px;
+  height: 16px;
+  border: 2px solid var(--border-subtle);
+  border-top-color: var(--accent-primary);
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+}
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
+/* ── 缺失文件工具栏 ── */
+.missing-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 16px;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.missing-filter-group {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.filter-chip {
+  padding: 3px 10px;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  font-family: 'Rajdhani', 'Inter', system-ui, sans-serif;
+  font-size: 0.6875rem;
+  font-weight: 600;
+  color: var(--text-tertiary);
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+.filter-chip:hover {
+  color: var(--text-secondary);
+  background: rgba(255, 255, 255, 0.03);
+}
+.filter-chip--active {
+  color: var(--accent-primary);
+  background: rgba(59, 130, 246, 0.1);
+}
+
+.filter-count {
+  font-family: 'Rajdhani', 'Inter', system-ui, sans-serif;
+  font-size: 0.6875rem;
+  font-weight: 600;
+  color: var(--text-tertiary);
+  margin-left: 6px;
+}
+
+.missing-bulk-actions {
+  display: flex;
+  gap: 6px;
+}
+
+.bulk-btn {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 10px;
+  border-radius: var(--radius-sm);
+  font-family: 'Rajdhani', 'Inter', system-ui, sans-serif;
+  font-size: 0.6875rem;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  border: var(--border-card);
+  background: transparent;
+}
+.bulk-btn:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+.bulk-btn--danger {
+  color: #ef4444;
+  border-color: rgba(239, 68, 68, 0.15);
+}
+.bulk-btn--danger:hover:not(:disabled) {
+  background: rgba(239, 68, 68, 0.08);
+}
+.bulk-btn--primary {
+  color: var(--accent-primary);
+  border-color: rgba(59, 130, 246, 0.2);
+}
+.bulk-btn--primary:hover:not(:disabled) {
+  background: rgba(59, 130, 246, 0.08);
+}
+
+/* ── 缺失文件列表 ── */
+.missing-list {
+  display: flex;
+  flex-direction: column;
+  max-height: 320px;
+  overflow-y: auto;
+  padding: 0 16px 12px;
+  gap: 2px;
+}
+
+.missing-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 10px;
+  border-radius: var(--radius-sm);
+  background: rgba(255, 255, 255, 0.015);
+  transition: background 0.15s;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.025);
+}
+.missing-item:hover {
+  background: rgba(255, 255, 255, 0.035);
+}
+
+.missing-source-tag {
+  font-family: 'Rajdhani', 'Inter', system-ui, sans-serif;
+  font-size: 0.625rem;
+  font-weight: 700;
+  padding: 1px 6px;
+  border-radius: 2px;
+  flex-shrink: 0;
+}
+.source-wh {
+  background: rgba(59, 130, 246, 0.12);
+  color: #3b82f6;
+}
+.source-rd {
+  background: rgba(249, 115, 22, 0.12);
+  color: #f97316;
+}
+
+.missing-name {
+  flex: 1;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  flex: 1;
+  font-family: 'Inter', system-ui, sans-serif;
+  font-size: 0.75rem;
   color: var(--text-primary);
 }
-.missing-file-url {
+
+.missing-url {
   max-width: 200px;
   flex-shrink: 0;
+  font-family: 'Inter', system-ui, sans-serif;
+  font-size: 0.6875rem;
+  color: var(--text-tertiary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
-.missing-file-actions {
+
+.missing-actions {
   display: flex;
   gap: 2px;
   flex-shrink: 0;
   opacity: 0;
   transition: opacity 0.15s;
 }
-.missing-file-item:hover .missing-file-actions {
+.missing-item:hover .missing-actions {
   opacity: 1;
 }
+
+.row-action-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+.row-action-btn:disabled {
+  opacity: 0.3;
+  cursor: not-allowed;
+}
+.row-action-btn--danger { color: #ef4444; }
+.row-action-btn--danger:hover:not(:disabled) { background: rgba(239, 68, 68, 0.1); }
+.row-action-btn--primary { color: var(--accent-primary); }
+.row-action-btn--primary:hover:not(:disabled) { background: rgba(59, 130, 246, 0.1); }
 </style>

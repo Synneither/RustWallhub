@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref, onMounted, onUnmounted, computed, nextTick, watch } from "vue";
-import { invoke } from "@tauri-apps/api/core";
-import { convertFileSrc } from "@tauri-apps/api/core";
+import { invoke, convertFileSrc } from "@tauri-apps/api/core";
+import { open } from "@tauri-apps/plugin-dialog";
 import { logger } from "../utils/logger";
 
 interface LocalImage {
@@ -64,7 +64,6 @@ const cleaningThumbnails = ref(false);
 const addingOrphanName = ref("");
 const currentWallpaper = ref("");
 const galleryToolbar = ref<HTMLElement | null>(null);
-const paginationBar = ref<HTMLElement | null>(null);
 const customDir = ref("");
 const useCustomDir = ref(false);
 
@@ -189,7 +188,7 @@ async function loadImages() {
   if (loading.value) return;
   loading.value = true;
   try {
-    const result = await invoke<ListResult>("list_local_images", {
+    const result = await invoke<ListResult>("browse_image_files", {
       source: source.value,
       offset: 0,
       limit: 9999,
@@ -215,6 +214,23 @@ async function loadImages() {
     logger.error("Gallery", "加载图片失败", e);
   }
   loading.value = false;
+}
+
+async function selectCustomDirectory() {
+  try {
+    const selected = await open({
+      directory: true,
+      multiple: false,
+      title: "选择自定义目录",
+    });
+    if (selected) {
+      customDir.value = selected;
+      useCustomDir.value = true;
+      resetAndLoad();
+    }
+  } catch (e) {
+    logger.error("Gallery", "目录选择失败", e);
+  }
 }
 
 async function resetAndLoad() {
@@ -258,7 +274,7 @@ async function requestThumbnails() {
   thumbLoading.value = true;
 
   try {
-    const result = await invoke<{ items: ThumbnailResult[] }>("get_thumbnail_paths", {
+    const result = await invoke<{ items: ThumbnailResult[] }>("resolve_thumbnails", {
       source: capturedSource,
       filenames: toProcess,
       dpr: dpr,
@@ -289,7 +305,7 @@ async function deleteImage(index: number) {
       localSnackbarText.value = `已删除: ${img.name}`;
       logger.action("Gallery", "删除孤立文件", { name: img.name });
     } else {
-      await invoke<boolean>("mark_dislike_image", {
+      await invoke<boolean>("dislike_file", {
         source: source.value,
         name: img.name,
       });
@@ -323,7 +339,7 @@ async function deleteSelected() {
         await invoke<boolean>("delete_orphan_file", { source: source.value, name });
         logger.action("Gallery", "批量删除孤立文件", { name });
       } else {
-        await invoke<boolean>("mark_dislike_image", { source: source.value, name });
+        await invoke<boolean>("dislike_file", { source: source.value, name });
         logger.action("Gallery", "批量标记不喜欢", { name });
       }
       count++;
@@ -414,7 +430,7 @@ function isCurrentWallpaper(img: LocalImage): boolean {
 
 async function loadCurrentWallpaper() {
   try {
-    const data = await invoke<{ path: string }>("get_current_wallpaper");
+    const data = await invoke<{ path: string }>("get_active_wallpaper");
     currentWallpaper.value = data.path || "";
   } catch {
     currentWallpaper.value = "";
@@ -429,7 +445,7 @@ async function batchAddOrphans() {
 
   addingOrphanName.value = "batch";
   try {
-    const count = await invoke<number>("add_orphan_entries", {
+    const count = await invoke<number>("adopt_orphan_files", {
       source: source.value,
       names: orphanNames,
     });
@@ -453,7 +469,7 @@ async function batchAddOrphans() {
 async function addOrphanFromGallery(img: LocalImage) {
   addingOrphanName.value = img.name;
   try {
-    const count = await invoke<number>("add_orphan_entries", {
+    const count = await invoke<number>("adopt_orphan_files", {
       source: source.value,
       names: [img.name],
     });
@@ -549,6 +565,8 @@ onUnmounted(() => {
             variant="outlined"
             class="toolbar-dir-input"
             style="max-width: 280px;"
+            append-inner-icon="mdi-folder-open"
+            @click:append-inner="selectCustomDirectory"
             @keydown.enter="resetAndLoad"
           />
           <v-btn
@@ -720,7 +738,7 @@ onUnmounted(() => {
       </div>
     </div>
 
-    <div v-if="allImages.length > 0" class="gallery-pagination-bar" ref="paginationBar">
+    <div v-if="allImages.length > 0" class="gallery-pagination-bar">
       <v-btn icon="mdi-chevron-left" variant="text" size="small" :disabled="currentPage <= 1" @click="prevPage" />
       <span class="pagination-info">第 <strong>{{ currentPage }}</strong> / {{ totalPages }} 页</span>
       <v-btn icon="mdi-chevron-right" variant="text" size="small" :disabled="currentPage >= totalPages" @click="nextPage" />

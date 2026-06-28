@@ -73,13 +73,19 @@ fn set_kde_wallpaper(path_str: &str) -> Option<String> {
         return None;
     }
     log::info!("[set_wallpaper] detected KDE Plasma");
+    // 转义路径中的特殊字符，防止 qdbus JavaScript 上下文中的注入
+    let escaped = path_str
+        .replace('\\', "\\\\")
+        .replace('\'', "\\'")
+        .replace('\n', "\\n")
+        .replace('\r', "\\r");
     let script = format!(
         "var allDesktops = desktops();
 for (var i = 0; i < allDesktops.length; i++) {{
     var d = allDesktops[i];
     d.wallpaperPlugin = 'org.kde.image';
     d.currentConfigGroup = ['Wallpaper', 'org.kde.image', 'General'];
-    d.writeConfig('Image', 'file://{path_str}');
+    d.writeConfig('Image', 'file://{escaped}');
 }}"
     );
     let output = Command::new("qdbus")

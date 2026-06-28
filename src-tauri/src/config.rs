@@ -1,6 +1,34 @@
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
+// ---------------------------------------------------------------------------
+// Source 枚举 — 替代字符串匹配
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Source {
+    Wallhaven,
+    Reddit,
+    All,
+}
+
+impl std::fmt::Display for Source {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Source::Wallhaven => write!(f, "wallhaven"),
+            Source::Reddit => write!(f, "reddit"),
+            Source::All => write!(f, "all"),
+        }
+    }
+}
+
+impl Source {
+    pub fn is_wallhaven(self) -> bool {
+        matches!(self, Source::Wallhaven)
+    }
+}
+
 #[derive(Clone, Serialize, Deserialize, Debug)]
 pub struct AppConfig {
     // --- Wallhaven ---
@@ -82,6 +110,30 @@ impl AppConfig {
 
     pub fn reddit_thumb_dir(&self) -> PathBuf {
         PathBuf::from(&self.thumbnails_dir).join("reddit")
+    }
+
+    /// 根据 Source 获取对应的保存目录
+    pub fn save_dir_for(&self, source: Source) -> &str {
+        match source {
+            Source::Wallhaven => &self.wallhaven_save_dir,
+            Source::Reddit | Source::All => &self.reddit_save_dir,
+        }
+    }
+
+    /// 根据 Source 获取对应的数据库路径
+    pub fn db_path_for(&self, source: Source) -> &str {
+        match source {
+            Source::Wallhaven => &self.wallhaven_db_path,
+            Source::Reddit | Source::All => &self.reddit_db_path,
+        }
+    }
+
+    /// 根据 Source 获取对应的缩略图目录
+    pub fn thumb_dir_for(&self, source: Source) -> PathBuf {
+        match source {
+            Source::Wallhaven => self.wallhaven_thumb_dir(),
+            Source::Reddit | Source::All => self.reddit_thumb_dir(),
+        }
     }
 
     /// 以 db_dir 为准，同步 wallhaven_db_path / reddit_db_path
@@ -244,13 +296,15 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("config.json");
 
-        let mut cfg = AppConfig::default();
-        cfg.wallhaven_api_key = "test_key".into();
-        cfg.wallhaven_categories = "111".into();
-        cfg.wallhaven_max_images = 50;
-        cfg.reddit_url = "https://reddit.com/r/test".into();
-        cfg.download_concurrency = 12;
-        cfg.thumbnail_dpr = 3;
+        let cfg = AppConfig {
+            wallhaven_api_key: "test_key".into(),
+            wallhaven_categories: "111".into(),
+            wallhaven_max_images: 50,
+            reddit_url: "https://reddit.com/r/test".into(),
+            download_concurrency: 12,
+            thumbnail_dpr: 3,
+            ..Default::default()
+        };
         cfg.save(&path).unwrap();
 
         let loaded = AppConfig::load(&path).unwrap();

@@ -1,8 +1,8 @@
 <script setup lang="ts">
 import { ref, onMounted, onUnmounted } from "vue";
-import { invoke } from "@tauri-apps/api/core";
-import { convertFileSrc } from "@tauri-apps/api/core";
+import { invoke, convertFileSrc } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import { open } from "@tauri-apps/plugin-dialog";
 import { logger } from "../utils/logger";
 
 defineProps<{
@@ -58,6 +58,23 @@ async function loadConfig() {
     };
   } catch (e) {
     logger.error("Reddit", "配置加载失败", e);
+  }
+}
+
+async function selectDirectory(field: "reddit_save_dir" | "reddit_db_path") {
+  try {
+    const isDir = field === "reddit_save_dir";
+    const selected = await open({
+      directory: isDir,
+      multiple: false,
+      title: isDir ? "选择保存目录" : "选择数据库文件",
+      filters: isDir ? undefined : [{ name: "SQLite 数据库", extensions: ["db"] }],
+    });
+    if (selected && config.value) {
+      config.value[field] = selected;
+    }
+  } catch (e) {
+    logger.error("Reddit", "路径选择失败", e);
   }
 }
 
@@ -148,10 +165,10 @@ onUnmounted(() => {
           class="ms-3"
           style="background: rgba(255,255,255,0.06)"
           :disabled="downloading"
-          @click="() => { logger.action('Reddit', '从数据库补下载'); emit('action', () => invoke('start_db_download', { source: 'reddit' })); }"
+          @click="() => { logger.action('Reddit', '下载所有喜欢的文件'); emit('action', () => invoke('recover_database_files', { source: 'reddit' })); }"
         >
           <v-icon start>mdi-database-sync</v-icon>
-          从数据库补下载
+          下载所有喜欢的文件
         </v-btn>
 
         <v-btn
@@ -176,6 +193,8 @@ onUnmounted(() => {
             :rules="[requiredRule]"
             density="compact"
             hide-details="auto"
+            append-inner-icon="mdi-folder-open"
+            @click:append-inner="selectDirectory('reddit_save_dir')"
           />
           <v-text-field
             v-model="config.reddit_db_path"
@@ -183,6 +202,8 @@ onUnmounted(() => {
             :rules="[requiredRule]"
             density="compact"
             hide-details="auto"
+            append-inner-icon="mdi-file-find"
+            @click:append-inner="selectDirectory('reddit_db_path')"
           />
           <v-text-field
             v-model="config.reddit_url"
@@ -247,7 +268,7 @@ onUnmounted(() => {
       <v-card-text>
         <v-btn variant="tonal" color="warning" class="me-3" :disabled="downloading"
           @click="emit('action', async () => {
-            const count = await invoke('mark_dislike', { source: 'reddit' }) as number;
+            const count = await invoke('mark_disliked_files', { source: 'reddit' }) as number;
             localSnackbarText.value = `已标记 ${count} 张缺失图片为不喜欢`;
             localSnackbar.value = true;
             logger.action('Reddit', '标记缺失图片为不喜欢', { count });
@@ -258,7 +279,7 @@ onUnmounted(() => {
         </v-btn>
         <v-btn variant="tonal" color="success" :disabled="downloading"
           @click="emit('action', async () => {
-            const count = await invoke('restore_love', { source: 'reddit' }) as number;
+            const count = await invoke('restore_all_files', { source: 'reddit' }) as number;
             localSnackbarText.value = `已还原 ${count} 张图片为喜欢`;
             localSnackbar.value = true;
             logger.action('Reddit', '全部恢复为喜欢', { count });

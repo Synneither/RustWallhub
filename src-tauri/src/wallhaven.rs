@@ -1,5 +1,18 @@
 use serde::Deserialize;
 
+#[derive(Debug, Clone)]
+pub struct WallhavenSearchParams {
+    pub page: u32,
+    pub categories: String,
+    pub purity: String,
+    pub sorting: String,
+    pub order: String,
+    pub top_range: String,
+    pub atleast: String,
+    pub ratios: String,
+    pub q: String,
+}
+
 #[derive(Deserialize, Debug, Clone)]
 pub struct WallhavenImage {
     pub id: String,
@@ -43,58 +56,49 @@ impl WallhavenClient {
         Self { client, api_key }
     }
 
-    #[allow(clippy::too_many_arguments)]
     pub async fn search(
         &self,
-        page: u32,
-        categories: &str,
-        purity: &str,
-        sorting: &str,
-        order: &str,
-        top_range: &str,
-        atleast: &str,
-        ratios: &str,
-        q: &str,
+        params: &WallhavenSearchParams,
     ) -> Result<WallhavenResponse, String> {
         log::info!(
             "[wallhaven] search: page={} categories={} purity={} sorting={}",
-            page,
-            categories,
-            purity,
-            sorting
+            params.page,
+            params.categories,
+            params.purity,
+            params.sorting
         );
-        let mut params: Vec<(&str, String)> = vec![
-            ("page", page.to_string()),
-            ("categories", categories.to_string()),
-            ("purity", purity.to_string()),
-            ("sorting", sorting.to_string()),
+        let mut query_params: Vec<(&str, String)> = vec![
+            ("page", params.page.to_string()),
+            ("categories", params.categories.clone()),
+            ("purity", params.purity.clone()),
+            ("sorting", params.sorting.clone()),
         ];
 
         // order: 默认为 desc（Wallhaven API 要求当 sorting=toplist 时只能用 desc）
-        if !order.is_empty() && sorting != "toplist" {
-            params.push(("order", order.to_string()));
+        if !params.order.is_empty() && params.sorting != "toplist" {
+            query_params.push(("order", params.order.clone()));
         }
 
         if !self.api_key.is_empty() {
-            params.push(("apikey", self.api_key.clone()));
+            query_params.push(("apikey", self.api_key.clone()));
         }
-        if !q.is_empty() {
-            params.push(("q", q.to_string()));
+        if !params.q.is_empty() {
+            query_params.push(("q", params.q.clone()));
         }
-        if !atleast.is_empty() {
-            params.push(("atleast", atleast.to_string()));
+        if !params.atleast.is_empty() {
+            query_params.push(("atleast", params.atleast.clone()));
         }
-        if !ratios.is_empty() {
-            params.push(("ratios", ratios.to_string()));
+        if !params.ratios.is_empty() {
+            query_params.push(("ratios", params.ratios.clone()));
         }
-        if sorting == "toplist" && !top_range.is_empty() {
-            params.push(("topRange", top_range.to_string()));
+        if params.sorting == "toplist" && !params.top_range.is_empty() {
+            query_params.push(("topRange", params.top_range.clone()));
         }
 
         let resp = self
             .client
             .get("https://wallhaven.cc/api/v1/search")
-            .query(&params)
+            .query(&query_params)
             .send()
             .await
             .map_err(|e| format!("请求失败: {e}"))?;
@@ -111,7 +115,7 @@ impl WallhavenClient {
             serde_json::from_str(&body).map_err(|e| format!("JSON 解析失败: {e}"))?;
         log::info!(
             "[wallhaven] search page {} returned {} results",
-            page,
+            params.page,
             parsed.data.len()
         );
         Ok(parsed)

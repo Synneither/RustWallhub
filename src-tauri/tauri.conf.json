@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "rustwallhub",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "identifier": "com.rustwallhub.app",
   "build": {
     "beforeDevCommand": "deno task dev",
@@ -20,13 +20,12 @@
       }
     ],
     "security": {
-      "csp": null,
+      "csp": "default-src 'self'; img-src 'self' https://th.wallhaven.cc; style-src 'self' 'unsafe-inline'; connect-src 'self'",
       "assetProtocol": {
         "enable": true,
         "scope": [
           "$HOME/.cache/rustwallhub/**",
-          "$HOME/Pictures/**",
-          "$HOME/**"
+          "$HOME/Pictures/**"
         ]
       }
     }

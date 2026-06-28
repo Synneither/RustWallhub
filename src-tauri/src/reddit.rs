@@ -49,11 +49,30 @@ pub struct RedditImage {
 
 pub struct RedditClient {
     client: reqwest::Client,
+    url: String,
 }
 
 impl RedditClient {
-    pub fn new(client: reqwest::Client) -> Self {
-        Self { client }
+    pub fn new(client: reqwest::Client, url: String) -> Self {
+        Self { client, url }
+    }
+
+    /// 根据配置的 reddit_url 构建 JSON API URL
+    fn build_api_url(&self, limit: u32) -> String {
+        let trimmed = self.url.trim_end_matches('/');
+        let (base, query) = trimmed.split_once('?').unwrap_or((trimmed, ""));
+
+        let api_base = if base.ends_with(".json") {
+            base.to_string()
+        } else {
+            format!("{}/.json", base)
+        };
+
+        if query.is_empty() {
+            format!("{}?limit={}", api_base, limit)
+        } else {
+            format!("{}?{}&limit={}", api_base, query, limit)
+        }
     }
 
     pub async fn fetch_posts(
@@ -61,7 +80,7 @@ impl RedditClient {
         after: Option<&str>,
         limit: u32,
     ) -> Result<(Vec<RedditImage>, Option<String>), String> {
-        let mut api_url = format!("https://www.reddit.com/r/Animewallpaper/.json?limit={limit}");
+        let mut api_url = self.build_api_url(limit);
         if let Some(after_val) = after {
             use std::fmt::Write;
             let _ = write!(api_url, "&after={after_val}");
@@ -168,6 +187,14 @@ impl RedditClient {
 
     async fn get_imgur_album(&self, url: &str) -> Option<String> {
         log::info!("[reddit] get_imgur_album: url={}", url);
+
+        // SSRF 保护：只允许 https 协议且 host 为 imgur.com
+        let lower = url.to_lowercase();
+        if !lower.starts_with("https://") || !lower.contains("imgur.com") {
+            log::warn!("[reddit] blocked non-imgur URL: {}", url);
+            return None;
+        }
+
         let resp = self.client.get(url).send().await.ok()?;
         let body = resp.text().await.ok()?;
 

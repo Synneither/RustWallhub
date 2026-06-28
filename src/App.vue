@@ -1,11 +1,10 @@
 <script setup lang="ts">
-import { ref, watch, onMounted, onUnmounted } from "vue";
+import { ref, watch, onMounted, onUnmounted, defineAsyncComponent } from "vue";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { useTheme as useVuetifyTheme } from "vuetify";
 import { logger } from "./utils/logger";
 import { useTheme } from "./stores/theme";
-import { defineAsyncComponent } from "vue";
 
 const Dashboard = defineAsyncComponent(() => import("./views/Dashboard.vue"));
 const WallhavenView = defineAsyncComponent(() => import("./views/WallhavenView.vue"));
@@ -18,34 +17,34 @@ const { theme: appTheme, toggle: toggleTheme } = useTheme();
 const vuetifyTheme = useVuetifyTheme();
 const themeVars: Record<string, Record<string, string>> = {
   dim: {
-    '--surface-deep': '#18181b',
-    '--surface-base': '#1e1f23',
-    '--surface-card': '#27282d',
-    '--surface-elevated': '#2f3036',
-    '--surface-hover': '#37383e',
-    '--surface-card-rgb': '39, 40, 45',
-    '--surface-deep-rgb': '24, 24, 27',
-    '--text-primary': '#e4e5e9',
-    '--text-secondary': '#9ca0ab',
-    '--text-tertiary': '#6b6f7a',
-    '--text-disabled': '#4a4d55',
-    '--border-subtle': '#383940',
-    '--border-default': '#484a50',
+    '--surface-deep': '#0a0b0e',
+    '--surface-base': '#101218',
+    '--surface-card': '#161827',
+    '--surface-elevated': '#1c1f32',
+    '--surface-hover': '#22263b',
+    '--surface-card-rgb': '22, 24, 39',
+    '--surface-deep-rgb': '10, 11, 14',
+    '--text-primary': '#e2e4ea',
+    '--text-secondary': '#8b8fa3',
+    '--text-tertiary': '#5c6075',
+    '--text-disabled': '#3b3e50',
+    '--border-subtle': '#2a2d40',
+    '--border-default': '#3a3d52',
   },
   light: {
-    '--surface-deep': '#e8e5df',
-    '--surface-base': '#f5f2ed',
-    '--surface-card': '#ffffff',
-    '--surface-elevated': '#faf8f5',
-    '--surface-hover': '#f0ede8',
-    '--surface-card-rgb': '255, 255, 255',
-    '--surface-deep-rgb': '232, 229, 223',
-    '--text-primary': '#1c1d22',
-    '--text-secondary': '#6b6f7a',
-    '--text-tertiary': '#9ca0ab',
-    '--text-disabled': '#bcc0c8',
+    '--surface-deep': '#e2dfd8',
+    '--surface-base': '#efece6',
+    '--surface-card': '#faf8f5',
+    '--surface-elevated': '#ffffff',
+    '--surface-hover': '#f4f1eb',
+    '--surface-card-rgb': '250, 248, 245',
+    '--surface-deep-rgb': '226, 223, 216',
+    '--text-primary': '#1a1b23',
+    '--text-secondary': '#5c6075',
+    '--text-tertiary': '#8b8fa3',
+    '--text-disabled': '#b0b3c0',
     '--border-subtle': '#d4d2ce',
-    '--border-default': '#c0bdb8',
+    '--border-default': '#b0b3c0',
   },
 };
 
@@ -56,10 +55,10 @@ function applyTheme(t: 'dim' | 'light') {
     root.style.setProperty(key, val);
   }
   root.setAttribute('data-theme', t);
-  vuetifyTheme.name.value = t === 'dim' ? 'dark' : 'light';
+  vuetifyTheme.name.value = t === 'dim' ? 'arknights' : 'light';
   const meta = document.querySelector('meta[name="theme-color"]');
   if (meta) {
-    meta.setAttribute('content', t === 'dim' ? '#1e1f23' : '#f5f2ed');
+    meta.setAttribute('content', t === 'dim' ? '#101218' : '#efece6');
   }
 }
 
@@ -123,11 +122,11 @@ onUnmounted(() => {
 });
 
 const navItems = [
-  { key: "dashboard", title: "仪表盘", icon: "mdi-view-dashboard" },
-  { key: "wallhaven", title: "Wallhaven", icon: "mdi-image-search" },
-  { key: "reddit", title: "Reddit", icon: "mdi-reddit" },
-  { key: "db", title: "数据库", icon: "mdi-database-cog" },
-  { key: "gallery", title: "图库", icon: "mdi-image-multiple" },
+  { key: "dashboard", title: "仪表盘", icon: "mdi-view-dashboard-outline", iconActive: "mdi-view-dashboard" },
+  { key: "wallhaven", title: "Wallhaven", icon: "mdi-image-search-outline", iconActive: "mdi-image-search" },
+  { key: "reddit", title: "Reddit", icon: "mdi-reddit", iconActive: "mdi-reddit" },
+  { key: "db", title: "数据库", icon: "mdi-database-cog-outline", iconActive: "mdi-database-cog" },
+  { key: "gallery", title: "图库", icon: "mdi-image-multiple-outline", iconActive: "mdi-image-multiple" },
 ];
 
 function onNavClick(item: { key: string; title: string }) {
@@ -150,58 +149,104 @@ async function runAction(fn: () => Promise<unknown>) {
 
 <template>
   <v-app id="inspire">
+    <!-- Arknights 风格侧边导航 -->
     <v-navigation-drawer
       v-model="drawer"
       :rail="rail"
       :width="240"
       rail-width="64"
-      class="sidebar-drawer"
+      class="ark-drawer"
       @click="rail = false"
     >
-      <div class="sidebar-header">
-        <div class="sidebar-logo">{{ rail ? 'RW' : 'RustWallhub' }}</div>
-        <div v-if="!rail" class="sidebar-subtitle">壁纸管理器</div>
-        <div class="sidebar-header-accent" />
+      <div class="drawer-header">
+        <div class="drawer-logo-area">
+          <div class="drawer-logo-hex">
+            <svg width="28" height="32" viewBox="0 0 28 32" fill="none">
+              <polygon points="14,0 28,8 28,24 14,32 0,24 0,8" fill="rgba(59,130,246,0.15)" stroke="#3b82f6" stroke-width="1.5" />
+              <polygon points="14,6 22,10 22,22 14,26 6,22 6,10" fill="rgba(59,130,246,0.1)" stroke="#3b82f6" stroke-width="0.8" />
+            </svg>
+          </div>
+          <div class="drawer-logo-text" :class="{ 'drawer-logo-text--hidden': rail }">
+            <span class="drawer-title">RustWallhub</span>
+            <span class="drawer-subtitle">壁纸管理器</span>
+          </div>
+        </div>
+        <div class="drawer-accent-line" />
       </div>
-      <v-divider class="sidebar-divider" />
-      <v-list density="compact" nav class="sidebar-nav">
-        <v-list-item
+
+      <v-divider class="drawer-divider" />
+
+      <div class="drawer-nav-wrapper">
+        <div
           v-for="item in navItems"
           :key="item.key"
-          :prepend-icon="item.icon"
-          :title="item.title"
-          :active="currentView === item.key"
-          :color="currentView === item.key ? '#6c8cff' : undefined"
-          variant="text"
-          class="nav-item"
+          class="drawer-nav-item"
+          :class="{ 'drawer-nav-item--active': currentView === item.key }"
           @click="onNavClick(item)"
-        />
-      </v-list>
+        >
+          <div class="nav-item-indicator" v-if="currentView === item.key" />
+          <v-icon
+            :size="rail ? 20 : 20"
+            class="nav-item-icon"
+            :class="{ 'nav-item-icon--active': currentView === item.key }"
+          >
+            {{ currentView === item.key ? item.iconActive : item.icon }}
+          </v-icon>
+          <span
+            class="nav-item-label"
+            :class="{ 'nav-item-label--active': currentView === item.key }"
+            v-show="!rail"
+          >
+            {{ item.title }}
+          </span>
+          <div
+            class="nav-item-glow"
+            v-if="currentView === item.key && !rail"
+          />
+        </div>
+      </div>
+
       <template v-slot:append>
-        <div class="sidebar-rail-toggle">
+        <div class="drawer-footer">
           <v-btn
             :icon="rail ? 'mdi-chevron-right' : 'mdi-chevron-left'"
             variant="text"
             size="small"
-            color="grey"
+            class="drawer-toggle-btn"
             @click.stop="rail = !rail"
           />
         </div>
       </template>
     </v-navigation-drawer>
 
-    <v-app-bar flat density="compact" class="top-bar">
-      <v-app-bar-nav-icon @click="drawer = !drawer" />
-      <div v-if="downloading" class="download-indicator" :style="{ background: progressMsg?.includes('Reddit') ? '#ff6b35' : '#6c8cff' }" />
-      <v-app-bar-title class="top-bar-title">
+    <!-- Arknights 风格顶栏 -->
+    <v-app-bar flat density="compact" class="ark-topbar">
+      <v-app-bar-nav-icon @click="drawer = !drawer" class="topbar-nav-icon" />
+      <div v-if="downloading" class="topbar-dot" :style="{ background: progressMsg?.includes('Reddit') ? '#f97316' : '#3b82f6' }" />
+      <v-app-bar-title class="topbar-title">
         {{ navItems.find(i => i.key === currentView)?.title }}
       </v-app-bar-title>
+
+      <template v-if="downloading">
+        <div class="topbar-progress-ring">
+          <svg width="18" height="18" viewBox="0 0 18 18">
+            <circle cx="9" cy="9" r="7.5" fill="none" stroke="rgba(59,130,246,0.15)" stroke-width="1.5" />
+            <circle cx="9" cy="9" r="7.5" fill="none" stroke="#3b82f6" stroke-width="1.5"
+              stroke-dasharray="47.12"
+              :stroke-dashoffset="progressTotal > 0 ? 47.12 * (1 - progressDone / progressTotal) : 47.12"
+              stroke-linecap="round"
+              transform="rotate(-90 9 9)"
+              style="transition: stroke-dashoffset 0.3s ease"
+            />
+          </svg>
+        </div>
+      </template>
 
       <v-btn
         :icon="appTheme === 'dim' ? 'mdi-weather-night' : 'mdi-weather-sunny'"
         variant="text"
         size="small"
-        class="theme-toggle-btn"
+        class="topbar-icon-btn"
         @click="toggleTheme"
       />
 
@@ -210,158 +255,295 @@ async function runAction(fn: () => Promise<unknown>) {
           color="error"
           variant="tonal"
           size="small"
-          class="mr-3"
-          @click="async () => { logger.action('App', '取消下载'); try { await invoke('cancel_download'); } catch (e) { logger.error('App', '取消下载失败', e); } }"
+          class="topbar-cancel-btn"
+          @click="async () => { logger.action('App', '取消下载'); try { await invoke('cancel_downloads'); } catch (e) { logger.error('App', '取消下载失败', e); } }"
         >
-          <v-icon start size="14">mdi-stop-circle</v-icon>
+          <v-icon start size="14">mdi-stop-circle-outline</v-icon>
           取消
         </v-btn>
       </template>
     </v-app-bar>
 
-    <v-main>
+    <v-main class="hex-bg">
       <div class="view-wrapper">
         <v-progress-linear
           v-if="downloading"
           :model-value="progressTotal > 0 ? (progressDone / progressTotal) * 100 : 0"
-          height="3"
-          color="#6c8cff"
+          height="2"
+          color="#3b82f6"
         />
         <Transition name="view-fade" mode="out-in">
-            <div :key="currentView">
-              <Dashboard
-                v-if="currentView === 'dashboard'"
-                :downloading="downloading"
-                :progress-msg="progressMsg"
-                :progress-done="progressDone"
-                :progress-total="progressTotal"
-                @action="runAction"
-              />
-              <WallhavenView
-                v-if="currentView === 'wallhaven'"
-                :downloading="downloading"
-                @action="runAction"
-              />
-              <RedditView
-                v-if="currentView === 'reddit'"
-                :downloading="downloading"
-                @action="runAction"
-              />
-              <GalleryView v-if="currentView === 'gallery'" />
-              <DbSettingsView v-if="currentView === 'db'" />
-            </div>
+          <div :key="currentView" class="view-content">
+            <Dashboard
+              v-if="currentView === 'dashboard'"
+              :downloading="downloading"
+              :progress-msg="progressMsg"
+              :progress-done="progressDone"
+              :progress-total="progressTotal"
+              @action="runAction"
+            />
+            <WallhavenView
+              v-if="currentView === 'wallhaven'"
+              :downloading="downloading"
+              @action="runAction"
+            />
+            <RedditView
+              v-if="currentView === 'reddit'"
+              :downloading="downloading"
+              @action="runAction"
+            />
+            <GalleryView v-if="currentView === 'gallery'" />
+            <DbSettingsView v-if="currentView === 'db'" />
+          </div>
         </Transition>
       </div>
     </v-main>
 
-    <v-snackbar v-model="snackbar" :timeout="3000" location="bottom">
+    <v-snackbar v-model="snackbar" :timeout="3000" location="bottom" class="ark-snackbar">
       {{ snackbarText }}
     </v-snackbar>
   </v-app>
 </template>
 
 <style>
-.sidebar-drawer {
-  background: var(--surface-base) !important;
-  border-right: 1px solid rgba(255, 255, 255, 0.06) !important;
+/* ── Arknights 侧边导航 ── */
+.ark-drawer {
+  background: var(--surface-deep) !important;
+  border-right: 1px solid rgba(59, 130, 246, 0.08) !important;
   transition: width 0.2s var(--ease-out) !important;
 }
 
-.sidebar-header {
+.drawer-header {
   padding: 20px 16px 12px;
   position: relative;
 }
 
-.sidebar-logo {
-  font-size: 1.125rem;
+.drawer-logo-area {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.drawer-logo-hex {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 36px;
+}
+
+.drawer-logo-text {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  overflow: hidden;
+  transition: opacity 0.15s ease;
+}
+
+.drawer-logo-text--hidden {
+  opacity: 0;
+  width: 0;
+}
+
+.drawer-title {
+  font-family: 'Rajdhani', 'Inter', system-ui, sans-serif;
+  font-size: 1.1rem;
   font-weight: 700;
   color: var(--text-primary);
-  letter-spacing: -0.01em;
-  transition: all 0.2s var(--ease-out);
+  letter-spacing: 0.02em;
+  line-height: 1.2;
 }
 
-.sidebar-subtitle {
-  font-size: 0.6875rem;
-  letter-spacing: 0.05em;
-  color: var(--text-secondary);
-  margin-top: 2px;
+.drawer-subtitle {
+  font-family: 'Rajdhani', 'Inter', system-ui, sans-serif;
+  font-size: 0.65rem;
+  font-weight: 500;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-tertiary);
 }
 
-.sidebar-header-accent {
-  height: 2px;
-  background: linear-gradient(90deg, var(--accent-primary), transparent);
+.drawer-accent-line {
+  height: 1px;
+  background: linear-gradient(90deg, var(--accent-primary) 0%, transparent 70%);
   margin: 12px 0 0;
   opacity: 0.4;
-  border-radius: 1px;
 }
 
-.sidebar-divider {
-  border-color: rgba(255, 255, 255, 0.06) !important;
+.drawer-divider {
+  border-color: rgba(255, 255, 255, 0.04) !important;
   margin: 0 12px !important;
 }
 
-.sidebar-nav {
-  padding: 8px !important;
+.drawer-nav-wrapper {
+  padding: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
 }
 
-.nav-item {
-  border-radius: 8px;
-  margin-bottom: 2px;
-  transition: all 0.25s var(--ease-out);
+.drawer-nav-item {
   position: relative;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 12px;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: all 0.2s var(--ease-out);
+  user-select: none;
+  overflow: hidden;
 }
 
-.nav-item:hover {
-  background: rgba(255, 255, 255, 0.04);
+.drawer-nav-item:hover {
+  background: rgba(255, 255, 255, 0.03);
 }
 
-.nav-item.v-list-item--active {
-  background: linear-gradient(90deg, rgba(108, 140, 255, 0.12) 0%, transparent 100%) !important;
-  box-shadow: inset 3px 0 0 var(--accent-primary), 0 0 0 1px rgba(108, 140, 255, 0.06);
+.drawer-nav-item--active {
+  background: rgba(59, 130, 246, 0.08) !important;
 }
 
-.nav-item.v-list-item--active::after {
-  content: '';
+.nav-item-indicator {
   position: absolute;
-  inset: 0;
-  border-radius: 8px;
-  box-shadow: 0 0 16px rgba(108, 140, 255, 0.08);
+  left: 0;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 3px;
+  height: 20px;
+  background: var(--accent-primary);
+  border-radius: 0 2px 2px 0;
+  box-shadow: 0 0 8px rgba(59, 130, 246, 0.4);
+}
+
+.nav-item-icon {
+  color: var(--text-tertiary);
+  transition: color 0.2s ease;
+  flex-shrink: 0;
+  z-index: 1;
+}
+
+.nav-item-icon--active {
+  color: var(--accent-primary) !important;
+}
+
+.drawer-nav-item:hover .nav-item-icon {
+  color: var(--text-secondary);
+}
+
+.nav-item-label {
+  font-family: 'Rajdhani', 'Inter', system-ui, sans-serif;
+  font-size: 0.8125rem;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  color: var(--text-secondary);
+  transition: color 0.2s ease;
+  z-index: 1;
+}
+
+.nav-item-label--active {
+  color: var(--text-primary);
+}
+
+.drawer-nav-item:hover .nav-item-label {
+  color: var(--text-primary);
+}
+
+.nav-item-glow {
+  position: absolute;
+  right: -20px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 80px;
+  height: 40px;
+  background: radial-gradient(ellipse, rgba(59, 130, 246, 0.08), transparent);
   pointer-events: none;
 }
 
-.sidebar-rail-toggle {
+.drawer-footer {
   display: flex;
   justify-content: center;
   padding: 8px;
-  border-top: 1px solid rgba(255, 255, 255, 0.06);
+  border-top: 1px solid rgba(255, 255, 255, 0.04);
   margin: 0 12px;
 }
 
+.drawer-toggle-btn {
+  color: var(--text-tertiary) !important;
+}
+
+/* ── Arknights 顶栏 ── */
+.ark-topbar {
+  background: rgba(var(--surface-deep-rgb), 0.85) !important;
+  backdrop-filter: blur(16px) saturate(140%);
+  -webkit-backdrop-filter: blur(16px) saturate(140%);
+  border-bottom: 1px solid rgba(59, 130, 246, 0.06) !important;
+  transition: background 0.2s;
+}
+
+.topbar-nav-icon {
+  color: var(--text-secondary) !important;
+}
+
+.topbar-title {
+  font-family: 'Rajdhani', 'Inter', system-ui, sans-serif !important;
+  font-size: 0.875rem !important;
+  font-weight: 700 !important;
+  letter-spacing: 0.04em !important;
+  color: var(--text-primary) !important;
+}
+
+.topbar-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  margin-left: 8px;
+  flex-shrink: 0;
+  box-shadow: 0 0 6px currentColor;
+  animation: pulse 1.5s infinite;
+}
+
+.topbar-progress-ring {
+  display: flex;
+  align-items: center;
+  margin-right: 4px;
+}
+
+.topbar-icon-btn {
+  color: var(--text-tertiary) !important;
+  margin-right: 4px;
+}
+.topbar-icon-btn:hover {
+  color: var(--text-primary) !important;
+}
+
+.topbar-cancel-btn {
+  font-family: 'Rajdhani', 'Inter', system-ui, sans-serif !important;
+  font-weight: 600 !important;
+  letter-spacing: 0.03em !important;
+  margin-right: 8px;
+}
+
+/* ── 视图容器 ── */
 .view-wrapper {
   position: relative;
   min-height: 100%;
 }
 
-.top-bar {
-  background: rgba(var(--surface-card-rgb), 0.85) !important;
-  backdrop-filter: blur(12px);
-  -webkit-backdrop-filter: blur(12px);
-  border-bottom: 1px solid rgba(255, 255, 255, 0.06) !important;
-  transition: background 0.2s;
+.view-content {
+  padding: 20px 24px;
+  position: relative;
+  z-index: 1;
 }
 
-.top-bar-title {
-  font-size: 0.875rem !important;
-  font-weight: 600 !important;
-  color: var(--text-primary) !important;
+/* ── Snackbar ── */
+.ark-snackbar {
+  font-family: 'Rajdhani', 'Inter', system-ui, sans-serif;
 }
 
-.download-indicator {
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  margin-left: 8px;
-  flex-shrink: 0;
-  animation: pulse 1.5s infinite;
+/* ── 脉冲动画 ── */
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.4; }
 }
 </style>
