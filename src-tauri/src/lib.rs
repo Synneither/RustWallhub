@@ -969,10 +969,8 @@ async fn mark_disliked_files(
                 &config.wallhaven_db_path,
                 &config.wallhaven_save_dir,
             )?;
-            let r = db::mark_missing_dislike_reddit(
-                &config.reddit_db_path,
-                &config.reddit_save_dir,
-            )?;
+            let r =
+                db::mark_missing_dislike_reddit(&config.reddit_db_path, &config.reddit_save_dir)?;
             Ok(w + r)
         }
     }
@@ -995,7 +993,8 @@ async fn count_missing_images(
             &config.reddit_save_dir,
         )?),
         Source::All => {
-            let w = db::count_missing_wallhaven(&config.wallhaven_db_path, &config.wallhaven_save_dir)?;
+            let w =
+                db::count_missing_wallhaven(&config.wallhaven_db_path, &config.wallhaven_save_dir)?;
             let r = db::count_missing_reddit(&config.reddit_db_path, &config.reddit_save_dir)?;
             Ok(w + r)
         }
@@ -1037,8 +1036,10 @@ async fn list_missing_images(
             &config.reddit_save_dir,
         )?),
         Source::All => {
-            let mut all =
-                db::get_wallhaven_missing_files(&config.wallhaven_db_path, &config.wallhaven_save_dir)?;
+            let mut all = db::get_wallhaven_missing_files(
+                &config.wallhaven_db_path,
+                &config.wallhaven_save_dir,
+            )?;
             all.extend(db::get_reddit_missing_files(
                 &config.reddit_db_path,
                 &config.reddit_save_dir,
@@ -1099,7 +1100,11 @@ async fn list_orphan_files(
             &config.wallhaven_save_dir,
             &config.wallhaven_db_path,
         ),
-        Source::Reddit => check_source(Source::Reddit, &config.reddit_save_dir, &config.reddit_db_path),
+        Source::Reddit => check_source(
+            Source::Reddit,
+            &config.reddit_save_dir,
+            &config.reddit_db_path,
+        ),
         Source::All => {
             let mut all = check_source(
                 Source::Wallhaven,
@@ -1149,7 +1154,11 @@ async fn delete_orphan_file(
     source: Source,
     name: String,
 ) -> Result<bool, AppError> {
-    log::info!("[CMD] delete_orphan_file: source={:?}, name={}", source, name);
+    log::info!(
+        "[CMD] delete_orphan_file: source={:?}, name={}",
+        source,
+        name
+    );
     let config = load_config(&state)?;
     let save_dir = config.save_dir_for(source);
     let thumb_dir = config.thumb_dir_for(source);
@@ -1193,7 +1202,10 @@ async fn adopt_orphan_files(
     for name in &names {
         let file_path = std::path::Path::new(&save_dir).join(name);
         if !file_path.is_file() {
-            log::warn!("[adopt_orphan_files] file not found: {}", file_path.display());
+            log::warn!(
+                "[adopt_orphan_files] file not found: {}",
+                file_path.display()
+            );
             continue;
         }
         let bytes = std::fs::read(&file_path).map_err(AppError::Io)?;
@@ -1305,14 +1317,8 @@ async fn download_missing_images(
 
             match &download_results[i] {
                 Ok((bytes, _content_type)) => {
-                    if let Some(thumb_handle) = save_image(
-                        &file_path,
-                        bytes,
-                        &thumb_dir,
-                        &img.name,
-                        thumbnail_dpr,
-                    )
-                    .await
+                    if let Some(thumb_handle) =
+                        save_image(&file_path, bytes, &thumb_dir, &img.name, thumbnail_dpr).await
                     {
                         let _ = thumb_handle.await;
                         success += 1;
@@ -1923,7 +1929,7 @@ pub fn run() {
 
             let mut config = AppConfig::load(&config_path).unwrap_or_default();
             config.sync_db_dir(); // 统一数据库目录
-            // 统一归一化路径（与 load_config 一致）
+                                  // 统一归一化路径（与 load_config 一致）
             if let Some(base_dir) = config_path.parent() {
                 config.db_dir = normalize_config_path(base_dir, config.db_dir);
                 config.sync_db_dir();

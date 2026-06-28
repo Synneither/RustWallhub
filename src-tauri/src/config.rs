@@ -146,10 +146,7 @@ impl AppConfig {
                 .join("wallhaven_images.db")
                 .to_string_lossy()
                 .to_string();
-            self.reddit_db_path = dir
-                .join("reddit_images.db")
-                .to_string_lossy()
-                .to_string();
+            self.reddit_db_path = dir.join("reddit_images.db").to_string_lossy().to_string();
         }
     }
 }
