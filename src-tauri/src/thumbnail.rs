@@ -137,15 +137,9 @@ pub fn save_thumbnail_from_bytes(
 
 /// 删除某文件的所有缩略图（兼容新旧格式 + 多 DPR）
 pub fn remove_thumbnails(thumb_dir: &Path, filename: &str) {
-    let old = thumb_dir.join(filename);
-    if old.exists() {
-        std::fs::remove_file(&old).ok();
-    }
+    let _ = std::fs::remove_file(thumb_dir.join(filename));
     for dpr in [1u32, 2, 3] {
-        let tp = thumb_dir.join(thumb_filename_for_dpr(filename, dpr));
-        if tp.exists() {
-            std::fs::remove_file(&tp).ok();
-        }
+        let _ = std::fs::remove_file(thumb_dir.join(thumb_filename_for_dpr(filename, dpr)));
     }
 }
 

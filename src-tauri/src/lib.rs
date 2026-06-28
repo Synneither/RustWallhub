@@ -1065,7 +1065,7 @@ async fn list_orphan_files(
     let config = load_config(&state)?;
 
     let check_source =
-        |src: &str, save_dir: &str, db_path: &str| -> Result<Vec<OrphanFile>, AppError> {
+        |src: Source, save_dir: &str, db_path: &str| -> Result<Vec<OrphanFile>, AppError> {
             let dir = std::path::Path::new(save_dir);
             if !dir.is_dir() {
                 return Ok(Vec::new());
@@ -1095,19 +1095,19 @@ async fn list_orphan_files(
 
     match source {
         Source::Wallhaven => check_source(
-            "wallhaven",
+            Source::Wallhaven,
             &config.wallhaven_save_dir,
             &config.wallhaven_db_path,
         ),
-        Source::Reddit => check_source("reddit", &config.reddit_save_dir, &config.reddit_db_path),
+        Source::Reddit => check_source(Source::Reddit, &config.reddit_save_dir, &config.reddit_db_path),
         Source::All => {
             let mut all = check_source(
-                "wallhaven",
+                Source::Wallhaven,
                 &config.wallhaven_save_dir,
                 &config.wallhaven_db_path,
             )?;
             all.extend(check_source(
-                "reddit",
+                Source::Reddit,
                 &config.reddit_save_dir,
                 &config.reddit_db_path,
             )?);
@@ -1223,7 +1223,7 @@ async fn adopt_orphan_files(
         }
     }
 
-    let added = if matches!(source, Source::Wallhaven) {
+    let added = if source.is_wallhaven() {
         db::insert_wallhaven_images_batch(db_path, &wallhaven_batch)?.0
     } else {
         db::insert_reddit_images_batch(db_path, &reddit_batch)?.0

@@ -186,7 +186,8 @@ body {
 }
 
 /* ── Arknights 终端玻璃卡 ── */
-.ark-card {
+.ark-card,
+.glass-card {
   position: relative;
   background: rgba(var(--surface-card-rgb), 0.7) !important;
   backdrop-filter: blur(20px) saturate(140%);
@@ -195,7 +196,8 @@ body {
   box-shadow: 0 0 0 1px rgba(59, 130, 246, 0.03),
     inset 0 1px 0 rgba(255, 255, 255, 0.03), var(--shadow-md);
 }
-.ark-card::after {
+.ark-card::after,
+.glass-card::after {
   content: '';
   position: absolute;
   top: 0;
@@ -207,10 +209,12 @@ body {
   border-radius: 1px;
 }
 
-[data-theme="light"] .ark-card::after {
+[data-theme="light"] .ark-card::after,
+[data-theme="light"] .glass-card::after {
   opacity: 0.4;
 }
-[data-theme="light"] .ark-card {
+[data-theme="light"] .ark-card,
+[data-theme="light"] .glass-card {
   background: rgba(var(--surface-card-rgb), 0.85) !important;
   border-color: rgba(0, 0, 0, 0.06) !important;
   box-shadow: 0 1px 6px rgba(0, 0, 0, 0.04);
@@ -298,7 +302,8 @@ body {
 }
 
 /* ── 青蓝渐变按钮（Arknight 风格） ── */
-.ark-btn {
+.ark-btn,
+.gradient-btn {
   position: relative;
   background: linear-gradient(135deg, var(--accent-primary) 0%, #2563eb 100%) !important;
   border: none !important;
@@ -309,7 +314,8 @@ body {
   transition: all 0.25s var(--ease-out) !important;
   overflow: hidden;
 }
-.ark-btn::before {
+.ark-btn::before,
+.gradient-btn::before {
   content: '';
   position: absolute;
   inset: 0;
@@ -320,29 +326,14 @@ body {
   );
   pointer-events: none;
 }
-.ark-btn:hover {
+.ark-btn:hover,
+.gradient-btn:hover {
   box-shadow: var(--shadow-glow-strong) !important;
   transform: translateY(-1px);
 }
-.ark-btn:active {
+.ark-btn:active,
+.gradient-btn:active {
   transform: scale(0.97);
-}
-
-/* ── 六角悬浮按钮 ── */
-.ark-btn-ghost {
-  position: relative;
-  background: transparent !important;
-  border: var(--border-active) !important;
-  color: var(--accent-primary) !important;
-  font-family: 'Rajdhani', 'Inter', system-ui, sans-serif !important;
-  font-weight: 600 !important;
-  letter-spacing: 0.03em !important;
-  transition: all 0.25s var(--ease-out) !important;
-}
-.ark-btn-ghost:hover {
-  background: var(--accent-primary-dim) !important;
-  box-shadow: var(--shadow-glow) !important;
-  border-color: var(--accent-primary) !important;
 }
 
 /* ── 数值标签 ── */
@@ -391,15 +382,6 @@ body {
 }
 
 /* ── 辉光动画效果 ── */
-@keyframes hex-pulse {
-  0%,
-  100% {
-    opacity: 0.4;
-  }
-  50% {
-    opacity: 0.7;
-  }
-}
 @keyframes scan-line {
   0% {
     transform: translateY(-100%);
@@ -408,16 +390,6 @@ body {
     transform: translateY(100vh);
   }
 }
-@keyframes breathe-glow {
-  0%,
-  100% {
-    box-shadow: 0 0 8px rgba(59, 130, 246, 0.1);
-  }
-  50% {
-    box-shadow: 0 0 20px rgba(59, 130, 246, 0.2);
-  }
-}
-
 /* ── 扫描线效果（仅深色主题） ── */
 .scan-line::after {
   content: '';
