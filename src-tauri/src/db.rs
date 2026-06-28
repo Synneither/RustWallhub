@@ -265,25 +265,6 @@ pub fn insert_reddit_images_batch(
     Ok((added, skipped))
 }
 
-pub fn delete_image_by_name(db_path: &str, name: &str) -> SqlResult<bool> {
-    log::info!("[DB] delete_image_by_name: name={}", name);
-    let conn = open(db_path)?;
-    let count = conn.execute(
-        "DELETE FROM images WHERE name = ?1",
-        rusqlite::params![name],
-    )?;
-    log::info!("[DB] delete_image_by_name: deleted={}", count > 0);
-    Ok(count > 0)
-}
-
-pub fn delete_wallhaven_image(db_path: &str, name: &str) -> SqlResult<bool> {
-    delete_image_by_name(db_path, name)
-}
-
-pub fn delete_reddit_image(db_path: &str, name: &str) -> SqlResult<bool> {
-    delete_image_by_name(db_path, name)
-}
-
 pub fn clean_stale_thumbnails(thumbnail_dir: &str, save_dir: &str) -> u64 {
     let thumb_dir_path = Path::new(thumbnail_dir);
     if !thumb_dir_path.is_dir() {
@@ -809,37 +790,6 @@ mod tests {
         std::fs::write(img_dir.path().join("a.jpg"), b"data").unwrap();
         assert_eq!(get_reddit_missing_love(db.path()).unwrap().len(), 1);
     }
-
-    #[test]
-    fn test_delete_wallhaven() {
-        let db = TestDb::wallhaven();
-        insert_wallhaven_image(db.path(), "id1", "del.jpg", "h1", "u1", "s1", "1920x1080").unwrap();
-        assert!(delete_wallhaven_image(db.path(), "del.jpg").unwrap());
-        assert_eq!(get_db_stats(db.path()).unwrap().total, 0);
-    }
-
-    #[test]
-    fn test_delete_nonexistent_wallhaven() {
-        let db = TestDb::wallhaven();
-        assert!(!delete_wallhaven_image(db.path(), "noexist.jpg").unwrap());
-    }
-
-    #[test]
-    fn test_delete_reddit() {
-        let db = TestDb::reddit();
-        insert_reddit_image(
-            db.path(),
-            "del.jpg",
-            "h1",
-            "https://reddit.com/1",
-            "t1",
-            "/r/1",
-        )
-        .unwrap();
-        assert!(delete_reddit_image(db.path(), "del.jpg").unwrap());
-        assert_eq!(get_db_stats(db.path()).unwrap().total, 0);
-    }
-
     #[test]
     fn test_get_wallhaven_images_pagination() {
         let db = TestDb::wallhaven();

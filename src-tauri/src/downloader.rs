@@ -82,6 +82,117 @@ pub fn file_is_image(path: &Path) -> bool {
 pub fn compute_md5(data: &[u8]) -> String {
     format!("{:x}", md5::compute(data))
 }
+pub async fn download_image_bytes(
+    client: &reqwest::Client,
+    url: &str,
+) -> Result<(Vec<u8>, String), String> {
+    log::info!("[downloader] download_image_bytes: url={}", url);
+    let resp = client
+        .get(url)
+        .timeout(std::time::Duration::from_secs(30))
+        .send()
+        .await
+        .map_err(|e| format!("下载请求失败: {e}"))?;
+
+    if !resp.status().is_success() {
+        log::warn!("[downloader] bad status: {} for {}", resp.status(), url);
+        return Err(format!("下载返回状态码: {}", resp.status()));
+    }
+
+    let content_type = resp
+        .headers()
+        .get("content-type")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("")
+        .to_string();
+
+    let bytes = resp
+        .bytes()
+        .await
+        .map_err(|e| format!("读取下载数据失败: {e}"))?;
+
+    if !is_valid_image(&bytes, &content_type) {
+        log::warn!(
+            "[downloader] invalid image data: url={} type={}",
+            url,
+            content_type
+        );
+        return Err("无效的图片数据".to_string());
+    }
+
+    log::info!(
+        "[downloader] download ok: {} bytes type={}",
+        bytes.len(),
+        content_type
+    );
+    Ok((bytes.to_vec(), content_type))
+}
+
+pub async fn download_urls_concurrent(
+    client: &reqwest::Client,
+    urls: &[String],
+    cancel: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    concurrency: u32,
+    max_retries: u32,
+) -> Vec<Result<(Vec<u8>, String), String>> {
+    let count = urls.len();
+    if count == 0 {
+        return Vec::new();
+    }
+
+    let limit = concurrency.max(1) as usize;
+    let semaphore = std::sync::Arc::new(tokio::sync::Semaphore::new(limit));
+    let mut handles = Vec::with_capacity(count);
+
+    for (idx, url) in urls.iter().enumerate() {
+        let semaphore = semaphore.clone();
+        let client = client.clone();
+        let url = url.clone();
+        let cancel = cancel.clone();
+        let handle = tokio::spawn(async move {
+            let _permit = semaphore.acquire().await;
+            let mut last_err = String::new();
+            for attempt in 0..=max_retries {
+                if cancel.load(std::sync::atomic::Ordering::Relaxed) {
+                    return (idx, Err("下载已取消".to_string()));
+                }
+                match download_image_bytes(&client, &url).await {
+                    Ok(res) => return (idx, Ok(res)),
+                    Err(e) => {
+                        last_err = e;
+                        if attempt < max_retries {
+                            tokio::time::sleep(std::time::Duration::from_secs(2u64.pow(attempt)))
+                                .await;
+                        }
+                    }
+                }
+            }
+            (
+                idx,
+                Err(format!("下载失败（已重试 {max_retries} 次）: {last_err}")),
+            )
+        });
+        handles.push(handle);
+    }
+
+    let mut results = Vec::with_capacity(count);
+    for (original_idx, handle) in handles.into_iter().enumerate() {
+        let (idx, result) = match handle.await {
+            Ok(r) => r,
+            Err(e) => {
+                log::error!(
+                    "[downloader] task panicked at index {}: {}",
+                    original_idx,
+                    e
+                );
+                (original_idx, Err("下载任务异常".to_string()))
+            }
+        };
+        results.push((idx, result));
+    }
+    results.sort_by_key(|(idx, _)| *idx);
+    results.into_iter().map(|(_, r)| r).collect()
+}
 
 #[cfg(test)]
 mod tests {
@@ -256,7 +367,6 @@ mod tests {
     async fn test_download_urls_concurrent_cancel() {
         let client = reqwest::Client::new();
         let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
-        // With cancel=true, every task returns immediately without making HTTP calls
         let urls = vec![
             "https://example.com/a.jpg".to_string(),
             "https://example.com/b.jpg".to_string(),
@@ -281,7 +391,6 @@ mod tests {
 
     #[tokio::test]
     async fn test_download_urls_concurrent_success() {
-        // Start a tiny HTTP server serving a valid JPEG
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let port = listener.local_addr().unwrap().port();
         let jpeg_data: &[u8] = &[
@@ -312,7 +421,6 @@ mod tests {
         ];
         let body = jpeg_data.to_vec();
 
-        // Serve one request in a background thread
         let jpeg_data = body.clone();
         std::thread::spawn(move || {
             if let Ok((mut stream, _)) = listener.accept() {
@@ -336,116 +444,4 @@ mod tests {
         assert!(!bytes.is_empty(), "should get image bytes");
         assert_eq!(content_type, "image/jpeg");
     }
-}
-
-pub async fn download_image_bytes(
-    client: &reqwest::Client,
-    url: &str,
-) -> Result<(Vec<u8>, String), String> {
-    log::info!("[downloader] download_image_bytes: url={}", url);
-    let resp = client
-        .get(url)
-        .timeout(std::time::Duration::from_secs(30))
-        .send()
-        .await
-        .map_err(|e| format!("下载请求失败: {e}"))?;
-
-    if !resp.status().is_success() {
-        log::warn!("[downloader] bad status: {} for {}", resp.status(), url);
-        return Err(format!("下载返回状态码: {}", resp.status()));
-    }
-
-    let content_type = resp
-        .headers()
-        .get("content-type")
-        .and_then(|v| v.to_str().ok())
-        .unwrap_or("")
-        .to_string();
-
-    let bytes = resp
-        .bytes()
-        .await
-        .map_err(|e| format!("读取下载数据失败: {e}"))?;
-
-    if !is_valid_image(&bytes, &content_type) {
-        log::warn!(
-            "[downloader] invalid image data: url={} type={}",
-            url,
-            content_type
-        );
-        return Err("无效的图片数据".to_string());
-    }
-
-    log::info!(
-        "[downloader] download ok: {} bytes type={}",
-        bytes.len(),
-        content_type
-    );
-    Ok((bytes.to_vec(), content_type))
-}
-
-pub async fn download_urls_concurrent(
-    client: &reqwest::Client,
-    urls: &[String],
-    cancel: std::sync::Arc<std::sync::atomic::AtomicBool>,
-    concurrency: u32,
-    max_retries: u32,
-) -> Vec<Result<(Vec<u8>, String), String>> {
-    let count = urls.len();
-    if count == 0 {
-        return Vec::new();
-    }
-
-    let limit = concurrency.max(1) as usize;
-    let semaphore = std::sync::Arc::new(tokio::sync::Semaphore::new(limit));
-    let mut handles = Vec::with_capacity(count);
-
-    for (idx, url) in urls.iter().enumerate() {
-        let semaphore = semaphore.clone();
-        let client = client.clone();
-        let url = url.clone();
-        let cancel = cancel.clone();
-        let handle = tokio::spawn(async move {
-            let _permit = semaphore.acquire().await;
-            let mut last_err = String::new();
-            for attempt in 0..=max_retries {
-                if cancel.load(std::sync::atomic::Ordering::Relaxed) {
-                    return (idx, Err("下载已取消".to_string()));
-                }
-                match download_image_bytes(&client, &url).await {
-                    Ok(res) => return (idx, Ok(res)),
-                    Err(e) => {
-                        last_err = e;
-                        if attempt < max_retries {
-                            tokio::time::sleep(std::time::Duration::from_secs(2u64.pow(attempt)))
-                                .await;
-                        }
-                    }
-                }
-            }
-            (
-                idx,
-                Err(format!("下载失败（已重试 {max_retries} 次）: {last_err}")),
-            )
-        });
-        handles.push(handle);
-    }
-
-    let mut results = Vec::with_capacity(count);
-    for (original_idx, handle) in handles.into_iter().enumerate() {
-        let (idx, result) = match handle.await {
-            Ok(r) => r,
-            Err(e) => {
-                log::error!(
-                    "[downloader] task panicked at index {}: {}",
-                    original_idx,
-                    e
-                );
-                (original_idx, Err("下载任务异常".to_string()))
-            }
-        };
-        results.push((idx, result));
-    }
-    results.sort_by_key(|(idx, _)| *idx);
-    results.into_iter().map(|(_, r)| r).collect()
 }

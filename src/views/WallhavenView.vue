@@ -2,6 +2,7 @@
 import { ref, onMounted, onUnmounted } from "vue";
 import { invoke, convertFileSrc } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import { open } from "@tauri-apps/plugin-dialog";
 import { logger } from "../utils/logger";
 
 defineProps<{
@@ -94,6 +95,23 @@ async function loadConfig() {
     config.value = await invoke<AppConfig>("get_config");
   } catch (e) {
     logger.error("Wallhaven", "配置加载失败", e);
+  }
+}
+
+async function selectDirectory(field: "wallhaven_save_dir" | "wallhaven_db_path") {
+  try {
+    const isDir = field === "wallhaven_save_dir";
+    const selected = await open({
+      directory: isDir,
+      multiple: false,
+      title: isDir ? "选择保存目录" : "选择数据库文件",
+      filters: isDir ? undefined : [{ name: "SQLite 数据库", extensions: ["db"] }],
+    });
+    if (selected && config.value) {
+      config.value[field] = selected;
+    }
+  } catch (e) {
+    logger.error("Wallhaven", "路径选择失败", e);
   }
 }
 
@@ -254,6 +272,8 @@ onUnmounted(() => {
             :rules="[requiredRule]"
             density="compact"
             hide-details="auto"
+            append-inner-icon="mdi-folder-open"
+            @click:append-inner="selectDirectory('wallhaven_save_dir')"
           />
           <v-text-field
             v-model="config.wallhaven_db_path"
@@ -261,6 +281,8 @@ onUnmounted(() => {
             :rules="[requiredRule]"
             density="compact"
             hide-details="auto"
+            append-inner-icon="mdi-file-find"
+            @click:append-inner="selectDirectory('wallhaven_db_path')"
           />
           <v-text-field
             v-model="config.wallhaven_api_key"

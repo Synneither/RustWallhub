@@ -1,99 +1,130 @@
 /* ========================================
-   RustWallhub -- Design Token System
+   RustWallhub — Arknights 风格设计系统
+   ========================================
+   配色灵感：明日方舟（Arknights）
+   深色战术面板 · 青蓝光效 · 六角几何 · 终端数据美学
    ======================================== */
 
 :root {
-  /* -- Surface depth -- 5-step ladder */
-  --surface-deep: #18181b;
-  --surface-base: #1e1f23;
-  --surface-card: #27282d;
-  --surface-elevated: #2f3036;
-  --surface-hover: #37383e;
-  --surface-card-rgb: 39, 40, 45;
-  --surface-deep-rgb: 24, 24, 27;
+  /* ── Surface 深度层级 ── */
+  --surface-deep: #0a0b0e;
+  --surface-base: #101218;
+  --surface-card: #161827;
+  --surface-elevated: #1c1f32;
+  --surface-hover: #22263b;
+  --surface-card-rgb: 22, 24, 39;
+  --surface-deep-rgb: 10, 11, 14;
 
-  /* -- Brand accent -- "anime neon" */
-  --accent-primary: #6c8cff;
-  --accent-primary-hover: #8ba4ff;
-  --accent-glow: rgba(108, 140, 255, 0.25);
-  --accent-reddit: #ff6b35;
-  --accent-reddit-glow: rgba(255, 107, 53, 0.25);
-  --accent-success: #34d399;
+  /* ── Arknights 品牌色 ── */
+  --accent-primary: #3b82f6;
+  --accent-primary-hover: #60a5fa;
+  --accent-primary-dim: rgba(59, 130, 246, 0.15);
+  --accent-glow: rgba(59, 130, 246, 0.2);
+  --accent-glow-strong: rgba(59, 130, 246, 0.35);
+
+  --accent-reddit: #f97316;
+  --accent-reddit-hover: #fb923c;
+  --accent-reddit-glow: rgba(249, 115, 22, 0.2);
+
+  --accent-gold: #c9a94e;
+  --accent-gold-dim: rgba(201, 169, 78, 0.12);
+
+  --accent-success: #10b981;
   --accent-warning: #f59e0b;
-  --accent-error: #f87171;
+  --accent-error: #ef4444;
 
-  /* -- Text */
-  --text-primary: #e4e5e9;
-  --text-secondary: #9ca0ab;
-  --text-tertiary: #6b6f7a;
-  --text-disabled: #4a4d55;
+  /* ── 文本 ── */
+  --text-primary: #e2e4ea;
+  --text-secondary: #8b8fa3;
+  --text-tertiary: #5c6075;
+  --text-disabled: #3b3e50;
 
-  /* -- Border */
+  /* ── 边框 - 极细线高光美学 ── */
   --border-deep: 1px solid rgba(255, 255, 255, 0.03);
   --border-base: 1px solid rgba(255, 255, 255, 0.05);
   --border-card: 1px solid rgba(255, 255, 255, 0.07);
   --border-elevated: 1px solid rgba(255, 255, 255, 0.10);
-  --border-active: 1px solid rgba(108, 140, 255, 0.2);
-  --border-subtle: #383940;
-  --border-default: #484a50;
+  --border-active: 1px solid rgba(59, 130, 246, 0.25);
+  --border-subtle: #2a2d40;
+  --border-default: #3a3d52;
 
-  /* -- Spacing -- 4px base */
+  /* ── 间距 - 4px 基准 ── */
   --space-1: 4px;  --space-2: 8px;  --space-3: 12px;
   --space-4: 16px; --space-5: 20px; --space-6: 24px;
   --space-8: 32px; --space-10: 40px; --space-12: 48px;
 
-  /* -- Border radius */
-  --radius-sm: 6px; --radius-md: 8px; --radius-lg: 12px;
-  --radius-xl: 16px; --radius-full: 9999px;
+  /* ── 圆角 - Arknights 多用尖角/少圆角 ── */
+  --radius-sm: 4px;
+  --radius-md: 6px;
+  --radius-lg: 8px;
+  --radius-xl: 12px;
+  --radius-full: 9999px;
 
-  /* -- Easing */
+  /* ── 缓动 ── */
   --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
   --ease-in-out: cubic-bezier(0.65, 0, 0.35, 1);
   --ease-spring: cubic-bezier(0.34, 1.56, 0.64, 1);
 
-  /* -- Shadows */
-  --shadow-sm: 0 1px 3px rgba(0,0,0,0.25);
-  --shadow-md: 0 4px 12px rgba(0,0,0,0.25);
-  --shadow-lg: 0 8px 32px rgba(0,0,0,0.35);
-  --shadow-glow: 0 0 20px rgba(108,140,255,0.12);
+  /* ── 阴影 - 战术面板质感 ── */
+  --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.35);
+  --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.35);
+  --shadow-lg: 0 8px 32px rgba(0, 0, 0, 0.45);
+  --shadow-glow: 0 0 20px rgba(59, 130, 246, 0.1);
+  --shadow-glow-strong: 0 0 30px rgba(59, 130, 246, 0.15);
 }
 
-/* ── Light theme ── */
+/* ── Light 主题 ── */
 [data-theme="light"] {
-  --surface-deep: #e8e5df;
-  --surface-base: #f5f2ed;
-  --surface-card: #ffffff;
-  --surface-elevated: #faf8f5;
-  --surface-hover: #f0ede8;
-  --surface-card-rgb: 255, 255, 255;
-  --surface-deep-rgb: 232, 229, 223;
-  --text-primary: #1c1d22;
-  --text-secondary: #6b6f7a;
-  --text-tertiary: #9ca0ab;
-  --text-disabled: #bcc0c8;
-  --border-deep: 1px solid rgba(0,0,0,0.04);
-  --border-base: 1px solid rgba(0,0,0,0.06);
-  --border-card: 1px solid rgba(0,0,0,0.08);
-  --border-elevated: 1px solid rgba(0,0,0,0.12);
-  --border-active: 1px solid rgba(91,122,232,0.3);
+  --surface-deep: #e2dfd8;
+  --surface-base: #efece6;
+  --surface-card: #faf8f5;
+  --surface-elevated: #ffffff;
+  --surface-hover: #f4f1eb;
+  --surface-card-rgb: 250, 248, 245;
+  --surface-deep-rgb: 226, 223, 216;
+
+  --accent-primary: #3b82f6;
+  --accent-primary-hover: #2563eb;
+  --accent-primary-dim: rgba(59, 130, 246, 0.08);
+  --accent-glow: rgba(59, 130, 246, 0.12);
+  --accent-glow-strong: rgba(59, 130, 246, 0.2);
+
+  --text-primary: #1a1b23;
+  --text-secondary: #5c6075;
+  --text-tertiary: #8b8fa3;
+  --text-disabled: #b0b3c0;
+
+  --border-deep: 1px solid rgba(0, 0, 0, 0.04);
+  --border-base: 1px solid rgba(0, 0, 0, 0.06);
+  --border-card: 1px solid rgba(0, 0, 0, 0.08);
+  --border-elevated: 1px solid rgba(0, 0, 0, 0.12);
+  --border-active: 1px solid rgba(59, 130, 246, 0.3);
   --border-subtle: #d4d2ce;
-  --border-default: #c0bdb8;
-  --shadow-sm: 0 1px 3px rgba(0,0,0,0.08);
-  --shadow-md: 0 4px 12px rgba(0,0,0,0.08);
-  --shadow-lg: 0 8px 32px rgba(0,0,0,0.1);
-  --shadow-glow: 0 0 20px rgba(91,122,232,0.12);
-  --accent-primary: #5b7ae8;
-  --accent-primary-hover: #4a6be0;
-  --accent-glow: rgba(91,122,232,0.2);
-  --accent-success: #16a34a;
-  --accent-warning: #d97706;
+  --border-default: #b0b3c0;
+
+  --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.06);
+  --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.06);
+  --shadow-lg: 0 8px 32px rgba(0, 0, 0, 0.08);
+  --shadow-glow: 0 0 20px rgba(59, 130, 246, 0.08);
 }
 
-[data-theme="light"] .sidebar-drawer { border-right-color: rgba(0,0,0,0.06) !important; }
-[data-theme="light"] .sidebar-divider { border-color: rgba(0,0,0,0.06) !important; }
-[data-theme="light"] .sidebar-rail-toggle { border-top-color: rgba(0,0,0,0.06); }
-[data-theme="light"] .top-bar { border-bottom-color: rgba(0,0,0,0.06) !important; }
-[data-theme="light"] .sidebar-header-accent { opacity: 0.6; }
+/* ── 六角形背景纹理 ── */
+.hex-bg {
+  position: relative;
+}
+.hex-bg::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='56' height='100' viewBox='0 0 56 100'%3E%3Cpath d='M28 0L56 16v33L28 66 0 49V16z' fill='none' stroke='rgba(59,130,246,0.04)' stroke-width='0.5'/%3E%3Cpath d='M28 34L56 50v33L28 99 0 82V50z' fill='none' stroke='rgba(59,130,246,0.035)' stroke-width='0.5'/%3E%3C/svg%3E");
+  background-size: 56px 100px;
+  opacity: 0.6;
+  pointer-events: none;
+  z-index: 0;
+}
+[data-theme="light"] .hex-bg::before {
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='56' height='100' viewBox='0 0 56 100'%3E%3Cpath d='M28 0L56 16v33L28 66 0 49V16z' fill='none' stroke='rgba(59,130,246,0.06)' stroke-width='0.5'/%3E%3Cpath d='M28 34L56 50v33L28 99 0 82V50z' fill='none' stroke='rgba(59,130,246,0.05)' stroke-width='0.5'/%3E%3C/svg%3E");
+}
 
 /* ── Base ── */
 html {
@@ -112,128 +143,372 @@ body {
   background: var(--surface-base) !important;
 }
 
-/* Theme transitions */
-.v-application, .v-card, .v-navigation-drawer, .v-app-bar, .v-btn {
-  transition: background-color 0.35s ease, border-color 0.35s ease, box-shadow 0.35s ease !important;
+/* ── 主题过渡 ── */
+.v-application,
+.v-card,
+.v-navigation-drawer,
+.v-app-bar,
+.v-btn {
+  transition: background-color 0.3s ease, border-color 0.3s ease,
+    box-shadow 0.3s ease !important;
 }
 
-/* ── Scrollbar ── */
-::-webkit-scrollbar { width: 5px; height: 5px; }
-::-webkit-scrollbar-track { background: transparent; }
-::-webkit-scrollbar-thumb { background: var(--border-default); border-radius: 3px; }
-::-webkit-scrollbar-thumb:hover { background: var(--text-tertiary); }
-
-/* ── View transition ── */
-.view-fade-enter-active { transition: all 0.3s var(--ease-out); }
-.view-fade-leave-active { transition: all 0.2s var(--ease-in-out); }
-.view-fade-enter-from { opacity: 0; transform: translateY(10px); }
-.view-fade-leave-to { opacity: 0; transform: translateY(-6px); }
-
-/* ── Glass card ── */
-.glass-card {
-  background: rgba(var(--surface-card-rgb), 0.65) !important;
-  backdrop-filter: blur(16px) saturate(160%);
-  -webkit-backdrop-filter: blur(16px) saturate(160%);
-  border: 1px solid rgba(255,255,255,0.06) !important;
-  box-shadow: 0 0 0 1px rgba(108,140,255,0.03), inset 0 1px 0 rgba(255,255,255,0.04), 0 4px 20px rgba(0,0,0,0.2);
+/* ── 滚动条 ── */
+::-webkit-scrollbar {
+  width: 4px;
+  height: 4px;
 }
-[data-theme="light"] .glass-card {
-  background: rgba(var(--surface-card-rgb), 0.8) !important;
-  border-color: rgba(0,0,0,0.06) !important;
-  box-shadow: 0 0 0 1px rgba(91,122,232,0.04), 0 2px 12px rgba(0,0,0,0.04);
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--border-default);
+  border-radius: 2px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--text-tertiary);
 }
 
-/* ── Card accent top border ── */
-.card-accent-top { position: relative; overflow: hidden !important; }
-.card-accent-top::before {
+/* ── 视图过渡 ── */
+.view-fade-enter-active {
+  transition: all 0.3s var(--ease-out);
+}
+.view-fade-leave-active {
+  transition: all 0.2s var(--ease-in-out);
+}
+.view-fade-enter-from {
+  opacity: 0;
+  transform: translateY(10px);
+}
+.view-fade-leave-to {
+  opacity: 0;
+  transform: translateY(-6px);
+}
+
+/* ── Arknights 终端玻璃卡 ── */
+.ark-card {
+  position: relative;
+  background: rgba(var(--surface-card-rgb), 0.7) !important;
+  backdrop-filter: blur(20px) saturate(140%);
+  -webkit-backdrop-filter: blur(20px) saturate(140%);
+  border: var(--border-card) !important;
+  box-shadow: 0 0 0 1px rgba(59, 130, 246, 0.03),
+    inset 0 1px 0 rgba(255, 255, 255, 0.03), var(--shadow-md);
+}
+.ark-card::after {
   content: '';
   position: absolute;
-  top: 0; left: 0; right: 0;
-  height: 3px;
-  border-radius: 12px 12px 0 0;
-}
-.wh-card::before { background: linear-gradient(90deg, #6c8cff, #8ba4ff); }
-.rd-card::before { background: linear-gradient(90deg, #ff6b35, #ff8a5c); }
-
-/* ── Card hover ── */
-.card-hover {
-  transition: transform 0.25s var(--ease-out), box-shadow 0.25s var(--ease-out);
-  cursor: default;
-}
-.card-hover:hover {
-  transform: translateY(-2px);
-  box-shadow: 0 0 0 1px rgba(108,140,255,0.08), 0 0 20px rgba(108,140,255,0.04), 0 8px 32px rgba(0,0,0,0.3);
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 2px;
+  background: linear-gradient(90deg, var(--accent-primary), transparent 80%);
+  opacity: 0.6;
+  border-radius: 1px;
 }
 
-/* ── Typography ── */
+[data-theme="light"] .ark-card::after {
+  opacity: 0.4;
+}
+[data-theme="light"] .ark-card {
+  background: rgba(var(--surface-card-rgb), 0.85) !important;
+  border-color: rgba(0, 0, 0, 0.06) !important;
+  box-shadow: 0 1px 6px rgba(0, 0, 0, 0.04);
+}
+
+/* ── 数据面板（Arknight 数据终端） ── */
+.data-panel {
+  position: relative;
+  background: rgba(var(--surface-card-rgb), 0.6) !important;
+  border: var(--border-card) !important;
+  border-left: 2px solid var(--accent-primary) !important;
+  box-shadow: var(--shadow-sm);
+  overflow: hidden;
+}
+.data-panel::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(
+    180deg,
+    rgba(59, 130, 246, 0.03) 0%,
+    transparent 30%
+  );
+  pointer-events: none;
+}
+
+/* ── 六角装饰角标 ── */
+.hex-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 28px;
+  clip-path: polygon(50% 0%, 100% 25%, 100% 75%, 50% 100%, 0% 75%, 0% 25%);
+  background: var(--accent-primary-dim);
+  font-size: 0.625rem;
+  font-weight: 700;
+  color: var(--accent-primary);
+  flex-shrink: 0;
+}
+
+/* ── 数据统计数字 ── */
 .stat-number {
-  font-family: 'Inter', system-ui, sans-serif;
+  font-family: 'Rajdhani', 'Inter', system-ui, sans-serif;
   font-variant-numeric: tabular-nums;
   font-weight: 700;
-  letter-spacing: -0.02em;
+  letter-spacing: -0.01em;
+  line-height: 1;
+}
+.text-display {
+  font-family: 'Rajdhani', 'Inter', system-ui, sans-serif;
+  font-size: 1.75rem;
   line-height: 1.1;
+  font-weight: 700;
+  letter-spacing: -0.01em;
 }
-.text-display { font-size: 1.75rem; line-height: 1.25; font-weight: 700; letter-spacing: -0.02em; }
-.text-heading { font-size: 1.125rem; font-weight: 600; line-height: 1.4; letter-spacing: -0.01em; }
-.text-body-lg { font-size: 0.9375rem; }
-.text-body { font-size: 0.875rem; }
-.text-caption { font-size: 0.75rem; color: var(--text-secondary); line-height: 1.5; }
-.text-small { font-size: 0.6875rem; line-height: 1.4; }
+.text-heading {
+  font-family: 'Rajdhani', 'Inter', system-ui, sans-serif;
+  font-size: 1.125rem;
+  font-weight: 600;
+  line-height: 1.3;
+  letter-spacing: 0.01em;
+}
+.text-label {
+  font-family: 'Rajdhani', 'Inter', system-ui, sans-serif;
+  font-size: 0.75rem;
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+.text-body-lg {
+  font-size: 0.9375rem;
+}
+.text-body {
+  font-size: 0.875rem;
+}
+.text-caption {
+  font-size: 0.75rem;
+  color: var(--text-secondary);
+  line-height: 1.5;
+}
+.text-small {
+  font-size: 0.6875rem;
+  line-height: 1.4;
+}
 
-/* ── Gradient button ── */
-.gradient-btn {
-  background: linear-gradient(135deg, var(--accent-primary) 0%, #5b7ae8 100%) !important;
+/* ── 青蓝渐变按钮（Arknight 风格） ── */
+.ark-btn {
+  position: relative;
+  background: linear-gradient(135deg, var(--accent-primary) 0%, #2563eb 100%) !important;
   border: none !important;
+  color: #ffffff !important;
+  font-family: 'Rajdhani', 'Inter', system-ui, sans-serif !important;
+  font-weight: 600 !important;
+  letter-spacing: 0.03em !important;
   transition: all 0.25s var(--ease-out) !important;
+  overflow: hidden;
 }
-.gradient-btn:hover {
-  box-shadow: 0 4px 16px rgba(108,140,255,0.3) !important;
+.ark-btn::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(
+    180deg,
+    rgba(255, 255, 255, 0.1) 0%,
+    transparent 50%
+  );
+  pointer-events: none;
+}
+.ark-btn:hover {
+  box-shadow: var(--shadow-glow-strong) !important;
   transform: translateY(-1px);
 }
-.gradient-btn:active { transform: scale(0.97); }
+.ark-btn:active {
+  transform: scale(0.97);
+}
 
-/* ── Accent dot ── */
-.accent-dot { width: 10px; height: 10px; border-radius: 50%; margin-right: 8px; flex-shrink: 0; }
+/* ── 六角悬浮按钮 ── */
+.ark-btn-ghost {
+  position: relative;
+  background: transparent !important;
+  border: var(--border-active) !important;
+  color: var(--accent-primary) !important;
+  font-family: 'Rajdhani', 'Inter', system-ui, sans-serif !important;
+  font-weight: 600 !important;
+  letter-spacing: 0.03em !important;
+  transition: all 0.25s var(--ease-out) !important;
+}
+.ark-btn-ghost:hover {
+  background: var(--accent-primary-dim) !important;
+  box-shadow: var(--shadow-glow) !important;
+  border-color: var(--accent-primary) !important;
+}
 
-/* ── Surface utilities ── */
-.surface-card { background: var(--surface-card); }
-.surface-elevated { background: var(--surface-elevated); }
-.surface-base { background: var(--surface-base); }
-.hairline-border { border: var(--border-card); }
+/* ── 数值标签 ── */
+.stat-label {
+  font-family: 'Rajdhani', 'Inter', system-ui, sans-serif;
+  font-size: 0.6875rem;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-tertiary);
+}
 
-/* ── Shimmer ── */
+/* ── 分隔装饰线 ── */
+.ark-divider {
+  height: 1px;
+  background: linear-gradient(
+    90deg,
+    var(--accent-primary) 0%,
+    var(--border-subtle) 30%,
+    transparent 100%
+  );
+  opacity: 0.5;
+  border: none;
+  margin: 0;
+}
+
+/* ── 操作面板 ── */
+.operations-panel {
+  position: relative;
+  border-left: 2px solid var(--accent-warning) !important;
+}
+
+/* ── 数据行（表格风格） ── */
+.data-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  border-radius: var(--radius-sm);
+  background: rgba(255, 255, 255, 0.02);
+  transition: background 0.15s;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.03);
+}
+.data-row:hover {
+  background: rgba(255, 255, 255, 0.04);
+}
+
+/* ── 辉光动画效果 ── */
+@keyframes hex-pulse {
+  0%,
+  100% {
+    opacity: 0.4;
+  }
+  50% {
+    opacity: 0.7;
+  }
+}
+@keyframes scan-line {
+  0% {
+    transform: translateY(-100%);
+  }
+  100% {
+    transform: translateY(100vh);
+  }
+}
+@keyframes breathe-glow {
+  0%,
+  100% {
+    box-shadow: 0 0 8px rgba(59, 130, 246, 0.1);
+  }
+  50% {
+    box-shadow: 0 0 20px rgba(59, 130, 246, 0.2);
+  }
+}
+
+/* ── 扫描线效果（仅深色主题） ── */
+.scan-line::after {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  height: 2px;
+  background: linear-gradient(
+    90deg,
+    transparent 0%,
+    rgba(59, 130, 246, 0.08) 50%,
+    transparent 100%
+  );
+  animation: scan-line 6s linear infinite;
+  pointer-events: none;
+}
+[data-theme="light"] .scan-line::after {
+  display: none;
+}
+
+/* ── 入场动画 ── */
+@keyframes fadeInUp {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+.animate-in {
+  animation: fadeInUp 0.35s var(--ease-out) both;
+}
+.stagger-1 {
+  animation-delay: 40ms;
+}
+.stagger-2 {
+  animation-delay: 80ms;
+}
+.stagger-3 {
+  animation-delay: 120ms;
+}
+.stagger-4 {
+  animation-delay: 160ms;
+}
+.stagger-5 {
+  animation-delay: 200ms;
+}
+.stagger-6 {
+  animation-delay: 240ms;
+}
+
+/* ── Surface 工具类 ── */
+.surface-card {
+  background: var(--surface-card);
+}
+.surface-elevated {
+  background: var(--surface-elevated);
+}
+.surface-base {
+  background: var(--surface-base);
+}
+.hairline-border {
+  border: var(--border-card);
+}
+
+/* ── Shimmer 加载 ── */
 .shimmer {
-  background: linear-gradient(90deg, transparent 25%, rgba(255,255,255,0.04) 50%, transparent 75%);
+  background: linear-gradient(
+    90deg,
+    transparent 25%,
+    rgba(255, 255, 255, 0.04) 50%,
+    transparent 75%
+  );
   background-size: 200% 100%;
   animation: shimmer 1.5s infinite;
 }
 [data-theme="light"] .shimmer {
-  background: linear-gradient(90deg, transparent 25%, rgba(0,0,0,0.04) 50%, transparent 75%);
+  background: linear-gradient(
+    90deg,
+    transparent 25%,
+    rgba(0, 0, 0, 0.04) 50%,
+    transparent 75%
+  );
 }
 @keyframes shimmer {
-  0% { background-position: 200% 0; }
-  100% { background-position: -200% 0; }
+  0% {
+    background-position: 200% 0;
+  }
+  100% {
+    background-position: -200% 0;
+  }
 }
-
-/* ── Entrance animation ── */
-@keyframes fadeInUp {
-  from { opacity: 0; transform: translateY(8px); }
-  to { opacity: 1; transform: translateY(0); }
-}
-.animate-in { animation: fadeInUp 0.35s var(--ease-out) both; }
-.stagger-1 { animation-delay: 40ms; }
-.stagger-2 { animation-delay: 80ms; }
-.stagger-3 { animation-delay: 120ms; }
-.stagger-4 { animation-delay: 160ms; }
-.stagger-5 { animation-delay: 200ms; }
-.stagger-6 { animation-delay: 240ms; }
-
-/* ── Interactions ── */
-.hover-glow { transition: box-shadow 0.25s var(--ease-out); }
-.hover-glow:hover { box-shadow: 0 0 16px rgba(108,140,255,0.1); }
-.press-feedback:active { transform: scale(0.97); transition: transform 0.1s; }
-@keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.5; } }
-
-/* ── Overrides ── */
-.bg-grey-lighten-3 { background-color: transparent !important; }
-.btn { all: unset; }

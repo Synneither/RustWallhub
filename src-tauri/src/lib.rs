@@ -6,7 +6,7 @@ mod thumbnail;
 mod wallhaven;
 mod wallpaper;
 
-use config::AppConfig;
+use config::{AppConfig, Source};
 use rusqlite::Connection;
 use serde::Serialize;
 use std::path::PathBuf;
@@ -60,7 +60,7 @@ struct AppState {
     config_path: Mutex<PathBuf>,
     file_cache: Mutex<Option<FileListCache>>,
     cancel_flag: Mutex<Option<Arc<AtomicBool>>>,
-    http_client: reqwest::Client,
+    http_client: Mutex<reqwest::Client>,
     config_cache: Mutex<Option<AppConfig>>,
 }
 
@@ -80,6 +80,66 @@ impl serde::Serialize for AppError {
     fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
         s.serialize_str(&self.to_string())
     }
+}
+
+// --------------------------------------------------------------------------
+// 类型化的响应结构体（替代 serde_json::Value）
+// --------------------------------------------------------------------------
+
+#[derive(Serialize)]
+struct LocalImageList {
+    images: Vec<LocalImageEntry>,
+    total: usize,
+}
+
+#[derive(Serialize)]
+struct LocalImageEntry {
+    name: String,
+    path: String,
+    thumb_path: Option<String>,
+    size: u64,
+    is_orphan: bool,
+}
+
+#[derive(Serialize)]
+struct ThumbnailBatch {
+    items: Vec<ThumbnailItem>,
+}
+
+#[derive(Serialize)]
+struct ThumbnailItem {
+    name: String,
+    thumb_path: String,
+}
+
+#[derive(Serialize)]
+struct WallhavenSearchResult {
+    images: Vec<WallhavenImageEntry>,
+    page: u32,
+    total_pages: u32,
+    total: u32,
+}
+
+#[derive(Serialize)]
+struct WallhavenImageEntry {
+    id: String,
+    thumbnail_url: String,
+    path: String,
+    resolution: String,
+    short_url: String,
+    file_size: u64,
+    file_type: String,
+}
+
+#[derive(Serialize)]
+struct CleanThumbnailsResult {
+    wallhaven: u64,
+    reddit: u64,
+}
+
+#[derive(Serialize)]
+struct ActiveWallpaper {
+    path: Option<String>,
 }
 
 const MAX_UPWARD_DEPTH: u32 = 100;
@@ -174,17 +234,19 @@ fn normalize_config_path(base_dir: &std::path::Path, value: String) -> String {
 }
 
 fn load_config(state: &tauri::State<'_, AppState>) -> Result<AppConfig, AppError> {
+    // 先锁定 config_path，后锁定 config_cache（与 save_config 保持一致的锁顺序，避免死锁）
+    let path = state
+        .config_path
+        .lock()
+        .map_err(|e| AppError::Config(format!("锁定配置失败: {e}")))?
+        .clone();
+
     if let Ok(guard) = state.config_cache.lock() {
         if let Some(ref cached) = *guard {
             return Ok(cached.clone());
         }
     }
 
-    let path = state
-        .config_path
-        .lock()
-        .map_err(|e| AppError::Config(format!("锁定配置失败: {e}")))?
-        .clone();
     let mut config = AppConfig::load(&path).map_err(AppError::Config)?;
     config.sync_db_dir(); // 合并 db_dir（仅在非空时生效）
     if let Some(base_dir) = path.parent() {
@@ -258,8 +320,10 @@ async fn save_settings(
     std::fs::create_dir_all(std::path::Path::new(&config.db_dir)).ok();
     db::init_wallhaven_db(&config.wallhaven_db_path).ok();
     db::init_reddit_db(&config.reddit_db_path).ok();
-    // 通知前端各视图刷新
-    let _ = app.emit("settings-changed", &config);
+    // 更新 HTTP 客户端（超时等配置即时生效）
+    let _ = rebuild_http_client(&state, config.request_timeout);
+    // 通知前端各视图刷新（前端监听器只用来触发重新加载，不使用 payload）
+    let _ = app.emit("settings-changed", ());
     log::info!("[CMD] save_settings done");
     Ok(())
 }
@@ -298,6 +362,19 @@ fn setup_cancel_flag(state: &AppState) -> Arc<AtomicBool> {
     flag
 }
 
+/// 重建 HTTP 客户端（超时等配置即时生效，无需重启应用）
+fn rebuild_http_client(state: &AppState, timeout_secs: u64) -> Result<(), String> {
+    let new_client = reqwest::Client::builder()
+        .user_agent("RustWallhub/1.0")
+        .timeout(Duration::from_secs(timeout_secs))
+        .build()
+        .map_err(|e| format!("创建 HTTP client 失败: {e}"))?;
+    if let Ok(mut client) = state.http_client.lock() {
+        *client = new_client;
+    }
+    Ok(())
+}
+
 /// Save image bytes to disk and spawn thumbnail generation.
 /// Returns a `JoinHandle` for the thumbnail task so callers can await it
 /// concurrently with other work (e.g., DB insertion).
@@ -328,7 +405,7 @@ async fn start_wallhaven_download(
     let config = load_config(&state)?;
     let cancel = setup_cancel_flag(&state);
     let app_clone = app.clone();
-    let client = state.http_client.clone();
+    let client = state.http_client.lock().unwrap().clone();
 
     tokio::spawn(async move {
         let wh_client =
@@ -366,17 +443,17 @@ async fn start_wallhaven_download(
             );
 
             let resp = wh_client
-                .search(
+                .search(&wallhaven::WallhavenSearchParams {
                     page,
-                    &config.wallhaven_categories,
-                    &config.wallhaven_purity,
-                    &config.wallhaven_sorting,
-                    &config.wallhaven_order,
-                    &config.wallhaven_top_range,
-                    &config.wallhaven_atleast,
-                    &config.wallhaven_ratios,
-                    &config.wallhaven_q,
-                )
+                    categories: config.wallhaven_categories.clone(),
+                    purity: config.wallhaven_purity.clone(),
+                    sorting: config.wallhaven_sorting.clone(),
+                    order: config.wallhaven_order.clone(),
+                    top_range: config.wallhaven_top_range.clone(),
+                    atleast: config.wallhaven_atleast.clone(),
+                    ratios: config.wallhaven_ratios.clone(),
+                    q: config.wallhaven_q.clone(),
+                })
                 .await;
 
             match resp {
@@ -546,10 +623,10 @@ async fn start_reddit_download(
     let config = load_config(&state)?;
     let cancel = setup_cancel_flag(&state);
     let app_clone = app.clone();
-    let client = state.http_client.clone();
+    let client = state.http_client.lock().unwrap().clone();
 
     tokio::spawn(async move {
-        let reddit_client = reddit::RedditClient::new(client.clone());
+        let reddit_client = reddit::RedditClient::new(client.clone(), config.reddit_url.clone());
 
         let _ = tokio::fs::create_dir_all(&config.reddit_save_dir).await;
 
@@ -744,43 +821,31 @@ async fn start_reddit_download(
 }
 
 #[tauri::command]
-async fn start_db_download(
+async fn recover_database_files(
     app: tauri::AppHandle,
     state: tauri::State<'_, AppState>,
-    source: String,
+    source: Source,
 ) -> Result<String, AppError> {
-    log::info!("[CMD] start_db_download called: source={}", source);
+    log::info!("[CMD] recover_database_files: source={:?}", source);
     let config = load_config(&state)?;
     let cancel = setup_cancel_flag(&state);
-    let app_clone = app.clone();
-    let source_clone = source.clone();
-    let client = state.http_client.clone();
+    let client = state.http_client.lock().unwrap().clone();
+
+    let save_dir = config.save_dir_for(source).to_string();
+    let db_path = config.db_path_for(source).to_string();
+    let thumb_dir = config.thumb_dir_for(source);
+    let is_wallhaven = Source::is_wallhaven(source);
+    let source_str = source.to_string();
+    let src_inner = source_str.clone();
 
     tokio::spawn(async move {
-        let (save_dir, db_path, thumb_dir) = if source_clone == "wallhaven" {
-            (
-                config.wallhaven_save_dir.clone(),
-                config.wallhaven_db_path.clone(),
-                config.wallhaven_thumb_dir(),
-            )
-        } else if source_clone == "reddit" {
-            (
-                config.reddit_save_dir.clone(),
-                config.reddit_db_path.clone(),
-                config.reddit_thumb_dir(),
-            )
-        } else {
-            log::error!("[db_download] 未知源: {}", source_clone);
-            return;
-        };
-
         let _ = tokio::fs::create_dir_all(&save_dir).await;
 
-        let images = if source_clone == "wallhaven" {
+        let images = if is_wallhaven {
             match db::get_wallhaven_missing_love(&db_path) {
                 Ok(imgs) => imgs,
                 Err(e) => {
-                    log::error!("[db_download] 获取wallhaven缺失图片失败: {e}");
+                    log::error!("[recover] 获取wallhaven缺失图片失败: {e}");
                     return;
                 }
             }
@@ -788,7 +853,7 @@ async fn start_db_download(
             match db::get_reddit_missing_love(&db_path) {
                 Ok(imgs) => imgs,
                 Err(e) => {
-                    log::error!("[db_download] 获取reddit缺失图片失败: {e}");
+                    log::error!("[recover] 获取reddit缺失图片失败: {e}");
                     return;
                 }
             }
@@ -816,10 +881,10 @@ async fn start_db_download(
         for (i, img) in to_download.iter().enumerate() {
             let file_path = std::path::Path::new(&save_dir).join(&img.name);
 
-            let _ = app_clone.emit(
+            let _ = app.emit(
                 "download-progress",
                 DownloadProgress {
-                    source: source_clone.clone(),
+                    source: src_inner.clone(),
                     done: i as u32,
                     total: total_pending,
                     message: format!("正在下载 {} ({}/{})", img.name, i + 1, total_pending),
@@ -828,15 +893,15 @@ async fn start_db_download(
 
             if cancel.load(Ordering::Relaxed) {
                 log::info!(
-                    "[db_download] cancelled: source={} (success={}/{})",
-                    source_clone,
+                    "[recover] cancelled: source={} (success={}/{})",
+                    src_inner,
                     success,
                     total_pending
                 );
-                let _ = app_clone.emit(
+                let _ = app.emit(
                     "download-complete",
                     DownloadComplete {
-                        source: source_clone.clone(),
+                        source: src_inner.clone(),
                         success,
                         total,
                         message: "下载已取消".to_string(),
@@ -859,20 +924,20 @@ async fn start_db_download(
                         let _ = thumb_handle.await;
                         success += 1;
                     } else {
-                        log::error!("[db_download] write failed {}", file_path.display());
+                        log::error!("[recover] write failed {}", file_path.display());
                     }
                 }
                 Err(e) => {
-                    log::error!("[db_download] download failed {}: {}", img.name, e);
+                    log::error!("[recover] download failed {}: {}", img.name, e);
                 }
             }
         }
 
-        log::info!("[db_download] complete: success={}/{}", success, total);
-        let _ = app_clone.emit(
+        log::info!("[recover] complete: success={}/{}", success, total);
+        let _ = app.emit(
             "download-complete",
             DownloadComplete {
-                source: source_clone,
+                source: src_inner,
                 success,
                 total,
                 message: format!("数据库下载完成: 成功 {success}/{total}"),
@@ -880,97 +945,106 @@ async fn start_db_download(
         );
     });
 
-    Ok(format!("{source} 数据库下载已启动"))
+    Ok(format!("{source_str} 数据库下载已启动"))
 }
 
 #[tauri::command]
-async fn mark_dislike(state: tauri::State<'_, AppState>, source: String) -> Result<u64, AppError> {
-    log::info!("[CMD] mark_dislike called: source={}", source);
+async fn mark_disliked_files(
+    state: tauri::State<'_, AppState>,
+    source: Source,
+) -> Result<u64, AppError> {
+    log::info!("[CMD] mark_disliked_files: source={:?}", source);
     let config = load_config(&state)?;
-    if source == "wallhaven" {
-        Ok(db::mark_missing_dislike_wallhaven(
+    match source {
+        Source::Wallhaven => Ok(db::mark_missing_dislike_wallhaven(
             &config.wallhaven_db_path,
             &config.wallhaven_save_dir,
-        )?)
-    } else if source == "reddit" {
-        Ok(db::mark_missing_dislike_reddit(
+        )?),
+        Source::Reddit => Ok(db::mark_missing_dislike_reddit(
             &config.reddit_db_path,
             &config.reddit_save_dir,
-        )?)
-    } else {
-        let w = db::mark_missing_dislike_wallhaven(
-            &config.wallhaven_db_path,
-            &config.wallhaven_save_dir,
-        )?;
-        let r = db::mark_missing_dislike_reddit(&config.reddit_db_path, &config.reddit_save_dir)?;
-        Ok(w + r)
+        )?),
+        Source::All => {
+            let w = db::mark_missing_dislike_wallhaven(
+                &config.wallhaven_db_path,
+                &config.wallhaven_save_dir,
+            )?;
+            let r = db::mark_missing_dislike_reddit(
+                &config.reddit_db_path,
+                &config.reddit_save_dir,
+            )?;
+            Ok(w + r)
+        }
     }
 }
 
 #[tauri::command]
 async fn count_missing_images(
     state: tauri::State<'_, AppState>,
-    source: String,
+    source: Source,
 ) -> Result<u64, AppError> {
-    log::info!("[CMD] count_missing_images called: source={}", source);
+    log::info!("[CMD] count_missing_images: source={:?}", source);
     let config = load_config(&state)?;
-    if source == "wallhaven" {
-        Ok(db::count_missing_wallhaven(
+    match source {
+        Source::Wallhaven => Ok(db::count_missing_wallhaven(
             &config.wallhaven_db_path,
             &config.wallhaven_save_dir,
-        )?)
-    } else if source == "reddit" {
-        Ok(db::count_missing_reddit(
+        )?),
+        Source::Reddit => Ok(db::count_missing_reddit(
             &config.reddit_db_path,
             &config.reddit_save_dir,
-        )?)
-    } else {
-        let w = db::count_missing_wallhaven(&config.wallhaven_db_path, &config.wallhaven_save_dir)?;
-        let r = db::count_missing_reddit(&config.reddit_db_path, &config.reddit_save_dir)?;
-        Ok(w + r)
+        )?),
+        Source::All => {
+            let w = db::count_missing_wallhaven(&config.wallhaven_db_path, &config.wallhaven_save_dir)?;
+            let r = db::count_missing_reddit(&config.reddit_db_path, &config.reddit_save_dir)?;
+            Ok(w + r)
+        }
     }
 }
 
 #[tauri::command]
-async fn restore_love(state: tauri::State<'_, AppState>, source: String) -> Result<u64, AppError> {
-    log::info!("[CMD] restore_love called: source={}", source);
+async fn restore_all_files(
+    state: tauri::State<'_, AppState>,
+    source: Source,
+) -> Result<u64, AppError> {
+    log::info!("[CMD] restore_all_files: source={:?}", source);
     let config = load_config(&state)?;
-    if source == "wallhaven" {
-        Ok(db::restore_love_db(&config.wallhaven_db_path)?)
-    } else if source == "reddit" {
-        Ok(db::restore_love_db(&config.reddit_db_path)?)
-    } else {
-        let w = db::restore_love_db(&config.wallhaven_db_path)?;
-        let r = db::restore_love_db(&config.reddit_db_path)?;
-        Ok(w + r)
+    match source {
+        Source::Wallhaven => Ok(db::restore_love_db(&config.wallhaven_db_path)?),
+        Source::Reddit => Ok(db::restore_love_db(&config.reddit_db_path)?),
+        Source::All => {
+            let w = db::restore_love_db(&config.wallhaven_db_path)?;
+            let r = db::restore_love_db(&config.reddit_db_path)?;
+            Ok(w + r)
+        }
     }
 }
 
 #[tauri::command]
 async fn list_missing_images(
     state: tauri::State<'_, AppState>,
-    source: String,
+    source: Source,
 ) -> Result<Vec<db::ImageRecord>, AppError> {
-    log::info!("[CMD] list_missing_images called: source={}", source);
+    log::info!("[CMD] list_missing_images: source={:?}", source);
     let config = load_config(&state)?;
-    if source == "wallhaven" {
-        Ok(db::get_wallhaven_missing_files(
+    match source {
+        Source::Wallhaven => Ok(db::get_wallhaven_missing_files(
             &config.wallhaven_db_path,
             &config.wallhaven_save_dir,
-        )?)
-    } else if source == "reddit" {
-        Ok(db::get_reddit_missing_files(
+        )?),
+        Source::Reddit => Ok(db::get_reddit_missing_files(
             &config.reddit_db_path,
             &config.reddit_save_dir,
-        )?)
-    } else {
-        let mut all =
-            db::get_wallhaven_missing_files(&config.wallhaven_db_path, &config.wallhaven_save_dir)?;
-        all.extend(db::get_reddit_missing_files(
-            &config.reddit_db_path,
-            &config.reddit_save_dir,
-        )?);
-        Ok(all)
+        )?),
+        Source::All => {
+            let mut all =
+                db::get_wallhaven_missing_files(&config.wallhaven_db_path, &config.wallhaven_save_dir)?;
+            all.extend(db::get_reddit_missing_files(
+                &config.reddit_db_path,
+                &config.reddit_save_dir,
+            )?);
+            Ok(all)
+        }
     }
 }
 
@@ -985,9 +1059,9 @@ struct OrphanFile {
 #[tauri::command]
 async fn list_orphan_files(
     state: tauri::State<'_, AppState>,
-    source: String,
+    source: Source,
 ) -> Result<Vec<OrphanFile>, AppError> {
-    log::info!("[CMD] list_orphan_files called: source={}", source);
+    log::info!("[CMD] list_orphan_files: source={:?}", source);
     let config = load_config(&state)?;
 
     let check_source =
@@ -1019,79 +1093,52 @@ async fn list_orphan_files(
             Ok(orphans)
         };
 
-    if source == "wallhaven" {
-        check_source(
+    match source {
+        Source::Wallhaven => check_source(
             "wallhaven",
             &config.wallhaven_save_dir,
             &config.wallhaven_db_path,
-        )
-    } else if source == "reddit" {
-        check_source("reddit", &config.reddit_save_dir, &config.reddit_db_path)
-    } else {
-        let mut all = check_source(
-            "wallhaven",
-            &config.wallhaven_save_dir,
-            &config.wallhaven_db_path,
-        )?;
-        all.extend(check_source(
-            "reddit",
-            &config.reddit_save_dir,
-            &config.reddit_db_path,
-        )?);
-        Ok(all)
+        ),
+        Source::Reddit => check_source("reddit", &config.reddit_save_dir, &config.reddit_db_path),
+        Source::All => {
+            let mut all = check_source(
+                "wallhaven",
+                &config.wallhaven_save_dir,
+                &config.wallhaven_db_path,
+            )?;
+            all.extend(check_source(
+                "reddit",
+                &config.reddit_save_dir,
+                &config.reddit_db_path,
+            )?);
+            Ok(all)
+        }
     }
 }
 
 #[tauri::command]
-async fn mark_dislike_image(
+async fn dislike_file(
     state: tauri::State<'_, AppState>,
-    source: String,
+    source: Source,
     name: String,
 ) -> Result<bool, AppError> {
-    log::info!("[CMD] mark_dislike_image: source={}, name={}", source, name);
+    log::info!("[CMD] dislike_file: source={:?}, name={}", source, name);
     let config = load_config(&state)?;
-    let (save_dir, db_path, thumb_dir) = if source == "wallhaven" {
-        (
-            config.wallhaven_save_dir.clone(),
-            config.wallhaven_db_path.clone(),
-            config.wallhaven_thumb_dir(),
-        )
-    } else {
-        (
-            config.reddit_save_dir.clone(),
-            config.reddit_db_path.clone(),
-            config.reddit_thumb_dir(),
-        )
-    };
+    let save_dir = config.save_dir_for(source);
+    let db_path = config.db_path_for(source);
+    let thumb_dir = config.thumb_dir_for(source);
 
-    // DB 标记为不喜欢
-    let db_ok = db::mark_dislike_by_name(&db_path, &name)?;
+    let db_ok = db::mark_dislike_by_name(db_path, &name)?;
 
-    // 删除文件
     let file_path = std::path::Path::new(&save_dir).join(&name);
     if file_path.exists() {
         std::fs::remove_file(&file_path).map_err(|e| {
-            log::error!(
-                "[mark_dislike_image] 删除文件失败 {}: {}",
-                file_path.display(),
-                e
-            );
+            log::error!("[dislike_file] 删除文件失败 {}: {}", file_path.display(), e);
             AppError::Io(e)
         })?;
     }
 
-    // 删除缩略图（兼容新旧格式）
-    let thumb_old = thumb_dir.join(&name);
-    if thumb_old.exists() {
-        std::fs::remove_file(&thumb_old).ok();
-    }
-    // 新格式：name__w240, name__w480, name__w720
-    for dpr in [1u32, 2, 3] {
-        let tp = thumb_dir.join(thumbnail::thumb_filename_for_dpr(&name, dpr));
-        if tp.exists() {
-            std::fs::remove_file(&tp).ok();
-        }
-    }
+    thumbnail::remove_thumbnails(&thumb_dir, &name);
 
     Ok(db_ok)
 }
@@ -1099,21 +1146,14 @@ async fn mark_dislike_image(
 #[tauri::command]
 async fn delete_orphan_file(
     state: tauri::State<'_, AppState>,
-    source: String,
+    source: Source,
     name: String,
 ) -> Result<bool, AppError> {
-    log::info!("[CMD] delete_orphan_file: source={}, name={}", source, name);
+    log::info!("[CMD] delete_orphan_file: source={:?}, name={}", source, name);
     let config = load_config(&state)?;
-    let (save_dir, thumb_dir) = if source == "wallhaven" {
-        (
-            config.wallhaven_save_dir.clone(),
-            config.wallhaven_thumb_dir(),
-        )
-    } else {
-        (config.reddit_save_dir.clone(), config.reddit_thumb_dir())
-    };
+    let save_dir = config.save_dir_for(source);
+    let thumb_dir = config.thumb_dir_for(source);
 
-    // 删除文件
     let file_path = std::path::Path::new(&save_dir).join(&name);
     let existed = file_path.exists();
     if existed {
@@ -1127,44 +1167,25 @@ async fn delete_orphan_file(
         })?;
     }
 
-    // 删除缩略图（兼容新旧格式）
-    let thumb_old = thumb_dir.join(&name);
-    if thumb_old.exists() {
-        std::fs::remove_file(&thumb_old).ok();
-    }
-    for dpr in [1u32, 2, 3] {
-        let tp = thumb_dir.join(thumbnail::thumb_filename_for_dpr(&name, dpr));
-        if tp.exists() {
-            std::fs::remove_file(&tp).ok();
-        }
-    }
+    thumbnail::remove_thumbnails(&thumb_dir, &name);
 
     Ok(existed)
 }
 
 #[tauri::command]
-async fn add_orphan_entries(
+async fn adopt_orphan_files(
     state: tauri::State<'_, AppState>,
-    source: String,
+    source: Source,
     names: Vec<String>,
 ) -> Result<u64, AppError> {
     log::info!(
-        "[CMD] add_orphan_entries: source={}, count={}",
+        "[CMD] adopt_orphan_files: source={:?}, count={}",
         source,
         names.len()
     );
     let config = load_config(&state)?;
-    let (save_dir, db_path) = if source == "wallhaven" {
-        (
-            config.wallhaven_save_dir.clone(),
-            config.wallhaven_db_path.clone(),
-        )
-    } else {
-        (
-            config.reddit_save_dir.clone(),
-            config.reddit_db_path.clone(),
-        )
-    };
+    let save_dir = config.save_dir_for(source);
+    let db_path = config.db_path_for(source);
 
     let mut wallhaven_batch: Vec<(String, String, String, String, String, String)> = Vec::new();
     let mut reddit_batch: Vec<(String, String, String, String, String)> = Vec::new();
@@ -1172,16 +1193,13 @@ async fn add_orphan_entries(
     for name in &names {
         let file_path = std::path::Path::new(&save_dir).join(name);
         if !file_path.is_file() {
-            log::warn!(
-                "[add_orphan_entries] file not found: {}",
-                file_path.display()
-            );
+            log::warn!("[adopt_orphan_files] file not found: {}", file_path.display());
             continue;
         }
         let bytes = std::fs::read(&file_path).map_err(AppError::Io)?;
         let hash = downloader::compute_md5(&bytes);
 
-        if source == "wallhaven" {
+        if source.is_wallhaven() {
             let wallhaven_id = name
                 .strip_prefix("wallhaven_")
                 .and_then(|s| s.split('.').next())
@@ -1205,13 +1223,13 @@ async fn add_orphan_entries(
         }
     }
 
-    let added = if source == "wallhaven" {
-        db::insert_wallhaven_images_batch(&db_path, &wallhaven_batch)?.0
+    let added = if matches!(source, Source::Wallhaven) {
+        db::insert_wallhaven_images_batch(db_path, &wallhaven_batch)?.0
     } else {
-        db::insert_reddit_images_batch(&db_path, &reddit_batch)?.0
+        db::insert_reddit_images_batch(db_path, &reddit_batch)?.0
     };
 
-    log::info!("[add_orphan_entries] done: added={}/{}", added, names.len());
+    log::info!("[adopt_orphan_files] done: added={}/{}", added, names.len());
     Ok(added)
 }
 
@@ -1219,27 +1237,23 @@ async fn add_orphan_entries(
 async fn download_missing_images(
     app: tauri::AppHandle,
     state: tauri::State<'_, AppState>,
-    source: String,
+    source: Source,
     images: Vec<db::ImageRecord>,
 ) -> Result<String, AppError> {
     log::info!(
-        "[CMD] download_missing_images: source={}, count={}",
+        "[CMD] download_missing_images: source={:?}, count={}",
         source,
         images.len()
     );
     let config = load_config(&state)?;
     let cancel = setup_cancel_flag(&state);
-    let client = state.http_client.clone();
+    let client = state.http_client.lock().unwrap().clone();
 
-    let (save_dir, thumb_dir) = if source == "wallhaven" {
-        (
-            config.wallhaven_save_dir.clone(),
-            config.wallhaven_thumb_dir(),
-        )
-    } else {
-        (config.reddit_save_dir.clone(), config.reddit_thumb_dir())
-    };
-
+    let save_dir = config.save_dir_for(source).to_string();
+    let thumb_dir = config.thumb_dir_for(source);
+    let download_concurrency = config.download_concurrency;
+    let thumbnail_dpr = config.thumbnail_dpr;
+    let source_str = source.to_string();
     let total_images = images.len();
 
     tokio::spawn(async move {
@@ -1253,7 +1267,7 @@ async fn download_missing_images(
             &client,
             &urls,
             cancel.clone(),
-            config.download_concurrency,
+            download_concurrency,
             3,
         )
         .await;
@@ -1264,7 +1278,7 @@ async fn download_missing_images(
             let _ = app.emit(
                 "download-progress",
                 DownloadProgress {
-                    source: source.clone(),
+                    source: source_str.clone(),
                     done: i as u32,
                     total,
                     message: format!("正在下载 {} ({}/{})", img.name, i + 1, total),
@@ -1280,7 +1294,7 @@ async fn download_missing_images(
                 let _ = app.emit(
                     "download-complete",
                     DownloadComplete {
-                        source: source.clone(),
+                        source: source_str.clone(),
                         success,
                         total,
                         message: "下载已取消".to_string(),
@@ -1296,7 +1310,7 @@ async fn download_missing_images(
                         bytes,
                         &thumb_dir,
                         &img.name,
-                        config.thumbnail_dpr,
+                        thumbnail_dpr,
                     )
                     .await
                     {
@@ -1316,7 +1330,7 @@ async fn download_missing_images(
         let _ = app.emit(
             "download-complete",
             DownloadComplete {
-                source,
+                source: source_str.clone(),
                 success,
                 total,
                 message: format!("补下载完成: 成功 {success}/{total}"),
@@ -1328,8 +1342,8 @@ async fn download_missing_images(
 }
 
 #[tauri::command]
-async fn cancel_download(state: tauri::State<'_, AppState>) -> Result<(), AppError> {
-    log::info!("[CMD] cancel_download called");
+async fn cancel_downloads(state: tauri::State<'_, AppState>) -> Result<(), AppError> {
+    log::info!("[CMD] cancel_downloads called");
     if let Ok(guard) = state.cancel_flag.lock() {
         if let Some(ref flag) = *guard {
             flag.store(true, Ordering::Relaxed);
@@ -1339,44 +1353,43 @@ async fn cancel_download(state: tauri::State<'_, AppState>) -> Result<(), AppErr
 }
 
 #[tauri::command]
-async fn get_images(
+async fn list_database_images(
     state: tauri::State<'_, AppState>,
-    source: String,
+    source: Source,
     limit: i64,
     offset: i64,
 ) -> Result<Vec<db::ImageRecord>, AppError> {
     log::info!(
-        "[CMD] get_images called: source={}, limit={}, offset={}",
+        "[CMD] list_database_images: source={:?}, limit={}, offset={}",
         source,
         limit,
         offset
     );
     let config = load_config(&state)?;
-    if source == "wallhaven" {
-        Ok(db::get_wallhaven_images(
+    match source {
+        Source::Wallhaven => Ok(db::get_wallhaven_images(
             &config.wallhaven_db_path,
             limit,
             offset,
-        )?)
-    } else {
-        Ok(db::get_reddit_images(
+        )?),
+        Source::Reddit | Source::All => Ok(db::get_reddit_images(
             &config.reddit_db_path,
             limit,
             offset,
-        )?)
+        )?),
     }
 }
 
 #[tauri::command]
-async fn list_local_images(
+async fn browse_image_files(
     state: tauri::State<'_, AppState>,
-    source: String,
+    source: Source,
     offset: usize,
     limit: usize,
     custom_dir: Option<String>,
-) -> Result<serde_json::Value, AppError> {
+) -> Result<LocalImageList, AppError> {
     log::info!(
-        "[CMD] list_local_images called: source={}, offset={}, limit={}, custom_dir={:?}",
+        "[CMD] browse_image_files: source={:?}, offset={}, limit={}, custom_dir={:?}",
         source,
         offset,
         limit,
@@ -1385,62 +1398,65 @@ async fn list_local_images(
     let config = load_config(&state)?;
     let dir = if let Some(ref custom) = custom_dir {
         custom.clone()
-    } else if source == "wallhaven" {
-        config.wallhaven_save_dir.clone()
     } else {
-        config.reddit_save_dir.clone()
+        config.save_dir_for(source).to_string()
     };
 
     let path = PathBuf::from(&dir);
     if !path.is_dir() {
-        return Ok(serde_json::json!({ "images": [], "total": 0 }));
+        return Ok(LocalImageList {
+            images: Vec::new(),
+            total: 0,
+        });
     }
 
     {
         if let Ok(cache) = state.file_cache.lock() {
             if let Some(ref cached) = *cache {
-                if cached.source == source
+                let src_str = source.to_string();
+                if cached.source == src_str
                     && cached.dir_path == dir
                     && cached.cached_at.elapsed().as_secs() < 30
                 {
                     let page_start = offset.min(cached.total);
                     let page_end = (page_start + limit).min(cached.total);
-                    let page: Vec<serde_json::Value> = cached.items[page_start..page_end]
+                    let images = cached.items[page_start..page_end]
                         .iter()
-                        .map(|e| {
-                            serde_json::json!({
-                                "name": e.name,
-                                "path": e.path,
-                                "thumb_path": null,
-                                "size": e.size,
-                                "is_orphan": e.is_orphan,
-                            })
+                        .map(|e| LocalImageEntry {
+                            name: e.name.clone(),
+                            path: e.path.clone(),
+                            thumb_path: None,
+                            size: e.size,
+                            is_orphan: e.is_orphan,
                         })
                         .collect();
-                    return Ok(serde_json::json!({ "images": page, "total": cached.total }));
+                    return Ok(LocalImageList {
+                        images,
+                        total: cached.total,
+                    });
                 }
             }
         }
     }
 
-    let db_names: std::collections::HashSet<String> = if source == "wallhaven" {
-        db::get_all_filenames(&config.wallhaven_db_path)
+    let db_names: std::collections::HashSet<String> = match source {
+        Source::Wallhaven => db::get_all_filenames(&config.wallhaven_db_path)
             .unwrap_or_default()
             .into_iter()
-            .collect()
-    } else if source == "reddit" {
-        db::get_all_filenames(&config.reddit_db_path)
+            .collect(),
+        Source::Reddit => db::get_all_filenames(&config.reddit_db_path)
             .unwrap_or_default()
             .into_iter()
-            .collect()
-    } else {
-        let mut names: std::collections::HashSet<String> =
-            db::get_all_filenames(&config.wallhaven_db_path)
-                .unwrap_or_default()
-                .into_iter()
-                .collect();
-        names.extend(db::get_all_filenames(&config.reddit_db_path).unwrap_or_default());
-        names
+            .collect(),
+        Source::All => {
+            let mut names: std::collections::HashSet<String> =
+                db::get_all_filenames(&config.wallhaven_db_path)
+                    .unwrap_or_default()
+                    .into_iter()
+                    .collect();
+            names.extend(db::get_all_filenames(&config.reddit_db_path).unwrap_or_default());
+            names
+        }
     };
 
     let mut entries: Vec<FileEntry> = Vec::new();
@@ -1470,16 +1486,14 @@ async fn list_local_images(
 
     let page_start = offset.min(total);
     let page_end = (page_start + limit).min(total);
-    let page: Vec<serde_json::Value> = entries[page_start..page_end]
+    let images = entries[page_start..page_end]
         .iter()
-        .map(|e| {
-            serde_json::json!({
-                "name": e.name,
-                "path": e.path,
-                "thumb_path": null,
-                "size": e.size,
-                "is_orphan": e.is_orphan,
-            })
+        .map(|e| LocalImageEntry {
+            name: e.name.clone(),
+            path: e.path.clone(),
+            thumb_path: None,
+            size: e.size,
+            is_orphan: e.is_orphan,
         })
         .collect();
 
@@ -1487,7 +1501,7 @@ async fn list_local_images(
         if let Ok(mut cache) = state.file_cache.lock() {
             *cache = Some(FileListCache {
                 total,
-                source: source.clone(),
+                source: source.to_string(),
                 dir_path: dir,
                 items: entries,
                 cached_at: Instant::now(),
@@ -1495,87 +1509,64 @@ async fn list_local_images(
         }
     }
 
-    Ok(serde_json::json!({ "images": page, "total": total }))
+    Ok(LocalImageList { images, total })
 }
 
 #[tauri::command]
-async fn get_thumbnail_path(
+async fn resolve_thumbnail(
     state: tauri::State<'_, AppState>,
-    source: String,
+    source: Source,
     filename: String,
     dpr: Option<u32>,
 ) -> Result<String, AppError> {
     let dpr = dpr.unwrap_or(1).max(1);
     log::info!(
-        "[CMD] get_thumbnail_path: source={}, file={}, dpr={}",
+        "[CMD] resolve_thumbnail: source={:?}, file={}, dpr={}",
         source,
         filename,
         dpr
     );
     let config = load_config(&state)?;
-    let dir = if source == "wallhaven" {
-        &config.wallhaven_save_dir
-    } else {
-        &config.reddit_save_dir
-    };
-    let image_dir = PathBuf::from(dir);
-    let thumb_dir = if source == "wallhaven" {
-        config.wallhaven_thumb_dir()
-    } else {
-        config.reddit_thumb_dir()
-    };
+    let save_dir = config.save_dir_for(source);
+    let thumb_dir = config.thumb_dir_for(source);
+    let image_dir = PathBuf::from(&save_dir);
 
-    // 确保缩略图存在（dpr 决定分辨率）
     let result = thumbnail::resolve_thumb_path(&thumb_dir, &image_dir, &filename, dpr);
     match result {
         Ok(thumb_path) => Ok(thumb_path.to_string_lossy().to_string()),
-        Err(_) => {
-            // 缩略图生成失败，回退到原图
-            Ok(image_dir.join(&filename).to_string_lossy().to_string())
-        }
+        Err(_) => Ok(image_dir.join(&filename).to_string_lossy().to_string()),
     }
 }
 
 #[tauri::command]
-async fn get_thumbnail_paths(
+async fn resolve_thumbnails(
     state: tauri::State<'_, AppState>,
-    source: String,
+    source: Source,
     filenames: Vec<String>,
     dpr: Option<u32>,
-) -> Result<serde_json::Value, AppError> {
+) -> Result<ThumbnailBatch, AppError> {
     let dpr = dpr.unwrap_or(1).max(1);
     log::info!(
-        "[CMD] get_thumbnail_paths: source={}, count={}, dpr={}",
+        "[CMD] resolve_thumbnails: source={:?}, count={}, dpr={}",
         source,
         filenames.len(),
         dpr
     );
     let config = load_config(&state)?;
-    let dir = if source == "wallhaven" {
-        &config.wallhaven_save_dir
-    } else {
-        &config.reddit_save_dir
-    };
-    let image_dir = PathBuf::from(dir);
-    let thumb_dir = if source == "wallhaven" {
-        config.wallhaven_thumb_dir()
-    } else {
-        config.reddit_thumb_dir()
-    };
+    let save_dir = config.save_dir_for(source);
+    let thumb_dir = config.thumb_dir_for(source);
+    let image_dir = PathBuf::from(&save_dir);
 
-    // 并行生成缩略图（dpr 决定分辨率）
     let batch_result = thumbnail::ensure_batch_thumbnails(&thumb_dir, &image_dir, &filenames, dpr);
-    let result: Vec<serde_json::Value> = batch_result
+    let items = batch_result
         .into_iter()
-        .map(|(name, thumb_path)| {
-            serde_json::json!({
-                "name": name,
-                "thumb_path": thumb_path.to_string_lossy().to_string(),
-            })
+        .map(|(name, thumb_path)| ThumbnailItem {
+            name,
+            thumb_path: thumb_path.to_string_lossy().to_string(),
         })
         .collect();
 
-    Ok(serde_json::json!({ "items": result }))
+    Ok(ThumbnailBatch { items })
 }
 
 /// Wallhaven 搜索预览（不下载）
@@ -1583,32 +1574,32 @@ async fn get_thumbnail_paths(
 async fn search_wallhaven(
     state: tauri::State<'_, AppState>,
     page: Option<u32>,
-) -> Result<serde_json::Value, AppError> {
+) -> Result<WallhavenSearchResult, AppError> {
     let page = page.unwrap_or(1);
-    log::info!("[CMD] search_wallhaven called: page={}", page);
+    log::info!("[CMD] search_wallhaven: page={}", page);
     let config = load_config(&state)?;
     let client = wallhaven::WallhavenClient::new(
-        state.http_client.clone(),
+        state.http_client.lock().unwrap().clone(),
         config.wallhaven_api_key.clone(),
     );
 
     let resp = client
-        .search(
+        .search(&wallhaven::WallhavenSearchParams {
             page,
-            &config.wallhaven_categories,
-            &config.wallhaven_purity,
-            &config.wallhaven_sorting,
-            &config.wallhaven_order,
-            &config.wallhaven_top_range,
-            &config.wallhaven_atleast,
-            &config.wallhaven_ratios,
-            &config.wallhaven_q,
-        )
+            categories: config.wallhaven_categories.clone(),
+            purity: config.wallhaven_purity.clone(),
+            sorting: config.wallhaven_sorting.clone(),
+            order: config.wallhaven_order.clone(),
+            top_range: config.wallhaven_top_range.clone(),
+            atleast: config.wallhaven_atleast.clone(),
+            ratios: config.wallhaven_ratios.clone(),
+            q: config.wallhaven_q.clone(),
+        })
         .await
         .map_err(AppError::Config)?;
 
     let meta = resp.meta.as_ref();
-    let images: Vec<serde_json::Value> = resp
+    let images = resp
         .data
         .iter()
         .map(|img| {
@@ -1618,24 +1609,24 @@ async fn search_wallhaven(
                 &img.id[..1]
             };
             let thumbnail_url = format!("https://th.wallhaven.cc/small/{prefix}/{}.jpg", img.id);
-            serde_json::json!({
-                "id": img.id,
-                "thumbnail_url": thumbnail_url,
-                "path": img.path,
-                "resolution": img.resolution,
-                "short_url": img.short_url,
-                "file_size": img.file_size,
-                "file_type": img.file_type,
-            })
+            WallhavenImageEntry {
+                id: img.id.clone(),
+                thumbnail_url,
+                path: img.path.clone(),
+                resolution: img.resolution.clone(),
+                short_url: img.short_url.clone(),
+                file_size: img.file_size,
+                file_type: img.file_type.clone(),
+            }
         })
         .collect();
 
-    Ok(serde_json::json!({
-        "images": images,
-        "page": meta.map_or(1, |m| m.current_page),
-        "total_pages": meta.and_then(|m| m.last_page).unwrap_or(1),
-        "total": meta.and_then(|m| m.total).unwrap_or(0),
-    }))
+    Ok(WallhavenSearchResult {
+        images,
+        page: meta.map_or(1, |m| m.current_page),
+        total_pages: meta.and_then(|m| m.last_page).unwrap_or(1),
+        total: meta.and_then(|m| m.total).unwrap_or(0),
+    })
 }
 
 /// 下载选中的 Wallhaven 图片
@@ -1657,7 +1648,7 @@ async fn download_wallhaven_selected(
     let config = load_config(&state)?;
     let cancel = setup_cancel_flag(&state);
     let app_clone = app.clone();
-    let client = state.http_client.clone();
+    let client = state.http_client.lock().unwrap().clone();
     let total = images.len() as u32;
     let count = total;
 
@@ -1795,40 +1786,23 @@ async fn download_wallhaven_selected(
 }
 
 // ---------------------------------------------------------------------------
-// \u{58c1}\u{7eb8}\u{8bbe}\u{7f6e} — \u{6bcf}\u{4e2a}\u{684c}\u{9762}\u{73af}\u{5883}\u{4e00}\u{4e2a}\u{72ec}\u{7acb}\u{7684}\u{68c0}\u{6d4b}\u{51fd}\u{6570}
+// 壁纸设置
 
 #[tauri::command]
 async fn delete_image(
     state: tauri::State<'_, AppState>,
-    source: String,
+    source: Source,
     name: String,
 ) -> Result<bool, AppError> {
-    log::info!("[CMD] delete_image: source={}, name={}", source, name);
+    log::info!("[CMD] delete_image: source={:?}, name={}", source, name);
     let config = load_config(&state)?;
-    let (save_dir, db_path, thumb_dir) = if source == "wallhaven" {
-        (
-            config.wallhaven_save_dir.clone(),
-            config.wallhaven_db_path.clone(),
-            config.wallhaven_thumb_dir(),
-        )
-    } else {
-        (
-            config.reddit_save_dir.clone(),
-            config.reddit_db_path.clone(),
-            config.reddit_thumb_dir(),
-        )
-    };
+    let save_dir = config.save_dir_for(source);
+    let db_path = config.db_path_for(source);
+    let thumb_dir = config.thumb_dir_for(source);
 
-    // 先删数据库记录，再删文件（防止 DB 记录成孤儿）
-    let db_ok = if source == "wallhaven" {
-        db::delete_wallhaven_image(&db_path, &name).map_err(AppError::Db)?;
-        true
-    } else {
-        db::delete_reddit_image(&db_path, &name).map_err(AppError::Db)?;
-        true
-    };
+    // 标记为不喜欢（love=0），保留数据库记录以便后续恢复
+    let marked = db::mark_dislike_by_name(db_path, &name)?;
 
-    // 删除文件（文件删除失败不阻止流程，只记日志）
     let file_path = std::path::Path::new(&save_dir).join(&name);
     if file_path.exists() {
         if let Err(e) = std::fs::remove_file(&file_path) {
@@ -1836,25 +1810,15 @@ async fn delete_image(
         }
     }
 
-    // 删除缩略图（兼容新旧格式）
-    let thumb_old = thumb_dir.join(&name);
-    if thumb_old.exists() {
-        std::fs::remove_file(&thumb_old).ok();
-    }
-    for dpr in [1u32, 2, 3] {
-        let tp = thumb_dir.join(thumbnail::thumb_filename_for_dpr(&name, dpr));
-        if tp.exists() {
-            std::fs::remove_file(&tp).ok();
-        }
-    }
+    thumbnail::remove_thumbnails(&thumb_dir, &name);
 
-    Ok(db_ok)
+    Ok(marked)
 }
 
 #[tauri::command]
 async fn clean_thumbnails(
     state: tauri::State<'_, AppState>,
-) -> Result<serde_json::Value, AppError> {
+) -> Result<CleanThumbnailsResult, AppError> {
     log::info!("[CMD] clean_thumbnails called");
     let config = load_config(&state)?;
     let wh_thumb_dir = config.wallhaven_thumb_dir();
@@ -1863,21 +1827,22 @@ async fn clean_thumbnails(
     let rd_thumb_dir = config.reddit_thumb_dir();
     let rd_cleaned =
         db::clean_stale_thumbnails(&rd_thumb_dir.to_string_lossy(), &config.reddit_save_dir);
-    Ok(serde_json::json!({
-        "wallhaven": wh_cleaned,
-        "reddit": rd_cleaned,
-    }))
+    Ok(CleanThumbnailsResult {
+        wallhaven: wh_cleaned,
+        reddit: rd_cleaned,
+    })
 }
+
 /// 获取当前桌面壁纸路径（从 noctalia 缓存）
 #[tauri::command]
-async fn get_current_wallpaper() -> Result<serde_json::Value, AppError> {
+async fn get_active_wallpaper() -> Result<ActiveWallpaper, AppError> {
     let noc_path = dirs::cache_dir()
         .unwrap_or_else(|| std::path::PathBuf::from("."))
         .join("noctalia")
         .join("wallpapers.json");
 
     if !noc_path.exists() {
-        return Ok(serde_json::json!({ "path": null }));
+        return Ok(ActiveWallpaper { path: None });
     }
 
     let content = std::fs::read_to_string(&noc_path)
@@ -1899,9 +1864,12 @@ async fn get_current_wallpaper() -> Result<serde_json::Value, AppError> {
     let path = json
         .pointer(&format!("/wallpapers/eDP-1/{key}"))
         .and_then(|v| v.as_str())
-        .unwrap_or("");
+        .unwrap_or("")
+        .to_string();
 
-    Ok(serde_json::json!({ "path": path }))
+    Ok(ActiveWallpaper {
+        path: if path.is_empty() { None } else { Some(path) },
+    })
 }
 
 #[derive(serde::Serialize)]
@@ -1912,8 +1880,8 @@ struct FileInfo {
 }
 
 #[tauri::command]
-async fn list_files(dir: String) -> Result<Vec<FileInfo>, AppError> {
-    log::info!("[CMD] list_files: dir={}", dir);
+async fn scan_directory(dir: String) -> Result<Vec<FileInfo>, AppError> {
+    log::info!("[CMD] scan_directory: dir={}", dir);
     let path = std::path::Path::new(&dir);
     if !path.is_dir() {
         return Ok(Vec::new());
@@ -1931,7 +1899,7 @@ async fn list_files(dir: String) -> Result<Vec<FileInfo>, AppError> {
             }
         }
     }
-    log::info!("[CMD] list_files: found {} files", files.len());
+    log::info!("[CMD] scan_directory: found {} files", files.len());
     Ok(files)
 }
 
@@ -1993,7 +1961,7 @@ pub fn run() {
                 config_path: Mutex::new(config_path),
                 file_cache: Mutex::new(None),
                 cancel_flag: Mutex::new(None),
-                http_client: client,
+                http_client: Mutex::new(client),
                 config_cache: Mutex::new(Some(config)),
             });
 
@@ -2005,28 +1973,28 @@ pub fn run() {
             get_stats,
             start_wallhaven_download,
             start_reddit_download,
-            start_db_download,
-            mark_dislike,
-            cancel_download,
+            recover_database_files,
+            mark_disliked_files,
+            cancel_downloads,
             count_missing_images,
-            restore_love,
+            restore_all_files,
             list_missing_images,
             download_missing_images,
             delete_orphan_file,
             list_orphan_files,
-            mark_dislike_image,
-            add_orphan_entries,
-            get_images,
-            list_local_images,
-            get_thumbnail_path,
-            get_thumbnail_paths,
+            dislike_file,
+            adopt_orphan_files,
+            list_database_images,
+            browse_image_files,
+            resolve_thumbnail,
+            resolve_thumbnails,
             search_wallhaven,
             download_wallhaven_selected,
             set_wallpaper,
             delete_image,
             clean_thumbnails,
-            get_current_wallpaper,
-            list_files,
+            get_active_wallpaper,
+            scan_directory,
         ])
         .run(tauri::generate_context!())
         .expect("运行 Tauri 应用时出错");
