@@ -72,6 +72,6 @@ jobs:
 
             ### 更新日志
             详见 [CHANGELOG](./CHANGELOG.md)
-          releaseDraft: true
+          releaseDraft: false
           prerelease: false
           args: ${{ matrix.args }}
