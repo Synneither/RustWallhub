@@ -25,6 +25,7 @@ interface AppConfig {
   download_concurrency: number;
   thumbnail_dpr: number;
   request_timeout: number;
+  auto_update: boolean;
 }
 
 const config = ref<AppConfig | null>(null);
@@ -32,6 +33,8 @@ const saving = ref(false);
 const saved = ref(false);
 const formValid = ref(false);
 const formRef = ref<any>(null);
+const checkingUpdate = ref(false);
+const updateInfo = ref<{ has_update: boolean; version: string; current_version: string; body?: string; date?: string } | null>(null);
 
 const requiredRule = (v: string) => !!v || '此项不能为空';
 const positiveInt = (v: number) => {
@@ -100,6 +103,7 @@ async function loadConfig() {
       download_concurrency: 6,
       thumbnail_dpr: 2,
       request_timeout: 30,
+      auto_update: true,
     };
   }
 }
@@ -118,6 +122,26 @@ async function saveSettings() {
     logger.error("Settings", "保存设置失败", e);
   }
   saving.value = false;
+}
+
+async function checkUpdate() {
+  checkingUpdate.value = true;
+  updateInfo.value = null;
+  logger.action("Settings", "检查应用更新");
+  try {
+    const info = await invoke<{
+      has_update: boolean;
+      version: string;
+      current_version: string;
+      body?: string;
+      date?: string;
+    }>("check_update");
+    updateInfo.value = info;
+    logger.info("Settings", "检查更新完成", info);
+  } catch (e) {
+    logger.error("Settings", "检查更新失败", e);
+  }
+  checkingUpdate.value = false;
 }
 
 onMounted(loadConfig);
@@ -394,6 +418,50 @@ onMounted(loadConfig);
                 append-inner-icon="mdi-folder-open"
                 @click:append-inner="selectDirectory('thumbnails_dir')"
               />
+            </v-col>
+          </v-row>
+        </div>
+
+        <div class="settings-group-label">应用更新</div>
+        <div class="settings-group">
+          <v-row align="center">
+            <v-col cols="12" sm="6">
+              <v-switch
+                v-model="config.auto_update"
+                label="启动时自动检查更新"
+                color="primary"
+                hide-details
+                class="settings-field"
+              />
+            </v-col>
+            <v-col cols="12" sm="6" class="d-flex align-center">
+              <v-btn
+                variant="tonal"
+                size="small"
+                color="primary"
+                :loading="checkingUpdate"
+                @click="checkUpdate"
+              >
+                <v-icon start size="16">mdi-update</v-icon>
+                立即检查
+              </v-btn>
+            </v-col>
+          </v-row>
+          <v-row v-if="updateInfo">
+            <v-col cols="12">
+              <v-alert
+                :type="updateInfo.has_update ? 'info' : 'success'"
+                variant="tonal"
+                density="compact"
+                class="mt-2"
+              >
+                <template v-if="updateInfo.has_update">
+                  发现新版本 <strong>{{ updateInfo.version }}</strong>（当前 {{ updateInfo.current_version }}）
+                </template>
+                <template v-else>
+                  当前已是最新版本 <strong>{{ updateInfo.current_version }}</strong>
+                </template>
+              </v-alert>
             </v-col>
           </v-row>
         </div>

@@ -68,6 +68,9 @@ pub struct AppConfig {
     /// HTTP 请求超时 (秒, 默认 30)
     #[serde(default = "default_request_timeout")]
     pub request_timeout: u64,
+    /// 启动时自动检查应用更新
+    #[serde(default = "default_auto_update")]
+    pub auto_update: bool,
 }
 
 fn default_reddit_url() -> String {
@@ -101,6 +104,10 @@ fn default_thumbnail_dpr() -> u32 {
 
 fn default_request_timeout() -> u64 {
     30
+}
+
+fn default_auto_update() -> bool {
+    true
 }
 
 impl AppConfig {
@@ -230,6 +237,7 @@ impl Default for AppConfig {
             download_concurrency: 6,
             thumbnail_dpr: 2,
             request_timeout: 30,
+            auto_update: true,
         }
     }
 }
@@ -251,6 +259,7 @@ mod tests {
         assert_eq!(cfg.download_concurrency, 6);
         assert_eq!(cfg.thumbnail_dpr, 2);
         assert_eq!(cfg.request_timeout, 30);
+        assert!(cfg.auto_update);
     }
 
     #[test]

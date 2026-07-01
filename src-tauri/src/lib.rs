@@ -15,6 +15,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tauri::{Emitter, Manager};
+use tauri_plugin_updater::UpdaterExt;
 use wallpaper::set_wallpaper;
 
 #[derive(Clone, Serialize)]
@@ -140,6 +141,15 @@ struct CleanThumbnailsResult {
 #[derive(Serialize)]
 struct ActiveWallpaper {
     path: Option<String>,
+}
+
+#[derive(Serialize, Clone)]
+struct UpdateInfo {
+    has_update: bool,
+    version: String,
+    current_version: String,
+    body: Option<String>,
+    date: Option<String>,
 }
 
 const MAX_UPWARD_DEPTH: u32 = 100;
@@ -1909,6 +1919,48 @@ async fn scan_directory(dir: String) -> Result<Vec<FileInfo>, AppError> {
     Ok(files)
 }
 
+async fn do_check_update(app: &tauri::AppHandle) -> Result<Option<UpdateInfo>, String> {
+    let updater = app
+        .updater()
+        .map_err(|e| format!("初始化 updater 失败: {e}"))?;
+    let current_version = app.package_info().version.to_string();
+    match updater
+        .check()
+        .await
+        .map_err(|e| format!("检查更新失败: {e}"))?
+    {
+        Some(update) => Ok(Some(UpdateInfo {
+            has_update: true,
+            version: update.version,
+            current_version,
+            body: update.body,
+            date: update.date.map(|d| d.to_string()),
+        })),
+        None => Ok(Some(UpdateInfo {
+            has_update: false,
+            version: current_version.clone(),
+            current_version,
+            body: None,
+            date: None,
+        })),
+    }
+}
+
+/// 手动检查应用更新
+#[tauri::command]
+async fn check_update(app: tauri::AppHandle) -> Result<UpdateInfo, String> {
+    log::info!("[CMD] check_update called");
+    do_check_update(&app).await.map(|opt| {
+        opt.unwrap_or_else(|| UpdateInfo {
+            has_update: false,
+            version: app.package_info().version.to_string(),
+            current_version: app.package_info().version.to_string(),
+            body: None,
+            date: None,
+        })
+    })
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info"))
@@ -1920,6 +1972,7 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_fs::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .setup(|app| {
             let config_dir = app
                 .path()
@@ -1963,6 +2016,8 @@ pub fn run() {
                 .build()
                 .expect("创建 HTTP client 失败");
 
+            let auto_update = config.auto_update;
+
             app.manage(AppState {
                 config_path: Mutex::new(config_path),
                 file_cache: Mutex::new(None),
@@ -1970,6 +2025,23 @@ pub fn run() {
                 http_client: Mutex::new(client),
                 config_cache: Mutex::new(Some(config)),
             });
+
+            // 启动后延迟检查更新（避免阻塞启动流程）
+            if auto_update {
+                let app_handle = app.handle().clone();
+                tauri::async_runtime::spawn(async move {
+                    tokio::time::sleep(Duration::from_secs(5)).await;
+                    match do_check_update(&app_handle).await {
+                        Ok(Some(info)) if info.has_update => {
+                            log::info!("[updater] 发现新版本: {}", info.version);
+                            let _ = app_handle.emit("update-available", info);
+                        }
+                        Ok(Some(_)) => log::info!("[updater] 当前已是最新版本"),
+                        Ok(None) => {}
+                        Err(e) => log::warn!("[updater] 自动检查更新失败: {e}"),
+                    }
+                });
+            }
 
             Ok(())
         })
@@ -2001,6 +2073,7 @@ pub fn run() {
             clean_thumbnails,
             get_active_wallpaper,
             scan_directory,
+            check_update,
         ])
         .run(tauri::generate_context!())
         .expect("运行 Tauri 应用时出错");

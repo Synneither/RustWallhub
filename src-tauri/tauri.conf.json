@@ -40,5 +40,15 @@
       "icons/icon.icns",
       "icons/icon.ico"
     ]
+  },
+  "plugins": {
+    "updater": {
+      "active": true,
+      "dialog": true,
+      "endpoints": [
+        "https://github.com/Synneither-arch/RustWallhub/releases/latest/download/latest.json"
+      ],
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDdBQzY2NUM1OUUwNTc1M0YKUldRL2RRV2V4V1hHZXVaOUowb2Y2MG8yQ2ppdkk2NmJTS3lJeEVQUC9uV0FkeklFQXJoalFQNHUK"
+    }
   }
 }

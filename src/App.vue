@@ -86,6 +86,14 @@ interface CompleteEvent {
   message: string;
 }
 
+interface UpdateInfo {
+  has_update: boolean;
+  version: string;
+  current_version: string;
+  body?: string;
+  date?: string;
+}
+
 const downloading = ref(false);
 const progressMsg = ref("");
 const progressDone = ref(0);
@@ -95,6 +103,7 @@ const snackbarText = ref("");
 
 let unlistenProgress: (() => void) | null = null;
 let unlistenComplete: (() => void) | null = null;
+let unlistenUpdate: (() => void) | null = null;
 
 onMounted(async () => {
   unlistenProgress = await listen<ProgressEvent>("download-progress", (e) => {
@@ -114,11 +123,18 @@ onMounted(async () => {
     snackbar.value = true;
     logger.info("App", "下载完成", e.payload);
   });
+
+  unlistenUpdate = await listen<UpdateInfo>("update-available", (e) => {
+    snackbarText.value = `发现新版本 ${e.payload.version}，请前往设置更新`;
+    snackbar.value = true;
+    logger.info("App", "发现新版本", e.payload);
+  });
 });
 
 onUnmounted(() => {
   if (unlistenProgress) unlistenProgress();
   if (unlistenComplete) unlistenComplete();
+  if (unlistenUpdate) unlistenUpdate();
 });
 
 const navItems = [
