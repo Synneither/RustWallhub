@@ -139,9 +139,9 @@ onUnmounted(() => {
 <template>
   <div>
     <v-card class="glass-card source-card animate-in stagger-1">
-      <div class="source-card-header" style="background: linear-gradient(135deg, rgba(255,107,53,0.08) 0%, transparent 60%)">
-        <div class="source-header-icon" style="background: rgba(255,107,53,0.15)">
-          <v-icon color="#ff6b35">mdi-reddit</v-icon>
+      <div class="source-card-header" style="background: linear-gradient(135deg, rgba(249,115,22,0.08) 0%, transparent 60%)">
+        <div class="source-header-icon" style="background: rgba(249,115,22,0.15)">
+          <v-icon color="#f97316">mdi-reddit</v-icon>
         </div>
         <div>
           <div class="text-heading">Reddit 下载</div>
@@ -247,7 +247,7 @@ onUnmounted(() => {
     <v-card v-if="downloading && downloadedImages.length > 0" class="glass-card mt-4 animate-in stagger-2">
       <v-card-text class="pa-4">
         <div class="d-flex align-center mb-3">
-          <v-progress-circular indeterminate size="18" width="2" color="#ff6b35" class="me-2" />
+          <v-progress-circular indeterminate size="18" width="2" color="#f97316" class="me-2" />
           <span class="text-body font-weight-medium">已下载 {{ downloadedImages.length }} 张</span>
         </div>
         <div class="download-grid">
@@ -297,42 +297,4 @@ onUnmounted(() => {
 </template>
 
 <style scoped>
-.source-card { overflow: hidden; }
-.source-card-header {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  padding: 20px 24px 16px;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
-}
-.source-header-icon {
-  width: 40px; height: 40px;
-  border-radius: 50%;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  flex-shrink: 0;
-}
-.settings-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
-  gap: 12px;
-}
-.download-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(80px, 1fr));
-  gap: 6px;
-  max-height: 280px;
-  overflow-y: auto;
-}
-.download-thumb {
-  aspect-ratio: 16 / 9;
-  border-radius: 4px;
-  overflow: hidden;
-  background: var(--surface-card);
-}
-.download-thumb-img {
-  width: 100%; height: 100%;
-  object-fit: cover; display: block;
-}
 </style>

@@ -35,6 +35,7 @@ interface DbStats {
 }
 
 const config = ref<AppConfig | null>(null);
+const configError = ref("");
 const saving = ref(false);
 const saved = ref(false);
 const formValid = ref(false);
@@ -129,12 +130,14 @@ async function initDatabase() {
 }
 
 async function loadConfig() {
+  configError.value = "";
   try {
     config.value = await invoke<AppConfig>("get_config");
     logger.info("DbSettings", "配置已加载");
     await loadDbStats();
     await checkDbFiles();
   } catch (e) {
+    configError.value = String(e);
     logger.error("DbSettings", "配置加载失败", e);
     config.value = {
       wallhaven_save_dir: "",
@@ -166,11 +169,25 @@ onMounted(loadConfig);
 
 <template>
   <div v-if="config" class="db-settings-root">
+    <v-alert
+      v-if="configError"
+      type="warning"
+      variant="tonal"
+      density="compact"
+      class="mb-3 animate-in"
+    >
+      <div class="d-flex align-center justify-space-between">
+        <span>配置加载失败，已使用默认设置: {{ configError }}</span>
+        <v-btn size="x-small" variant="text" color="warning" prepend-icon="mdi-refresh" @click="loadConfig">
+          重试
+        </v-btn>
+      </div>
+    </v-alert>
     <v-form v-model="formValid" ref="formRef">
       <v-card class="glass-card db-card animate-in stagger-1">
         <div class="db-card-header">
           <div class="db-header-icon">
-            <v-icon color="#43e97b" size="28">mdi-database-cog</v-icon>
+            <v-icon color="#10b981" size="28">mdi-database-cog</v-icon>
           </div>
           <div>
             <div class="text-heading">数据库目录</div>
@@ -196,7 +213,7 @@ onMounted(loadConfig);
           <div class="db-file-list">
             <div class="db-file-item">
               <div class="db-file-left">
-                <v-icon color="#6c8cff" size="20">mdi-database</v-icon>
+                <v-icon color="#3b82f6" size="20">mdi-database</v-icon>
                 <div class="db-file-info">
                   <span class="db-file-name">wallhaven_images.db</span>
                   <span class="db-file-meta">Wallhaven 数据库</span>
@@ -209,7 +226,7 @@ onMounted(loadConfig);
             </div>
             <div class="db-file-item">
               <div class="db-file-left">
-                <v-icon color="#ff6b35" size="20">mdi-database</v-icon>
+                <v-icon color="#f97316" size="20">mdi-database</v-icon>
                 <div class="db-file-info">
                   <span class="db-file-name">reddit_images.db</span>
                   <span class="db-file-meta">Reddit 数据库</span>
@@ -227,7 +244,7 @@ onMounted(loadConfig);
       <v-card class="glass-card db-card animate-in stagger-2">
         <div class="db-card-header db-stats-header">
           <div class="db-header-icon">
-            <v-icon color="#a78bfa" size="28">mdi-chart-box-outline</v-icon>
+            <v-icon color="#c9a94e" size="28">mdi-chart-box-outline</v-icon>
           </div>
           <div>
             <div class="text-heading">数据库概览</div>
@@ -239,7 +256,7 @@ onMounted(loadConfig);
             <v-col cols="12" sm="6">
               <div class="stat-box wh-stat-box">
                 <div class="stat-box-header">
-                  <v-icon color="#6c8cff" size="16">mdi-image-search</v-icon>
+                  <v-icon color="#3b82f6" size="16">mdi-image-search</v-icon>
                   <span>Wallhaven</span>
                 </div>
                 <div class="stat-numbers">
@@ -261,7 +278,7 @@ onMounted(loadConfig);
             <v-col cols="12" sm="6">
               <div class="stat-box rd-stat-box">
                 <div class="stat-box-header">
-                  <v-icon color="#ff6b35" size="16">mdi-reddit</v-icon>
+                  <v-icon color="#f97316" size="16">mdi-reddit</v-icon>
                   <span>Reddit</span>
                 </div>
                 <div class="stat-numbers">
@@ -285,7 +302,7 @@ onMounted(loadConfig);
       </v-card>
     </v-form>
 
-    <div class="db-settings-save-bar">
+    <div class="settings-save-bar">
       <v-btn
         class="gradient-btn"
         size="large"
@@ -300,7 +317,7 @@ onMounted(loadConfig);
       <v-btn
         class="ms-3"
         variant="outlined"
-        color="#a78bfa"
+        color="#c9a94e"
         size="large"
         @click="initDatabase"
       >
@@ -335,11 +352,11 @@ onMounted(loadConfig);
   gap: 12px;
   padding: 20px 24px 16px;
   border-bottom: 1px solid rgba(255, 255, 255, 0.06);
-  background: linear-gradient(135deg, rgba(67, 233, 123, 0.06) 0%, transparent 60%);
+  background: linear-gradient(135deg, rgba(16, 185, 129, 0.06) 0%, transparent 60%);
 }
 
 .db-stats-header {
-  background: linear-gradient(135deg, rgba(167, 139, 250, 0.06) 0%, transparent 60%);
+  background: linear-gradient(135deg, rgba(201, 169, 78, 0.06) 0%, transparent 60%);
 }
 
 .db-header-icon {
@@ -350,36 +367,11 @@ onMounted(loadConfig);
   align-items: center;
   justify-content: center;
   flex-shrink: 0;
-  background: rgba(67, 233, 123, 0.15);
+  background: rgba(16, 185, 129, 0.15);
 }
 
 .db-stats-header .db-header-icon {
-  background: rgba(167, 139, 250, 0.15);
-}
-
-.settings-group-label {
-  font-size: 0.75rem;
-  color: var(--text-secondary);
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
-  padding: 16px 0 8px;
-  font-weight: 600;
-}
-.settings-group-label:first-of-type {
-  padding-top: 8px;
-}
-
-.settings-group {
-  padding: 0 0 4px;
-}
-
-.settings-field :deep(.v-field) {
-  border-color: rgba(255, 255, 255, 0.1);
-  transition: border-color 0.2s, box-shadow 0.2s;
-}
-.settings-field :deep(.v-field--focused) {
-  border-color: var(--accent-primary);
-  box-shadow: 0 0 0 1px rgba(108, 140, 255, 0.2);
+  background: rgba(201, 169, 78, 0.15);
 }
 
 .db-file-list {
@@ -423,7 +415,7 @@ onMounted(loadConfig);
 
 .stat-box {
   padding: 16px;
-  border-radius: 10px;
+  border-radius: var(--radius-lg);
   border: 1px solid rgba(255, 255, 255, 0.06);
   background: rgba(255, 255, 255, 0.02);
 }
@@ -456,11 +448,11 @@ onMounted(loadConfig);
 }
 
 .stat-value.stat-love {
-  color: #43e97b;
+  color: #10b981;
 }
 
 .stat-value.stat-dislike {
-  color: #ff6b35;
+  color: #f97316;
 }
 
 .stat-label {
@@ -470,27 +462,4 @@ onMounted(loadConfig);
   letter-spacing: 0.04em;
 }
 
-.db-settings-save-bar {
-  position: sticky;
-  bottom: 0;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  padding: 16px;
-  background: rgba(15, 15, 17, 0.9);
-  backdrop-filter: blur(12px);
-  -webkit-backdrop-filter: blur(12px);
-  border-top: 1px solid rgba(255, 255, 255, 0.06);
-  z-index: 5;
-}
-
-.saved-icon {
-  animation: saved-pop 0.4s cubic-bezier(0.16, 1, 0.3, 1);
-}
-
-@keyframes saved-pop {
-  0% { transform: scale(0) rotate(-30deg); }
-  50% { transform: scale(1.2) rotate(5deg); }
-  100% { transform: scale(1) rotate(0deg); }
-}
 </style>

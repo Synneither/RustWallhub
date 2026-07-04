@@ -222,9 +222,9 @@ onUnmounted(() => {
   <div>
     <!-- ===== 搜索栏 + 设置入口 ===== -->
     <v-card class="glass-card source-card animate-in stagger-1">
-      <div class="source-card-header" style="background: linear-gradient(135deg, rgba(108,140,255,0.08) 0%, transparent 60%)">
-        <div class="source-header-icon" style="background: rgba(108,140,255,0.15)">
-          <v-icon color="#6c8cff">mdi-image-search</v-icon>
+      <div class="source-card-header" style="background: linear-gradient(135deg, rgba(59,130,246,0.08) 0%, transparent 60%)">
+        <div class="source-header-icon" style="background: rgba(59,130,246,0.15)">
+          <v-icon color="#3b82f6">mdi-image-search</v-icon>
         </div>
         <div>
           <div class="text-heading">Wallhaven 浏览</div>
@@ -257,7 +257,12 @@ onUnmounted(() => {
         </div>
 
         <v-alert v-if="error" type="error" variant="tonal" density="compact" class="mt-3">
-          {{ error }}
+          <div class="d-flex align-center justify-space-between">
+            <span>{{ error }}</span>
+            <v-btn size="x-small" variant="text" color="error" prepend-icon="mdi-refresh" @click="search(currentPage)">
+              重试
+            </v-btn>
+          </div>
         </v-alert>
       </v-card-text>
     </v-card>
@@ -427,7 +432,12 @@ onUnmounted(() => {
           :key="img.id"
           class="search-item"
           :class="{ 'search-item--selected': isSelected(img) }"
+          role="button"
+          tabindex="0"
+          :aria-label="isSelected(img) ? `取消选择 ${img.id}` : `选择 ${img.id}`"
+          :aria-pressed="isSelected(img)"
           @click="toggleSelect(img)"
+          @keydown.enter.space.prevent="toggleSelect(img)"
         >
           <img :src="img.thumbnail_url" :alt="img.id" class="search-thumb" loading="lazy" referrerpolicy="no-referrer" />
           <div class="search-overlay">
@@ -435,7 +445,7 @@ onUnmounted(() => {
             <span class="search-size">{{ formatFileSize(img.file_size) }}</span>
           </div>
           <div v-if="isSelected(img)" class="search-check">
-            <v-icon color="#6c8cff" size="18">mdi-check-circle</v-icon>
+            <v-icon color="#3b82f6" size="18">mdi-check-circle</v-icon>
           </div>
         </div>
       </div>
@@ -449,7 +459,7 @@ onUnmounted(() => {
       <v-card v-if="downloading && downloadedImages.length > 0" class="glass-card mt-4 animate-in">
         <v-card-text class="pa-4">
           <div class="d-flex align-center mb-3">
-            <v-progress-circular indeterminate size="18" width="2" color="#6c8cff" class="me-2" />
+            <v-progress-circular indeterminate size="18" width="2" color="#3b82f6" class="me-2" />
             <span class="text-body font-weight-medium">已下载 {{ downloadedImages.length }} 张</span>
           </div>
           <div class="download-grid">
@@ -468,29 +478,6 @@ onUnmounted(() => {
 </template>
 
 <style scoped>
-.source-card { overflow: hidden; }
-.source-card-header {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  padding: 20px 24px 16px;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
-}
-.source-header-icon {
-  width: 40px; height: 40px;
-  border-radius: 50%;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  flex-shrink: 0;
-}
-
-.settings-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
-  gap: 12px;
-}
-
 .search-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
@@ -533,21 +520,4 @@ onUnmounted(() => {
   filter: drop-shadow(0 1px 3px rgba(0,0,0,0.5));
 }
 
-.download-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(80px, 1fr));
-  gap: 6px;
-  max-height: 280px;
-  overflow-y: auto;
-}
-.download-thumb {
-  aspect-ratio: 16 / 9;
-  border-radius: 4px;
-  overflow: hidden;
-  background: var(--surface-card);
-}
-.download-thumb-img {
-  width: 100%; height: 100%;
-  object-fit: cover; display: block;
-}
 </style>

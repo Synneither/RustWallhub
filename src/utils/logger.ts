@@ -6,11 +6,21 @@ function timestamp(): string {
 
 function log(level: LogLevel, context: string, message: string, data?: unknown) {
   const prefix = `[${timestamp()}] [${level}] [${context}]`;
-  if (data !== undefined) {
-    const extra = typeof data === "string" ? data : JSON.stringify(data);
-    console.log(`${prefix} ${message} | ${extra}`);
-  } else {
-    console.log(`${prefix} ${message}`);
+  const logMsg =
+    data !== undefined
+      ? `${prefix} ${message} | ${typeof data === "string" ? data : JSON.stringify(data)}`
+      : `${prefix} ${message}`;
+
+  switch (level) {
+    case "ERROR":
+      console.error(logMsg);
+      break;
+    case "WARN":
+      console.warn(logMsg);
+      break;
+    default:
+      // INFO / ACTION: removed per polish pass
+      break;
   }
 }
 

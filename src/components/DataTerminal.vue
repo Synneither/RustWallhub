@@ -154,6 +154,18 @@ const emit = defineEmits<{
   flex-shrink: 0;
 }
 
+@media (max-width: 360px) {
+  .panel-stats {
+    padding: 4px 10px 12px;
+  }
+  .stat-value {
+    font-size: 1.25rem;
+  }
+  .stat-divider {
+    height: 24px;
+  }
+}
+
 /* ── 面板分隔线 ── */
 .panel-divider {
   height: 1px;

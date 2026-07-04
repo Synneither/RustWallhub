@@ -4,6 +4,10 @@ import { invoke, convertFileSrc } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
 import { logger } from "../utils/logger";
 
+const emit = defineEmits<{
+  navigate: [view: string];
+}>();
+
 interface LocalImage {
   name: string;
   path: string;
@@ -31,6 +35,7 @@ const source = ref("wallhaven");
 const allImages = ref<LocalImage[]>([]);
 const total = ref(0);
 const loading = ref(false);
+const loadError = ref("");
 const pageLoading = ref(false);
 const selectedIndex = ref(-1);
 const saveDir = ref("");
@@ -63,9 +68,11 @@ const dpr = Math.ceil(window.devicePixelRatio || 1);
 const cleaningThumbnails = ref(false);
 const addingOrphanName = ref("");
 const currentWallpaper = ref("");
+const galleryRoot = ref<HTMLElement | null>(null);
 const galleryToolbar = ref<HTMLElement | null>(null);
 const customDir = ref("");
 const useCustomDir = ref(false);
+let resizeObserver: ResizeObserver | null = null;
 
 const totalPages = computed(() => Math.max(1, Math.ceil(displayImages.value.length / imagesPerPage.value)));
 
@@ -151,7 +158,10 @@ const resizeState = {
 };
 
 function updateImagesPerPage() {
-  const width = window.innerWidth;
+  const root = galleryRoot.value;
+  if (!root) return;
+  const rect = root.getBoundingClientRect();
+  const width = rect.width;
   const height = window.innerHeight;
   const topHeight = galleryToolbar.value?.offsetHeight ?? 0;
   const availableWidth = Math.max(0, width - 32);
@@ -187,6 +197,7 @@ watch(imagesPerPage, () => {
 async function loadImages() {
   if (loading.value) return;
   loading.value = true;
+  loadError.value = "";
   try {
     const result = await invoke<ListResult>("browse_image_files", {
       source: source.value,
@@ -211,6 +222,7 @@ async function loadImages() {
     // 按需生成可见页面的缩略图
     await requestThumbnails();
   } catch (e) {
+    loadError.value = String(e);
     logger.error("Gallery", "加载图片失败", e);
   }
   loading.value = false;
@@ -528,16 +540,24 @@ onMounted(async () => {
   await loadCurrentWallpaper();
   updateImagesPerPage();
   window.addEventListener("resize", handleResize);
+  if (galleryRoot.value && 'ResizeObserver' in window) {
+    resizeObserver = new ResizeObserver(() => updateImagesPerPage());
+    resizeObserver.observe(galleryRoot.value);
+  }
   await loadImages();
 });
 
 onUnmounted(() => {
   window.removeEventListener("resize", handleResize);
+  if (resizeObserver) {
+    resizeObserver.disconnect();
+    resizeObserver = null;
+  }
 });
 </script>
 
 <template>
-  <div class="gallery-root">
+  <div class="gallery-root" ref="galleryRoot">
     <div class="gallery-toolbar glass-card" ref="galleryToolbar">
       <div class="toolbar-inner">
         <v-btn-toggle v-model="source" :mandatory="!useCustomDir" color="primary" density="compact" rounded="pill" class="toolbar-source-toggle">
@@ -650,8 +670,21 @@ onUnmounted(() => {
     </div>
 
     <div class="gallery-content">
-      <div v-if="loading && allImages.length === 0" class="gallery-grid">
+      <div v-if="loading && allImages.length === 0" class="gallery-grid" aria-busy="true" aria-label="加载图片中">
         <div v-for="n in 6" :key="n" class="gallery-skeleton shimmer" />
+      </div>
+
+      <div v-else-if="loadError" class="gallery-empty gallery-empty--error">
+        <div class="empty-icon-wrap">
+          <v-icon size="72" color="error" class="empty-icon">mdi-alert-circle-outline</v-icon>
+        </div>
+        <p class="empty-title">加载失败</p>
+        <p class="empty-desc">{{ loadError }}</p>
+        <div class="empty-actions">
+          <v-btn color="primary" variant="tonal" prepend-icon="mdi-refresh" @click="resetAndLoad">
+            重试
+          </v-btn>
+        </div>
       </div>
 
       <div v-else-if="allImages.length > 0" class="gallery-grid-wrapper" :class="{ 'gallery-grid-wrapper--loading': pageLoading }">
@@ -661,7 +694,11 @@ onUnmounted(() => {
             :key="img.path"
             class="gallery-item"
             :class="{ 'gallery-item-selected': isSelected(img) }"
+            role="button"
+            tabindex="0"
+            :aria-label="selectionMode ? `切换选择 ${img.name}` : `预览 ${img.name}`"
             @click="selectionMode ? toggleSelection(img) : (selectedIndex = (currentPage - 1) * imagesPerPage + i)"
+            @keydown.enter.space.prevent="selectionMode ? toggleSelection(img) : (selectedIndex = (currentPage - 1) * imagesPerPage + i)"
           >
             <div class="gallery-thumb-wrap">
               <img
@@ -675,7 +712,7 @@ onUnmounted(() => {
                 @error="onImgError($event, img)"
               />
               <div v-if="!imgLoaded.has(img.name)" class="gallery-thumb-loading">
-                <v-progress-circular indeterminate size="28" width="2" color="#6c8cff" />
+                <v-progress-circular indeterminate size="28" width="2" color="#3b82f6" />
               </div>
             </div>
             <div class="gallery-overlay">
@@ -729,6 +766,14 @@ onUnmounted(() => {
         </div>
         <p class="empty-title">暂无本地图片</p>
         <p class="empty-desc">请先从 Wallhaven 或 Reddit 下载壁纸</p>
+        <div class="empty-actions">
+          <v-btn color="primary" variant="tonal" prepend-icon="mdi-image-search" size="small" @click="emit('navigate', 'wallhaven')">
+            去 Wallhaven
+          </v-btn>
+          <v-btn color="reddit" variant="tonal" prepend-icon="mdi-reddit" size="small" @click="emit('navigate', 'reddit')">
+            去 Reddit
+          </v-btn>
+        </div>
         <div v-if="saveDir" class="empty-dir">
           <v-chip variant="outlined" color="grey" size="small">
             <v-icon start size="14">mdi-folder</v-icon>
@@ -782,7 +827,7 @@ onUnmounted(() => {
 
     <!-- 确认对话框 -->
     <v-dialog v-model="confirmDelete" max-width="380">
-      <v-card class="pa-4" style="border-radius: 16px;">
+      <v-card class="pa-4 confirm-dialog">
         <v-card-title class="text-h6 d-flex align-center pa-0 pb-3">
           <v-icon :color="pendingIsOrphan ? 'error' : 'warning'" class="me-2">mdi-alert-circle</v-icon>
           {{ pendingIsOrphan ? '确认删除' : '确认标记为不喜欢' }}
@@ -918,14 +963,14 @@ onUnmounted(() => {
   overflow: hidden;
   cursor: pointer;
   transition: transform 0.3s var(--ease-out), box-shadow 0.3s var(--ease-out);
-  box-shadow: var(--shadow-sm), 0 0 0 1px rgba(108, 140, 255, 0.03);
+  box-shadow: var(--shadow-sm), 0 0 0 1px rgba(59, 130, 246, 0.03);
   background: var(--surface-card);
   aspect-ratio: 16 / 9;
 }
 
 .gallery-item:hover {
   transform: scale(1.03);
-  box-shadow: var(--shadow-lg), 0 0 0 1px rgba(108, 140, 255, 0.1);
+  box-shadow: var(--shadow-lg), 0 0 0 1px rgba(59, 130, 246, 0.1);
 }
 
 .gallery-item:active {
@@ -933,13 +978,13 @@ onUnmounted(() => {
 }
 
 .gallery-item-selected {
-  outline: 2px solid #6c8cff;
+  outline: 2px solid #3b82f6;
   outline-offset: -2px;
-  box-shadow: 0 0 16px rgba(108, 140, 255, 0.25), 0 0 0 1px rgba(108, 140, 255, 0.15);
+  box-shadow: 0 0 16px rgba(59, 130, 246, 0.25), 0 0 0 1px rgba(59, 130, 246, 0.15);
 }
 
 .gallery-item-selected:hover {
-  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.3), 0 0 20px rgba(108, 140, 255, 0.35);
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.3), 0 0 20px rgba(59, 130, 246, 0.35);
 }
 
 .gallery-item-actions {
@@ -973,8 +1018,8 @@ onUnmounted(() => {
   align-items: center;
   gap: 3px;
   padding: 2px 6px;
-  border-radius: 5px;
-  background: rgba(255, 152, 0, 0.85);
+  border-radius: var(--radius-sm);
+  background: rgba(245, 158, 11, 0.85);
   backdrop-filter: blur(4px);
   font-size: 0.625rem;
   color: white;
@@ -986,8 +1031,8 @@ onUnmounted(() => {
   align-items: center;
   gap: 3px;
   padding: 2px 6px;
-  border-radius: 5px;
-  background: rgba(108, 140, 255, 0.85);
+  border-radius: var(--radius-sm);
+  background: rgba(59, 130, 246, 0.85);
   backdrop-filter: blur(4px);
   font-size: 0.625rem;
   color: white;
@@ -1000,13 +1045,13 @@ onUnmounted(() => {
   height: 28px !important;
   background: rgba(0, 0, 0, 0.6) !important;
   backdrop-filter: blur(4px);
-  border-radius: 6px !important;
+  border-radius: var(--radius-md) !important;
 }
 .gallery-orphan-actions .gallery-action-btn:hover {
-  background: rgba(76, 175, 80, 0.8) !important;
+  background: rgba(16, 185, 129, 0.8) !important;
 }
 .gallery-action-btn:hover {
-  background: rgba(200, 200, 200, 0.4) !important;
+  background: rgba(226, 228, 234, 0.4) !important;
 }
 
 .gallery-img {
@@ -1092,7 +1137,7 @@ onUnmounted(() => {
 
 .gallery-skeleton {
   aspect-ratio: 16 / 9;
-  border-radius: 10px;
+  border-radius: var(--radius-lg);
   overflow: hidden;
   background: var(--surface-card);
 }
@@ -1141,6 +1186,24 @@ onUnmounted(() => {
   margin: 4px 0 0;
 }
 
+.empty-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 16px;
+  flex-wrap: wrap;
+  justify-content: center;
+}
+
+.gallery-empty--error .empty-icon-wrap {
+  background: rgba(239, 68, 68, 0.1);
+}
+
+.gallery-empty--error .empty-desc {
+  max-width: 480px;
+  text-align: center;
+  word-break: break-word;
+}
+
 .empty-dir {
   margin-top: 16px;
 }
@@ -1156,7 +1219,7 @@ onUnmounted(() => {
   background: rgba(var(--surface-card-rgb), 0.35);
   backdrop-filter: blur(16px);
   -webkit-backdrop-filter: blur(16px);
-  border: 1px solid rgba(128, 128, 128, 0.12);
+  border: 1px solid rgba(255, 255, 255, 0.06);
   box-shadow: 0 1px 8px rgba(0, 0, 0, 0.06);
   flex-shrink: 0;
   width: fit-content;
@@ -1177,7 +1240,7 @@ onUnmounted(() => {
 
 .preview-card {
   overflow: hidden;
-  border-radius: 16px;
+  border-radius: var(--radius-xl);
   background: rgba(var(--surface-deep-rgb), 0.92);
   backdrop-filter: blur(30px);
   -webkit-backdrop-filter: blur(30px);
@@ -1233,7 +1296,6 @@ onUnmounted(() => {
   gap: 2px;
   min-width: 0;
   flex: 1;
-  border-left: 2px solid rgba(108, 140, 255, 0.3);
   padding-left: 12px;
 }
 
@@ -1259,5 +1321,36 @@ onUnmounted(() => {
 
 .preview-btn {
   font-size: 0.8125rem;
+}
+
+.confirm-dialog {
+  border-radius: var(--radius-xl);
+}
+
+@media (max-width: 600px) {
+  .preview-actions {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 8px;
+  }
+  .preview-info {
+    padding-left: 0;
+    align-items: center;
+  }
+  .preview-buttons {
+    width: 100%;
+  }
+  .preview-buttons .v-btn {
+    flex: 1;
+  }
+}
+
+@media (max-height: 600px) {
+  .preview-card :deep(.v-img__img) {
+    max-height: 55vh;
+  }
+  .preview-actions {
+    padding: 8px 12px;
+  }
 }
 </style>

@@ -29,6 +29,7 @@ interface AppConfig {
 }
 
 const config = ref<AppConfig | null>(null);
+const configError = ref("");
 const saving = ref(false);
 const saved = ref(false);
 const formValid = ref(false);
@@ -77,10 +78,12 @@ async function selectDirectory(field: keyof AppConfig) {
 }
 
 async function loadConfig() {
+  configError.value = "";
   try {
     config.value = await invoke<AppConfig>("get_config");
     logger.info("Settings", "配置已加载");
   } catch (e) {
+    configError.value = String(e);
     logger.error("Settings", "配置加载失败", e);
     config.value = {
       wallhaven_save_dir: "",
@@ -149,11 +152,25 @@ onMounted(loadConfig);
 
 <template>
   <div v-if="config" class="settings-root">
+    <v-alert
+      v-if="configError"
+      type="warning"
+      variant="tonal"
+      density="compact"
+      class="mb-3 animate-in"
+    >
+      <div class="d-flex align-center justify-space-between">
+        <span>配置加载失败，已使用默认设置: {{ configError }}</span>
+        <v-btn size="x-small" variant="text" color="warning" prepend-icon="mdi-refresh" @click="loadConfig">
+          重试
+        </v-btn>
+      </div>
+    </v-alert>
     <v-form v-model="formValid" ref="formRef">
     <v-card class="glass-card settings-card animate-in stagger-1">
       <div class="settings-card-header wh-header-bg">
         <div class="settings-header-icon wh-header-icon">
-          <v-icon color="#6c8cff">mdi-image-search</v-icon>
+          <v-icon color="#3b82f6">mdi-image-search</v-icon>
         </div>
         <div>
           <div class="text-heading">Wallhaven 设置</div>
@@ -176,7 +193,7 @@ onMounted(loadConfig);
         <div class="settings-group-label">搜索参数</div>
         <div class="settings-group">
           <v-row>
-            <v-col cols="6" sm="4">
+            <v-col cols="12" sm="6" md="4">
               <v-text-field
                 v-model="config.wallhaven_categories"
                 label="类别"
@@ -185,7 +202,7 @@ onMounted(loadConfig);
                 class="settings-field"
               />
             </v-col>
-            <v-col cols="6" sm="4">
+            <v-col cols="12" sm="6" md="4">
               <v-text-field
                 v-model="config.wallhaven_purity"
                 label="纯净度"
@@ -194,7 +211,7 @@ onMounted(loadConfig);
                 class="settings-field"
               />
             </v-col>
-            <v-col cols="6" sm="4">
+            <v-col cols="12" sm="6" md="4">
               <v-select
                 v-model="config.wallhaven_sorting"
                 label="排序方式"
@@ -204,7 +221,7 @@ onMounted(loadConfig);
             </v-col>
           </v-row>
           <v-row>
-            <v-col cols="6" sm="4">
+            <v-col cols="12" sm="6" md="4">
               <v-select
                 v-if="config.wallhaven_sorting === 'toplist'"
                 v-model="config.wallhaven_top_range"
@@ -213,7 +230,7 @@ onMounted(loadConfig);
                 class="settings-field"
               />
             </v-col>
-            <v-col cols="6" sm="4">
+            <v-col cols="12" sm="6" md="4">
               <v-text-field
                 v-model="config.wallhaven_atleast"
                 label="最低分辨率"
@@ -223,7 +240,7 @@ onMounted(loadConfig);
                 class="settings-field"
               />
             </v-col>
-            <v-col cols="6" sm="4">
+            <v-col cols="12" sm="6" md="4">
               <v-text-field
                 v-model="config.wallhaven_ratios"
                 label="宽高比"
@@ -238,7 +255,7 @@ onMounted(loadConfig);
         <div class="settings-group-label">下载限制</div>
         <div class="settings-group">
           <v-row>
-            <v-col cols="6" sm="4">
+            <v-col cols="12" sm="6" md="4">
               <v-text-field
                 v-model="config.wallhaven_api_key"
                 label="API Key（可选）"
@@ -247,7 +264,7 @@ onMounted(loadConfig);
                 class="settings-field"
               />
             </v-col>
-            <v-col cols="6" sm="4">
+            <v-col cols="12" sm="6" md="4">
               <v-text-field
                 v-model.number="config.wallhaven_max_images"
                 label="最大下载数量"
@@ -266,7 +283,7 @@ onMounted(loadConfig);
     <v-card class="glass-card settings-card animate-in stagger-2">
       <div class="settings-card-header rd-header-bg">
         <div class="settings-header-icon rd-header-icon">
-          <v-icon color="#ff6b35">mdi-reddit</v-icon>
+          <v-icon color="#f97316">mdi-reddit</v-icon>
         </div>
         <div>
           <div class="text-heading">Reddit 设置</div>
@@ -293,7 +310,7 @@ onMounted(loadConfig);
         <div class="settings-group-label">下载限制</div>
         <div class="settings-group">
           <v-row>
-            <v-col cols="6" sm="4">
+            <v-col cols="12" sm="6" md="4">
               <v-text-field
                 v-model.number="config.reddit_max_posts"
                 label="最大抓取帖子数"
@@ -304,7 +321,7 @@ onMounted(loadConfig);
                 class="settings-field"
               />
             </v-col>
-            <v-col cols="6" sm="4">
+            <v-col cols="12" sm="6" md="4">
               <v-text-field
                 v-model.number="config.reddit_max_images"
                 label="最大下载数量"
@@ -323,7 +340,7 @@ onMounted(loadConfig);
     <v-card class="glass-card settings-card animate-in stagger-3">
       <div class="settings-card-header db-header-bg">
         <div class="settings-header-icon db-header-icon">
-          <v-icon color="#43e97b">mdi-database</v-icon>
+          <v-icon color="#10b981">mdi-database</v-icon>
         </div>
         <div>
           <div class="text-heading">数据库设置</div>
@@ -350,7 +367,7 @@ onMounted(loadConfig);
     <v-card class="glass-card settings-card animate-in stagger-4">
       <div class="settings-card-header adv-header-bg">
         <div class="settings-header-icon adv-header-icon">
-          <v-icon color="#a78bfa">mdi-tune-variant</v-icon>
+          <v-icon color="#c9a94e">mdi-tune-variant</v-icon>
         </div>
         <div>
           <div class="text-heading">高级设置</div>
@@ -361,7 +378,7 @@ onMounted(loadConfig);
         <div class="settings-group-label">下载与网络</div>
         <div class="settings-group">
           <v-row>
-            <v-col cols="6" sm="4">
+            <v-col cols="12" sm="6" md="4">
               <v-text-field
                 v-model.number="config.download_concurrency"
                 label="并发下载数"
@@ -374,7 +391,7 @@ onMounted(loadConfig);
                 class="settings-field"
               />
             </v-col>
-            <v-col cols="6" sm="4">
+            <v-col cols="12" sm="6" md="4">
               <v-text-field
                 v-model.number="config.request_timeout"
                 label="请求超时(秒)"
@@ -393,7 +410,7 @@ onMounted(loadConfig);
         <div class="settings-group-label">缩略图</div>
         <div class="settings-group">
           <v-row>
-            <v-col cols="6" sm="4">
+            <v-col cols="12" sm="6" md="4">
               <v-select
                 v-model.number="config.thumbnail_dpr"
                 label="缩略图质量"
@@ -408,7 +425,7 @@ onMounted(loadConfig);
                 class="settings-field"
               />
             </v-col>
-            <v-col cols="6" sm="4">
+            <v-col cols="12" sm="6" md="4">
               <v-text-field
                 v-model="config.thumbnails_dir"
                 label="缩略图存储目录"
@@ -512,16 +529,16 @@ onMounted(loadConfig);
 }
 
 .wh-header-bg {
-  background: linear-gradient(135deg, rgba(108,140,255,0.08) 0%, transparent 60%);
+  background: linear-gradient(135deg, rgba(59,130,246,0.08) 0%, transparent 60%);
 }
 .rd-header-bg {
-  background: linear-gradient(135deg, rgba(255,107,53,0.08) 0%, transparent 60%);
+  background: linear-gradient(135deg, rgba(249,115,22,0.08) 0%, transparent 60%);
 }
 .db-header-bg {
-  background: linear-gradient(135deg, rgba(67,233,123,0.08) 0%, transparent 60%);
+  background: linear-gradient(135deg, rgba(16,185,129,0.08) 0%, transparent 60%);
 }
 .adv-header-bg {
-  background: linear-gradient(135deg, rgba(167,139,250,0.08) 0%, transparent 60%);
+  background: linear-gradient(135deg, rgba(201,169,78,0.08) 0%, transparent 60%);
 }
 
 .settings-header-icon {
@@ -535,70 +552,16 @@ onMounted(loadConfig);
 }
 
 .wh-header-icon {
-  background: rgba(108,140,255,0.15);
+  background: rgba(59,130,246,0.15);
 }
 .rd-header-icon {
-  background: rgba(255,107,53,0.15);
+  background: rgba(249,115,22,0.15);
 }
 .db-header-icon {
-  background: rgba(67,233,123,0.15);
+  background: rgba(16,185,129,0.15);
 }
 .adv-header-icon {
-  background: rgba(167,139,250,0.15);
+  background: rgba(201,169,78,0.15);
 }
 
-.settings-group-label {
-  font-size: 0.75rem;
-  color: var(--text-secondary);
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
-  padding: 16px 0 8px;
-  font-weight: 600;
-}
-.settings-group-label:first-of-type {
-  padding-top: 8px;
-}
-
-.settings-group {
-  padding: 0 0 4px;
-}
-
-.settings-field :deep(.v-field) {
-  border-color: rgba(255, 255, 255, 0.1);
-  transition: border-color 0.2s, box-shadow 0.2s;
-}
-.settings-field :deep(.v-field--focused) {
-  border-color: var(--accent-primary);
-  box-shadow: 0 0 0 1px rgba(108, 140, 255, 0.2);
-}
-
-.settings-save-bar {
-  position: sticky;
-  bottom: 0;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  padding: 16px;
-  background: rgba(15, 15, 17, 0.9);
-  backdrop-filter: blur(12px);
-  -webkit-backdrop-filter: blur(12px);
-  border-top: 1px solid rgba(255, 255, 255, 0.06);
-  z-index: 5;
-}
-
-.saved-icon {
-  animation: saved-pop 0.4s cubic-bezier(0.16, 1, 0.3, 1);
-}
-
-@keyframes saved-pop {
-  0% {
-    transform: scale(0) rotate(-30deg);
-  }
-  50% {
-    transform: scale(1.2) rotate(5deg);
-  }
-  100% {
-    transform: scale(1) rotate(0deg);
-  }
-}
 </style>

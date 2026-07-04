@@ -101,6 +101,22 @@ const progressTotal = ref(0);
 const snackbar = ref(false);
 const snackbarText = ref("");
 
+const announcerText = ref("");
+
+let announceTimeout = 0;
+function announce(message: string) {
+  window.clearTimeout(announceTimeout);
+  announcerText.value = "";
+  // Force a DOM reflow so screen readers notice the change when the same message is repeated.
+  announceTimeout = window.setTimeout(() => {
+    announcerText.value = message;
+  }, 50);
+}
+
+watch(snackbarText, (text) => {
+  if (text) announce(text);
+});
+
 let unlistenProgress: (() => void) | null = null;
 let unlistenComplete: (() => void) | null = null;
 let unlistenUpdate: (() => void) | null = null;
@@ -135,6 +151,7 @@ onUnmounted(() => {
   if (unlistenProgress) unlistenProgress();
   if (unlistenComplete) unlistenComplete();
   if (unlistenUpdate) unlistenUpdate();
+  window.clearTimeout(announceTimeout);
 });
 
 const navItems = [
@@ -198,7 +215,11 @@ async function runAction(fn: () => Promise<unknown>) {
           :key="item.key"
           class="drawer-nav-item"
           :class="{ 'drawer-nav-item--active': currentView === item.key }"
+          role="button"
+          tabindex="0"
+          :aria-current="currentView === item.key ? 'page' : undefined"
           @click="onNavClick(item)"
+          @keydown.enter.space.prevent="onNavClick(item)"
         >
           <div class="nav-item-indicator" v-if="currentView === item.key" />
           <v-icon
@@ -308,7 +329,7 @@ async function runAction(fn: () => Promise<unknown>) {
               :downloading="downloading"
               @action="runAction"
             />
-            <GalleryView v-if="currentView === 'gallery'" />
+            <GalleryView v-if="currentView === 'gallery'" @navigate="currentView = $event" />
             <DbSettingsView v-if="currentView === 'db'" />
           </div>
         </Transition>
@@ -318,6 +339,10 @@ async function runAction(fn: () => Promise<unknown>) {
     <v-snackbar v-model="snackbar" :timeout="3000" location="bottom" class="ark-snackbar">
       {{ snackbarText }}
     </v-snackbar>
+
+    <div class="visually-hidden" aria-live="polite" aria-atomic="true">
+      {{ announcerText }}
+    </div>
   </v-app>
 </template>
 
@@ -507,6 +532,7 @@ async function runAction(fn: () => Promise<unknown>) {
   font-weight: 700 !important;
   letter-spacing: 0.04em !important;
   color: var(--text-primary) !important;
+  min-width: 0;
 }
 
 .topbar-dot {
@@ -552,6 +578,12 @@ async function runAction(fn: () => Promise<unknown>) {
   z-index: 1;
 }
 
+@media (max-width: 768px) {
+  .view-content {
+    padding: 12px 14px;
+  }
+}
+
 /* ── Snackbar ── */
 .ark-snackbar {
   font-family: 'Rajdhani', 'Inter', system-ui, sans-serif;
@@ -561,5 +593,16 @@ async function runAction(fn: () => Promise<unknown>) {
 @keyframes pulse {
   0%, 100% { opacity: 1; }
   50% { opacity: 0.4; }
+}
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
 }
 </style>

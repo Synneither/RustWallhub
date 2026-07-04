@@ -24,9 +24,11 @@ interface DbStats {
 
 const whStats = ref<DbStats>({ total: 0, love: 0, dislike: 0 });
 const rdStats = ref<DbStats>({ total: 0, love: 0, dislike: 0 });
+const statsError = ref("");
 const localSnackbar = ref(false);
 const localSnackbarText = ref("");
 const missingCount = ref(0);
+const missingCountError = ref(false);
 const showMissingList = ref(false);
 const missingSource = ref("all");
 const missingImages = ref<ImageRecord[]>([]);
@@ -49,12 +51,14 @@ interface ImageRecord {
 }
 
 async function loadStats() {
+  statsError.value = "";
   try {
     const data = await invoke<{ wallhaven: DbStats; reddit: DbStats }>("get_stats");
     whStats.value = data.wallhaven;
     rdStats.value = data.reddit;
     logger.info("Dashboard", "统计已加载", { wh: data.wallhaven, rd: data.reddit });
   } catch (e) {
+    statsError.value = String(e);
     logger.error("Dashboard", "统计加载失败", e);
   }
 }
@@ -114,11 +118,13 @@ function truncate(str: string, len: number): string {
 }
 
 async function loadMissingCount() {
+  missingCountError.value = false;
   try {
     const count = await invoke<number>("count_missing_images", { source: "all" });
     missingCount.value = count;
     logger.info("Dashboard", "缺失数量", { count });
   } catch (e) {
+    missingCountError.value = true;
     logger.error("Dashboard", "缺失数量加载失败", e);
   }
 }
@@ -198,6 +204,19 @@ const rdDislike = useAnimatedNumber(computed(() => rdStats.value.dislike));
       />
     </v-row>
 
+    <v-row v-if="statsError" class="mt-4">
+      <v-col cols="12">
+        <v-alert type="error" variant="tonal" density="compact" class="animate-in">
+          <div class="d-flex align-center justify-space-between">
+            <span>统计加载失败: {{ statsError }}</span>
+            <v-btn size="x-small" variant="text" color="error" prepend-icon="mdi-refresh" @click="loadStats">
+              重试
+            </v-btn>
+          </div>
+        </v-alert>
+      </v-col>
+    </v-row>
+
     <!-- 下载进度面板 -->
     <v-row v-if="downloading" class="mt-4">
       <v-col cols="12">
@@ -215,7 +234,7 @@ const rdDislike = useAnimatedNumber(computed(() => rdStats.value.dislike));
           <div class="progress-bar-container">
             <div
               class="progress-bar-fill"
-              :style="{ width: progressTotal > 0 ? (progressDone / progressTotal) * 100 + '%' : '0%' }"
+              :style="{ transform: `scaleX(${progressTotal > 0 ? progressDone / progressTotal : 0})` }"
             />
           </div>
           <div class="progress-meta">
@@ -278,11 +297,12 @@ const rdDislike = useAnimatedNumber(computed(() => rdStats.value.dislike));
         <div class="data-panel animate-in stagger-4">
           <div class="panel-header">
             <div class="panel-header-left">
-              <v-icon size="16" :color="missingCount > 0 ? '#f59e0b' : '#10b981'" class="me-2">
-                {{ missingCount > 0 ? 'mdi-alert-circle' : 'mdi-check-circle' }}
+              <v-icon size="16" :color="missingCountError ? '#ef4444' : missingCount > 0 ? '#f59e0b' : '#10b981'" class="me-2">
+                {{ missingCountError ? 'mdi-alert-circle' : missingCount > 0 ? 'mdi-alert-circle' : 'mdi-check-circle' }}
               </v-icon>
               <span class="panel-title">缺失文件</span>
-              <span v-if="missingCount > 0" class="missing-badge">{{ missingCount }}</span>
+              <span v-if="missingCount > 0 && !missingCountError" class="missing-badge">{{ missingCount }}</span>
+              <span v-if="missingCountError" class="missing-badge missing-badge--error">!</span>
             </div>
             <button
               class="panel-toggle-btn"
@@ -572,10 +592,12 @@ const rdDislike = useAnimatedNumber(computed(() => rdStats.value.dislike));
 }
 
 .progress-bar-fill {
+  width: 100%;
   height: 100%;
   background: linear-gradient(90deg, var(--accent-primary), #60a5fa);
   border-radius: 2px;
-  transition: width 0.3s ease;
+  transform-origin: left;
+  transition: transform 0.3s ease;
 }
 
 .progress-meta {
@@ -647,6 +669,11 @@ const rdDislike = useAnimatedNumber(computed(() => rdStats.value.dislike));
   font-weight: 700;
   color: #f59e0b;
   line-height: 1;
+}
+
+.missing-badge--error {
+  background: rgba(239, 68, 68, 0.15);
+  color: #ef4444;
 }
 
 .panel-toggle-btn {
