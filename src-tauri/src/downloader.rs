@@ -441,7 +441,7 @@ mod tests {
         let client = reqwest::Client::new();
         let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         let url = format!("http://127.0.0.1:{}/test.jpg", port);
-        let results = download_urls_concurrent(&client, &[url], cancel, 6, 0).await;
+        let results = download_urls_concurrent(&client, &[url], cancel, 1, 3).await;
 
         assert_eq!(results.len(), 1);
         let (bytes, content_type) = results[0].as_ref().expect("download should succeed");
