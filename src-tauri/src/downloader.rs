@@ -434,6 +434,9 @@ mod tests {
             }
         });
 
+        // Give the server thread time to start accepting connections
+        std::thread::sleep(std::time::Duration::from_millis(50));
+
         let client = reqwest::Client::new();
         let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         let url = format!("http://127.0.0.1:{}/test.jpg", port);
