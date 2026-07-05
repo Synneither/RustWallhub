@@ -422,7 +422,10 @@ mod tests {
         let body = jpeg_data.to_vec();
 
         let jpeg_data = body.clone();
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(2));
+        let b = barrier.clone();
         std::thread::spawn(move || {
+            b.wait();
             if let Ok((mut stream, _)) = listener.accept() {
                 use std::io::Write;
                 let response = format!(
@@ -433,9 +436,7 @@ mod tests {
                 let _ = stream.write_all(&jpeg_data);
             }
         });
-
-        // Give the server thread time to start accepting connections
-        std::thread::sleep(std::time::Duration::from_millis(50));
+        barrier.wait();
 
         let client = reqwest::Client::new();
         let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
