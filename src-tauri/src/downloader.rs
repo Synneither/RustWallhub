@@ -426,17 +426,32 @@ mod tests {
         let b = barrier.clone();
         std::thread::spawn(move || {
             b.wait();
-            if let Ok((mut stream, _)) = listener.accept() {
-                use std::io::Write;
-                let response = format!(
-                    "HTTP/1.1 200 OK\r\nContent-Type: image/jpeg\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
-                    jpeg_data.len()
-                );
-                let _ = stream.write_all(response.as_bytes());
-                let _ = stream.write_all(&jpeg_data);
+            // CI 环境调度慢，客户端可能需要重试才能连上 mock server。
+            // 让服务器非阻塞轮询监听一段时间，而不是只 accept 一次。
+            listener.set_nonblocking(true).unwrap();
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+            while std::time::Instant::now() < deadline {
+                match listener.accept() {
+                    Ok((mut stream, _)) => {
+                        use std::io::Write;
+                        let response = format!(
+                            "HTTP/1.1 200 OK\r\nContent-Type: image/jpeg\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                            jpeg_data.len()
+                        );
+                        let _ = stream.write_all(response.as_bytes());
+                        let _ = stream.write_all(&jpeg_data);
+                        return;
+                    }
+                    Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                        std::thread::sleep(std::time::Duration::from_millis(10));
+                    }
+                    Err(_) => return,
+                }
             }
         });
         barrier.wait();
+        // 给子线程一点时间进入 accept 轮询，减少 CI 上首次连接失败的概率。
+        std::thread::sleep(std::time::Duration::from_millis(100));
 
         let client = reqwest::Client::new();
         let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
