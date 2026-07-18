@@ -186,6 +186,20 @@ const rdDislike = useAnimatedNumber(computed(() => rdStats.value.dislike));
 
 <template>
   <div>
+    <v-row v-if="whStats.total === 0 && rdStats.total === 0 && !statsError" class="mt-0 mb-4">
+      <v-col cols="12">
+        <v-alert type="info" variant="tonal" density="comfortable" class="animate-in">
+          <div class="d-flex align-center">
+            <v-icon size="20" class="me-3">mdi-database-alert-outline</v-icon>
+            <div>
+              <div class="text-body font-weight-medium">数据库为空</div>
+              <div class="text-caption text-secondary">Wallhaven 和 Reddit 数据库都还没有记录，点击下方「开始下载」获取壁纸。</div>
+            </div>
+          </div>
+        </v-alert>
+      </v-col>
+    </v-row>
+
     <!-- Arknights 数据面板 - 双终端布局 -->
     <v-row class="stagger-cards">
       <DataTerminal
