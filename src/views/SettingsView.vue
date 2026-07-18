@@ -2,6 +2,7 @@
 import { ref, onMounted } from "vue";
 import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
+import { VForm } from "vuetify/components";
 import { logger } from "../utils/logger";
 
 interface AppConfig {
@@ -33,7 +34,7 @@ const configError = ref("");
 const saving = ref(false);
 const saved = ref(false);
 const formValid = ref(false);
-const formRef = ref<any>(null);
+const formRef = ref<VForm | null>(null);
 const checkingUpdate = ref(false);
 const updateInfo = ref<{ has_update: boolean; version: string; current_version: string; body?: string; date?: string } | null>(null);
 
@@ -56,10 +57,6 @@ const timeoutRule = (v: number) => {
   if (v < 5) return '不能低于 5 秒';
   if (v > 120) return '不能超过 120 秒';
   return true;
-};
-const resolutionRule = (v: string) => {
-  if (!v) return true;
-  return /^\d+x\d+$/.test(v) || '格式如 1920x1080';
 };
 
 async function selectDirectory(field: keyof AppConfig) {
@@ -174,7 +171,7 @@ onMounted(loadConfig);
         </div>
         <div>
           <div class="text-heading">Wallhaven 设置</div>
-          <div class="text-caption">API 配置、搜索参数与下载限制</div>
+          <div class="text-caption">保存目录与 API 配置</div>
         </div>
       </div>
       <v-card-text class="pa-6 pt-4">
@@ -190,69 +187,7 @@ onMounted(loadConfig);
           />
         </div>
 
-        <div class="settings-group-label">搜索参数</div>
-        <div class="settings-group">
-          <v-row>
-            <v-col cols="12" sm="6" md="4">
-              <v-text-field
-                v-model="config.wallhaven_categories"
-                label="类别"
-                hint="1=General, 2=Anime, 4=People"
-                persistent-hint
-                class="settings-field"
-              />
-            </v-col>
-            <v-col cols="12" sm="6" md="4">
-              <v-text-field
-                v-model="config.wallhaven_purity"
-                label="纯净度"
-                hint="1=SFW, 2=Sketchy, 4=NSFW"
-                persistent-hint
-                class="settings-field"
-              />
-            </v-col>
-            <v-col cols="12" sm="6" md="4">
-              <v-select
-                v-model="config.wallhaven_sorting"
-                label="排序方式"
-                :items="['date_added', 'relevance', 'random', 'views', 'favorites', 'toplist']"
-                class="settings-field"
-              />
-            </v-col>
-          </v-row>
-          <v-row>
-            <v-col cols="12" sm="6" md="4">
-              <v-select
-                v-if="config.wallhaven_sorting === 'toplist'"
-                v-model="config.wallhaven_top_range"
-                label="排序范围"
-                :items="['1d', '3d', '1w', '1M', '3M', '6M', '1y']"
-                class="settings-field"
-              />
-            </v-col>
-            <v-col cols="12" sm="6" md="4">
-              <v-text-field
-                v-model="config.wallhaven_atleast"
-                label="最低分辨率"
-                hint="例如: 1920x1080"
-                persistent-hint
-                :rules="[resolutionRule]"
-                class="settings-field"
-              />
-            </v-col>
-            <v-col cols="12" sm="6" md="4">
-              <v-text-field
-                v-model="config.wallhaven_ratios"
-                label="宽高比"
-                hint="例如: landscape, 16x9"
-                persistent-hint
-                class="settings-field"
-              />
-            </v-col>
-          </v-row>
-        </div>
-
-        <div class="settings-group-label">下载限制</div>
+        <div class="settings-group-label">API 配置</div>
         <div class="settings-group">
           <v-row>
             <v-col cols="12" sm="6" md="4">
@@ -261,17 +196,6 @@ onMounted(loadConfig);
                 label="API Key（可选）"
                 hint="提高 API 速率限制"
                 type="password"
-                class="settings-field"
-              />
-            </v-col>
-            <v-col cols="12" sm="6" md="4">
-              <v-text-field
-                v-model.number="config.wallhaven_max_images"
-                label="最大下载数量"
-                type="number"
-                min="1"
-                max="500"
-                :rules="[positiveInt]"
                 class="settings-field"
               />
             </v-col>
@@ -338,33 +262,6 @@ onMounted(loadConfig);
     </v-card>
 
     <v-card class="glass-card settings-card animate-in stagger-3">
-      <div class="settings-card-header db-header-bg">
-        <div class="settings-header-icon db-header-icon">
-          <v-icon color="#10b981">mdi-database</v-icon>
-        </div>
-        <div>
-          <div class="text-heading">数据库设置</div>
-          <div class="text-caption">统一管理 Wallhaven 和 Reddit 数据库存储目录</div>
-        </div>
-      </div>
-      <v-card-text class="pa-6 pt-4">
-        <div class="settings-group-label">存储位置</div>
-        <div class="settings-group">
-          <v-text-field
-            v-model="config.db_dir"
-            label="数据库目录"
-            hint="存放 wallhaven_images.db 和 reddit_images.db"
-            persistent-hint
-            class="settings-field"
-            :rules="[requiredRule]"
-            append-inner-icon="mdi-folder-open"
-            @click:append-inner="selectDirectory('db_dir')"
-          />
-        </div>
-      </v-card-text>
-    </v-card>
-
-    <v-card class="glass-card settings-card animate-in stagger-4">
       <div class="settings-card-header adv-header-bg">
         <div class="settings-header-icon adv-header-icon">
           <v-icon color="#c9a94e">mdi-tune-variant</v-icon>
@@ -534,9 +431,6 @@ onMounted(loadConfig);
 .rd-header-bg {
   background: linear-gradient(135deg, rgba(249,115,22,0.08) 0%, transparent 60%);
 }
-.db-header-bg {
-  background: linear-gradient(135deg, rgba(16,185,129,0.08) 0%, transparent 60%);
-}
 .adv-header-bg {
   background: linear-gradient(135deg, rgba(201,169,78,0.08) 0%, transparent 60%);
 }
@@ -556,9 +450,6 @@ onMounted(loadConfig);
 }
 .rd-header-icon {
   background: rgba(249,115,22,0.15);
-}
-.db-header-icon {
-  background: rgba(16,185,129,0.15);
 }
 .adv-header-icon {
   background: rgba(201,169,78,0.15);

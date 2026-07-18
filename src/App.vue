@@ -11,6 +11,7 @@ const WallhavenView = defineAsyncComponent(() => import("./views/WallhavenView.v
 const RedditView = defineAsyncComponent(() => import("./views/RedditView.vue"));
 const GalleryView = defineAsyncComponent(() => import("./views/GalleryView.vue"));
 const DbSettingsView = defineAsyncComponent(() => import("./views/DbSettingsView.vue"));
+const SettingsView = defineAsyncComponent(() => import("./views/SettingsView.vue"));
 
 // Theme sync
 const { theme: appTheme, toggle: toggleTheme } = useTheme();
@@ -160,6 +161,7 @@ const navItems = [
   { key: "reddit", title: "Reddit", icon: "mdi-reddit", iconActive: "mdi-reddit" },
   { key: "db", title: "数据库", icon: "mdi-database-cog-outline", iconActive: "mdi-database-cog" },
   { key: "gallery", title: "图库", icon: "mdi-image-multiple-outline", iconActive: "mdi-image-multiple" },
+  { key: "settings", title: "设置", icon: "mdi-cog-outline", iconActive: "mdi-cog" },
 ];
 
 function onNavClick(item: { key: string; title: string }) {
@@ -331,6 +333,7 @@ async function runAction(fn: () => Promise<unknown>) {
             />
             <GalleryView v-if="currentView === 'gallery'" @navigate="currentView = $event" />
             <DbSettingsView v-if="currentView === 'db'" />
+            <SettingsView v-if="currentView === 'settings'" />
           </div>
         </Transition>
       </div>

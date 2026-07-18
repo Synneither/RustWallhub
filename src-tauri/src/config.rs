@@ -87,9 +87,8 @@ fn default_thumbnails_dir() -> String {
 }
 
 fn default_db_dir() -> String {
-    dirs::data_dir()
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join("rustwallhub")
+    std::env::current_dir()
+        .unwrap_or_else(|_| PathBuf::from("."))
         .to_string_lossy()
         .to_string()
 }
@@ -199,23 +198,20 @@ impl Default for AppConfig {
             .unwrap_or_else(|| PathBuf::from("."))
             .to_string_lossy()
             .to_string();
-        let data_dir = dirs::data_dir()
-            .unwrap_or_else(|| PathBuf::from("."))
-            .join("rustwallhub");
-
         let cache_dir = dirs::cache_dir()
             .unwrap_or_else(|| PathBuf::from("."))
             .join("rustwallhub")
             .join("thumbnails");
+        let db_dir = std::env::current_dir()
+            .unwrap_or_else(|_| PathBuf::from("."))
+            .to_string_lossy()
+            .to_string();
 
         Self {
             wallhaven_save_dir: format!("{home}/Pictures/背景/wallhaven"),
-            wallhaven_db_path: data_dir
-                .join("wallhaven_images.db")
-                .to_string_lossy()
-                .to_string(),
+            wallhaven_db_path: format!("{db_dir}/wallhaven_images.db"),
             thumbnails_dir: cache_dir.to_string_lossy().to_string(),
-            db_dir: data_dir.to_string_lossy().to_string(),
+            db_dir: db_dir.clone(),
             wallhaven_api_key: String::new(),
             wallhaven_categories: "010".into(),
             wallhaven_purity: "111".into(),
@@ -227,10 +223,7 @@ impl Default for AppConfig {
             wallhaven_order: "desc".into(),
             wallhaven_max_images: 100,
             reddit_save_dir: format!("{home}/Pictures/背景/reddit"),
-            reddit_db_path: data_dir
-                .join("reddit_images.db")
-                .to_string_lossy()
-                .to_string(),
+            reddit_db_path: format!("{db_dir}/reddit_images.db"),
             reddit_url: default_reddit_url(),
             reddit_max_posts: 100,
             reddit_max_images: 100,
