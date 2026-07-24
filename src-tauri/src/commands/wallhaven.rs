@@ -447,10 +447,15 @@ pub async fn download_wallhaven_selected(
             success,
             total
         );
-        let _ = app_clone.emit("download-complete", DownloadComplete {
-            source: "wallhaven".into(), success, total,
-            message: format!("Wallhaven 下载完成: 成功 {success}/{total}"),
-        });
+        let _ = app_clone.emit(
+            "download-complete",
+            DownloadComplete {
+                source: "wallhaven".into(),
+                success,
+                total,
+                message: format!("Wallhaven 下载完成: 成功 {success}/{total}"),
+            },
+        );
     });
 
     Ok(format!("即将下载 {count} 张壁纸"))

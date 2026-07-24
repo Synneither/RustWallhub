@@ -58,8 +58,7 @@ pub async fn list_orphan_files(
             if !dir.is_dir() {
                 return Ok(Vec::new());
             }
-            let db_names: HashSet<String> =
-                db::get_all_filenames(db_path)?.into_iter().collect();
+            let db_names: HashSet<String> = db::get_all_filenames(db_path)?.into_iter().collect();
 
             let mut orphans = Vec::new();
             if let Ok(entries) = std::fs::read_dir(dir) {
