@@ -1,7 +1,7 @@
 //! Wallpaper setting for Linux and Windows desktop environments.
 //! Each setter probes whether its environment is available, returns `None` if not.
 
-use crate::AppError;
+use crate::state::AppError;
 use std::process::Command;
 
 // ---------------------------------------------------------------------------
