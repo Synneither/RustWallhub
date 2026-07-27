@@ -9,10 +9,6 @@ defineProps<{
   downloading: boolean;
 }>();
 
-const emit = defineEmits<{
-  action: [fn: () => Promise<unknown>];
-}>();
-
 // ===== 类型 =====
 interface WallhavenImage {
   id: string;
@@ -32,6 +28,7 @@ interface SearchResult {
 }
 
 interface DownloadedImage {
+  source: string;
   name: string;
   path: string;
 }
@@ -120,7 +117,10 @@ async function saveConfig() {
   saving.value = true;
   saved.value = false;
   try {
-    await invoke("save_settings", { config: config.value });
+    // 只修改 Wallhaven 相关字段，先获取完整配置再覆盖
+    const full = await invoke<AppConfig & Record<string, unknown>>("get_config");
+    Object.assign(full, config.value);
+    await invoke("save_settings", { config: full });
     saved.value = true;
     setTimeout(() => (saved.value = false), 2000);
     logger.info("Wallhaven", "设置已保存");
@@ -178,6 +178,7 @@ async function downloadSelected() {
     unlistenImageEvent = await listen<DownloadedImage>("image-downloaded", (e) => {
       if (e.payload.source !== "wallhaven") return;
       const img: DownloadedImage = {
+        source: e.payload.source,
         name: e.payload.name,
         path: convertFileSrc(e.payload.path),
       };

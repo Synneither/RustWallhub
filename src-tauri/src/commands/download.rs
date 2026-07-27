@@ -19,7 +19,11 @@ pub async fn recover_database_files(
     log::info!("[CMD] recover_database_files: source={:?}", source);
     let config = crate::state::load_config(&state)?;
     let cancel = setup_cancel_flag(&state);
-    let client = state.http_client.lock().unwrap().clone();
+    let client = state
+        .http_client
+        .lock()
+        .map_err(|e| AppError::Other(format!("锁获取失败: {e}")))?
+        .clone();
 
     let save_dir = config.save_dir_for(source).to_string();
     let db_path = config.db_path_for(source).to_string();
@@ -152,7 +156,11 @@ pub async fn download_missing_images(
     );
     let config = crate::state::load_config(&state)?;
     let cancel = setup_cancel_flag(&state);
-    let client = state.http_client.lock().unwrap().clone();
+    let client = state
+        .http_client
+        .lock()
+        .map_err(|e| AppError::Other(format!("锁获取失败: {e}")))?
+        .clone();
 
     let save_dir = config.save_dir_for(source).to_string();
     let thumb_dir = config.thumb_dir_for(source);

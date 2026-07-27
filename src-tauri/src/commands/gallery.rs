@@ -4,7 +4,7 @@
 use crate::config::Source;
 use crate::db;
 use crate::downloader;
-use crate::state::{AppError, AppState, FileEntry, FileListCache};
+use crate::state::{self, AppError, AppState, FileEntry, FileListCache};
 use crate::thumbnail;
 use serde::Serialize;
 use std::collections::HashSet;
@@ -204,7 +204,10 @@ pub async fn resolve_thumbnail(
     let result = thumbnail::resolve_thumb_path(&thumb_dir, &image_dir, &filename, dpr);
     match result {
         Ok(thumb_path) => Ok(thumb_path.to_string_lossy().to_string()),
-        Err(_) => Ok(image_dir.join(&filename).to_string_lossy().to_string()),
+        Err(e) => {
+            log::warn!("[resolve_thumbnail] fallback to original: {}", e);
+            Ok(image_dir.join(&filename).to_string_lossy().to_string())
+        }
     }
 }
 
@@ -253,7 +256,7 @@ pub async fn delete_image(
 
     let marked = db::mark_dislike_by_name(db_path, &name)?;
 
-    let file_path = std::path::Path::new(&save_dir).join(&name);
+    let file_path = state::safe_join(std::path::Path::new(&save_dir), &name)?;
     if file_path.exists() {
         if let Err(e) = std::fs::remove_file(&file_path) {
             log::warn!("[delete_image] 删除文件失败 {}: {e}", file_path.display());
@@ -279,7 +282,7 @@ pub async fn dislike_file(
 
     let db_ok = db::mark_dislike_by_name(db_path, &name)?;
 
-    let file_path = std::path::Path::new(&save_dir).join(&name);
+    let file_path = state::safe_join(std::path::Path::new(&save_dir), &name)?;
     if file_path.exists() {
         std::fs::remove_file(&file_path).map_err(|e| {
             log::error!("[dislike_file] 删除文件失败 {}: {}", file_path.display(), e);
@@ -307,7 +310,7 @@ pub async fn delete_orphan_file(
     let save_dir = config.save_dir_for(source);
     let thumb_dir = config.thumb_dir_for(source);
 
-    let file_path = std::path::Path::new(&save_dir).join(&name);
+    let file_path = state::safe_join(std::path::Path::new(&save_dir), &name)?;
     let existed = file_path.exists();
     if existed {
         std::fs::remove_file(&file_path).map_err(|e| {
@@ -344,7 +347,7 @@ pub async fn adopt_orphan_files(
     let mut reddit_batch: Vec<(String, String, String, String, String)> = Vec::new();
 
     for name in &names {
-        let file_path = std::path::Path::new(&save_dir).join(name);
+        let file_path = state::safe_join(std::path::Path::new(&save_dir), name)?;
         if !file_path.is_file() {
             log::warn!(
                 "[adopt_orphan_files] file not found: {}",
@@ -353,6 +356,13 @@ pub async fn adopt_orphan_files(
             continue;
         }
         let bytes = std::fs::read(&file_path).map_err(AppError::Io)?;
+        if bytes.is_empty() {
+            log::warn!(
+                "[adopt_orphan_files] skipping empty file: {}",
+                file_path.display()
+            );
+            continue;
+        }
         let hash = downloader::compute_md5(&bytes);
 
         if source.is_wallhaven() {

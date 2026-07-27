@@ -49,21 +49,33 @@ pub fn run() {
 
             let wh_db = config.wallhaven_db_path.clone();
             let rd_db = config.reddit_db_path.clone();
-            std::fs::create_dir_all(&config.wallhaven_save_dir).ok();
-            std::fs::create_dir_all(&config.reddit_save_dir).ok();
+            if let Err(e) = std::fs::create_dir_all(&config.wallhaven_save_dir) {
+                log::error!("[startup] 创建 wallhaven 目录失败: {e}");
+            }
+            if let Err(e) = std::fs::create_dir_all(&config.reddit_save_dir) {
+                log::error!("[startup] 创建 reddit 目录失败: {e}");
+            }
             if let Some(wh_parent) = std::path::Path::new(&wh_db).parent() {
                 if !wh_parent.as_os_str().is_empty() {
-                    std::fs::create_dir_all(wh_parent).ok();
+                    if let Err(e) = std::fs::create_dir_all(wh_parent) {
+                        log::error!("[startup] 创建 wallhaven DB 目录失败: {e}");
+                    }
                 }
             }
             if let Some(rd_parent) = std::path::Path::new(&rd_db).parent() {
                 if !rd_parent.as_os_str().is_empty() {
-                    std::fs::create_dir_all(rd_parent).ok();
+                    if let Err(e) = std::fs::create_dir_all(rd_parent) {
+                        log::error!("[startup] 创建 reddit DB 目录失败: {e}");
+                    }
                 }
             }
 
-            db::init_wallhaven_db(&wh_db).ok();
-            db::init_reddit_db(&rd_db).ok();
+            if let Err(e) = db::init_wallhaven_db(&wh_db) {
+                log::error!("[startup] 初始化 wallhaven DB 失败: {e}");
+            }
+            if let Err(e) = db::init_reddit_db(&rd_db) {
+                log::error!("[startup] 初始化 reddit DB 失败: {e}");
+            }
 
             let client = reqwest::Client::builder()
                 .user_agent("RustWallhub/1.0")

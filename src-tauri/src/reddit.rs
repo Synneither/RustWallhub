@@ -146,11 +146,12 @@ impl RedditClient {
         }
 
         let url = &data.url;
+        let url_no_query = url.split('?').next().unwrap_or(url);
         if url.contains("i.redd.it")
-            && (url.ends_with(".jpg")
-                || url.ends_with(".jpeg")
-                || url.ends_with(".png")
-                || url.ends_with(".webp"))
+            && (url_no_query.ends_with(".jpg")
+                || url_no_query.ends_with(".jpeg")
+                || url_no_query.ends_with(".png")
+                || url_no_query.ends_with(".webp"))
         {
             return Some(RedditImage {
                 post_id: data.id.clone(),
@@ -172,7 +173,9 @@ impl RedditClient {
         }
 
         if url.contains("i.imgur.com")
-            && (url.ends_with(".jpg") || url.ends_with(".png") || url.ends_with(".webp"))
+            && (url_no_query.ends_with(".jpg")
+                || url_no_query.ends_with(".png")
+                || url_no_query.ends_with(".webp"))
         {
             return Some(RedditImage {
                 post_id: data.id.clone(),
@@ -188,9 +191,15 @@ impl RedditClient {
     async fn get_imgur_album(&self, url: &str) -> Option<String> {
         log::info!("[reddit] get_imgur_album: url={}", url);
 
-        // SSRF 保护：只允许 https 协议且 host 为 imgur.com
+        // SSRF 保护：只允许 https 协议且 host 以 imgur.com 结尾
         let lower = url.to_lowercase();
-        if !lower.starts_with("https://") || !lower.contains("imgur.com") {
+        if !lower.starts_with("https://") {
+            log::warn!("[reddit] blocked non-https imgur URL: {}", url);
+            return None;
+        }
+        let host_part = lower.strip_prefix("https://").unwrap_or("");
+        let host = host_part.split('/').next().unwrap_or("");
+        if !host.ends_with("imgur.com") {
             log::warn!("[reddit] blocked non-imgur URL: {}", url);
             return None;
         }

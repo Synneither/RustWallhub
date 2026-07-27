@@ -151,11 +151,32 @@ onUnmounted(() => {
   if (unlistenSettings) unlistenSettings();
 });
 
+async function markDisliked() {
+  emit('action', async () => {
+    const count = await invoke<number>('mark_disliked_files', { source: 'all' });
+    localSnackbarText.value = `已标记 ${count} 张缺失图片为不喜欢`;
+    localSnackbar.value = true;
+    logger.action('Dashboard', '标记缺失图片为不喜欢', { count });
+    await loadStats();
+    await loadMissingCount();
+  });
+}
+
+async function restoreAll() {
+  emit('action', async () => {
+    const count = await invoke<number>('restore_all_files', { source: 'all' });
+    localSnackbarText.value = `已还原 ${count} 张图片为喜欢`;
+    localSnackbar.value = true;
+    logger.action('Dashboard', '全部恢复为喜欢', { count });
+    await loadStats();
+  });
+}
+
 function useAnimatedNumber(target: { value: number }) {
   const value = ref(0);
   let rafId = 0;
 
-  watch(target, (to) => {
+  watch(() => target.value, (to) => {
     cancelAnimationFrame(rafId);
     const from = value.value;
     const start = performance.now();
@@ -274,14 +295,7 @@ const rdDislike = useAnimatedNumber(computed(() => rdStats.value.dislike));
             <button
               class="ops-btn ops-btn--warning"
               :disabled="downloading"
-              @click="emit('action', async () => {
-                const count = await invoke<number>('mark_disliked_files', { source: 'all' });
-                localSnackbarText.value = `已标记 ${count} 张缺失图片为不喜欢`;
-                localSnackbar.value = true;
-                logger.action('Dashboard', '标记缺失图片为不喜欢', { count });
-                await loadStats();
-                await loadMissingCount();
-              })"
+              @click="markDisliked"
             >
               <v-icon size="14">mdi-alert-circle</v-icon>
               <span>标记缺失为不喜欢 <template v-if="missingCount > 0">({{ missingCount }})</template></span>
@@ -289,13 +303,7 @@ const rdDislike = useAnimatedNumber(computed(() => rdStats.value.dislike));
             <button
               class="ops-btn ops-btn--success"
               :disabled="downloading"
-              @click="emit('action', async () => {
-                const count = await invoke<number>('restore_all_files', { source: 'all' });
-                localSnackbarText.value = `已还原 ${count} 张图片为喜欢`;
-                localSnackbar.value = true;
-                logger.action('Dashboard', '全部恢复为喜欢', { count });
-                await loadStats();
-              })"
+              @click="restoreAll"
             >
               <v-icon size="14">mdi-check-circle</v-icon>
               <span>全部恢复为喜欢</span>

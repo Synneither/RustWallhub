@@ -118,7 +118,8 @@ impl AppConfig {
         PathBuf::from(&self.thumbnails_dir).join("reddit")
     }
 
-    /// 根据 Source 获取对应的保存目录
+    /// 根据 Source 获取对应的保存目录。
+    /// 注意：`Source::All` 会回退到 Reddit 目录，调用方应分别处理 Wallhaven 和 Reddit。
     pub fn save_dir_for(&self, source: Source) -> &str {
         match source {
             Source::Wallhaven => &self.wallhaven_save_dir,

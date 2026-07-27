@@ -4,11 +4,23 @@ function timestamp(): string {
   return new Date().toISOString().replace("T", " ").slice(0, 19);
 }
 
+function safeStringify(data: unknown): string {
+  if (data === null) return "null";
+  if (data === undefined) return "undefined";
+  if (typeof data === "string") return data;
+  try {
+    return JSON.stringify(data);
+  } catch {
+    // Circular reference or other serialization error
+    return String(data);
+  }
+}
+
 function log(level: LogLevel, context: string, message: string, data?: unknown) {
   const prefix = `[${timestamp()}] [${level}] [${context}]`;
   const logMsg =
     data !== undefined
-      ? `${prefix} ${message} | ${typeof data === "string" ? data : JSON.stringify(data)}`
+      ? `${prefix} ${message} | ${safeStringify(data)}`
       : `${prefix} ${message}`;
 
   switch (level) {

@@ -90,6 +90,30 @@ impl serde::Serialize for AppError {
     }
 }
 
+/// Safely join `name` onto `base`, rejecting path-traversal attempts like `../`.
+/// Returns the canonicalized path if it lies within `base`, otherwise an error.
+pub fn safe_join(base: &std::path::Path, name: &str) -> Result<PathBuf, AppError> {
+    let candidate = base.join(name);
+    // Reject obvious traversal patterns early
+    if name.contains("..") {
+        return Err(AppError::Other("非法的文件路径".into()));
+    }
+    // If the file doesn't exist yet, canonicalize the parent and join the filename
+    let resolved = if candidate.exists() {
+        candidate.canonicalize()
+    } else {
+        base.canonicalize().map(|c| c.join(name))
+    };
+    let resolved = resolved.map_err(|e| AppError::Other(format!("无法解析路径: {e}")))?;
+    let base_canonical = base
+        .canonicalize()
+        .map_err(|e| AppError::Other(format!("无法解析基础路径: {e}")))?;
+    if !resolved.starts_with(&base_canonical) {
+        return Err(AppError::Other("非法的文件路径".into()));
+    }
+    Ok(resolved)
+}
+
 // ---------------------------------------------------------------------------
 // Helper functions
 // ---------------------------------------------------------------------------

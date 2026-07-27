@@ -62,8 +62,19 @@ pub async fn scan_directory(dir: String) -> Result<Vec<FileInfo>, AppError> {
     if !path.is_dir() {
         return Ok(Vec::new());
     }
+    // 安全限制：只允许扫描用户主目录下的路径
+    let home = dirs::home_dir().unwrap_or_else(|| std::path::PathBuf::from("."));
+    let canonical = path
+        .canonicalize()
+        .map_err(|e| AppError::Other(format!("无法解析路径: {e}")))?;
+    let home_canonical = home.canonicalize().unwrap_or_else(|_| home.clone());
+    if !canonical.starts_with(&home_canonical) {
+        return Err(AppError::Other(
+            "安全限制：只允许扫描用户主目录下的路径".into(),
+        ));
+    }
     let mut files = Vec::new();
-    if let Ok(entries) = std::fs::read_dir(path) {
+    if let Ok(entries) = std::fs::read_dir(&canonical) {
         for entry in entries.flatten() {
             let file_path = entry.path();
             if file_path.is_file() {

@@ -4,6 +4,25 @@
 use crate::state::AppError;
 use std::process::Command;
 
+/// Percent-encode a file path for use in a `file://` URI.
+/// Handles spaces, non-ASCII characters, and other special characters.
+fn url_escape_path(path: &str) -> String {
+    path.chars()
+        .flat_map(|c| {
+            if c.is_ascii_alphanumeric() || matches!(c, '/' | '-' | '_' | '.' | '~') {
+                vec![c]
+            } else {
+                let mut buf = [0u8; 4];
+                c.encode_utf8(&mut buf)
+                    .as_bytes()
+                    .iter()
+                    .flat_map(|b| format!("%{:02X}", b).chars().collect::<Vec<_>>())
+                    .collect()
+            }
+        })
+        .collect()
+}
+
 // ---------------------------------------------------------------------------
 
 /// GNOME (gsettings)
@@ -15,7 +34,7 @@ fn set_gnome_wallpaper(path_str: &str) -> Option<String> {
     {
         return None;
     }
-    let uri = format!("file://{path_str}");
+    let uri = format!("file://{}", url_escape_path(path_str));
     if let Ok(output) = Command::new("gsettings")
         .args(["set", "org.gnome.desktop.background", "picture-uri", &uri])
         .output()
@@ -85,8 +104,9 @@ for (var i = 0; i < allDesktops.length; i++) {{
     var d = allDesktops[i];
     d.wallpaperPlugin = 'org.kde.image';
     d.currentConfigGroup = ['Wallpaper', 'org.kde.image', 'General'];
-    d.writeConfig('Image', 'file://{escaped}');
-}}"
+    d.writeConfig('Image', 'file://{}');
+}}",
+        url_escape_path(&escaped)
     );
     let output = Command::new("qdbus")
         .args([

@@ -65,12 +65,10 @@ fn resize_and_save(
     _filename: &str,
     max_width: u32,
 ) -> Result<(), String> {
-    let (w, h) = (img.width(), img.height());
+    let (w, _h) = (img.width(), img.height());
     let thumb = if w > max_width {
-        let new_w = max_width;
-        let new_h = (h as f64 * max_width as f64 / w as f64) as u32;
-        // thumbnail_exact 是 image 库针对缩略图优化的缩放路径
-        img.thumbnail_exact(new_w, new_h)
+        // thumbnail 保持纵横比，避免缩略图变形
+        img.thumbnail(max_width, u32::MAX)
     } else {
         img
     };

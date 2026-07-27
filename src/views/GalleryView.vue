@@ -52,7 +52,7 @@ const deletingSelection = ref(false);
 const selectedPaths = ref<Set<string>>(new Set());
 const selectionMode = ref(false);
 const pendingIsOrphan = computed(() => {
-  const img = allImages.value[pendingDeleteIndex.value];
+  const img = displayImages.value[pendingDeleteIndex.value];
   return img?.is_orphan ?? false;
 });
 
@@ -101,8 +101,8 @@ const dialogOpen = computed({
 });
 
 const selectedImage = computed(() =>
-  selectedIndex.value >= 0 && selectedIndex.value < allImages.value.length
-    ? allImages.value[selectedIndex.value]
+  selectedIndex.value >= 0 && selectedIndex.value < displayImages.value.length
+    ? displayImages.value[selectedIndex.value]
     : null
 );
 
@@ -181,11 +181,15 @@ function updateImagesPerPage() {
   imagesPerPage.value = Math.max(1, cols * Math.max(rows, minRows));
 }
 
+let resizeTimer: number | undefined;
 function handleResize() {
-  updateImagesPerPage();
-  if (currentPage.value > totalPages.value) {
-    currentPage.value = totalPages.value;
-  }
+  if (resizeTimer) window.clearTimeout(resizeTimer);
+  resizeTimer = window.setTimeout(() => {
+    updateImagesPerPage();
+    if (currentPage.value > totalPages.value) {
+      currentPage.value = totalPages.value;
+    }
+  }, 150);
 }
 
 watch(imagesPerPage, () => {
@@ -299,13 +303,14 @@ async function requestThumbnails() {
       if (img) img.thumb_path = item.thumb_path;
     }
   } catch (e) {
+    logger.error("Gallery", "缩略图生成失败", e);
   }
 
   thumbLoading.value = false;
 }
 
 async function deleteImage(index: number) {
-  const img = allImages.value[index];
+  const img = displayImages.value[index];
   if (!img) return;
   deletingIndex.value = index;
   try {
@@ -324,8 +329,12 @@ async function deleteImage(index: number) {
       localSnackbarText.value = `已标记为不喜欢: ${img.name}`;
       logger.action("Gallery", "标记为不喜欢", { name: img.name });
     }
-    allImages.value.splice(index, 1);
-    total.value -= 1;
+    // Remove from allImages by finding the actual index
+    const allIdx = allImages.value.findIndex(i => i.name === img.name);
+    if (allIdx >= 0) {
+      allImages.value.splice(allIdx, 1);
+      total.value -= 1;
+    }
     if (selectedIndex.value === index) {
       selectedIndex.value = -1;
     } else if (selectedIndex.value > index) {
@@ -356,6 +365,7 @@ async function deleteSelected() {
       }
       count++;
     } catch (e) {
+      logger.error("Gallery", "批量操作失败", { name, error: e });
     }
   }
   localSnackbarText.value = `批量操作完成: ${count} 张`;
@@ -424,9 +434,9 @@ function onDialogKeydown(e: KeyboardEvent) {
 
 function navigateImage(direction: number) {
   const newIndex = selectedIndex.value + direction;
-  if (newIndex >= 0 && newIndex < allImages.value.length) {
+  if (newIndex >= 0 && newIndex < displayImages.value.length) {
     selectedIndex.value = newIndex;
-    logger.info("Gallery", "切换到图片", { index: newIndex, name: allImages.value[newIndex]?.name });
+    logger.info("Gallery", "切换到图片", { index: newIndex, name: displayImages.value[newIndex]?.name });
   }
 }
 
@@ -549,6 +559,7 @@ onMounted(async () => {
 
 onUnmounted(() => {
   window.removeEventListener("resize", handleResize);
+  if (resizeTimer) window.clearTimeout(resizeTimer);
   if (resizeObserver) {
     resizeObserver.disconnect();
     resizeObserver = null;
@@ -569,7 +580,7 @@ onUnmounted(() => {
           variant="text"
           size="small"
           :color="useCustomDir ? 'primary' : 'grey'"
-          @click="useCustomDir = !useCustomDir; if (!useCustomDir) { source = 'wallhaven'; resetAndLoad(); }"
+          @click="useCustomDir = !useCustomDir; if (!useCustomDir) { source = 'wallhaven'; }"
           class="toolbar-action-btn"
         >
           <v-icon start size="14">mdi-folder-open</v-icon>
@@ -794,8 +805,8 @@ onUnmounted(() => {
         <div class="preview-navbar">
           <div class="navbar-left">
             <v-btn icon="mdi-chevron-left" variant="text" color="white" size="small" :disabled="selectedIndex <= 0" @click="navigateImage(-1)" />
-            <span class="navbar-position">{{ selectedIndex + 1 }} / {{ allImages.length }}</span>
-            <v-btn icon="mdi-chevron-right" variant="text" color="white" size="small" :disabled="selectedIndex >= allImages.length - 1" @click="navigateImage(1)" />
+            <span class="navbar-position">{{ selectedIndex + 1 }} / {{ displayImages.length }}</span>
+            <v-btn icon="mdi-chevron-right" variant="text" color="white" size="small" :disabled="selectedIndex >= displayImages.length - 1" @click="navigateImage(1)" />
           </div>
           <v-btn icon="mdi-close" variant="text" color="white" size="small" @click="selectedIndex = -1" />
         </div>

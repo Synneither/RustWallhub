@@ -89,7 +89,6 @@ pub async fn download_image_bytes(
     log::info!("[downloader] download_image_bytes: url={}", url);
     let resp = client
         .get(url)
-        .timeout(std::time::Duration::from_secs(30))
         .send()
         .await
         .map_err(|e| format!("下载请求失败: {e}"))?;

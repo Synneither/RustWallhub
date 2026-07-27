@@ -36,6 +36,8 @@ const saving = ref(false);
 const saved = ref(false);
 const formValid = ref(false);
 const formRef = ref<VForm | null>(null);
+const localSnackbar = ref(false);
+const localSnackbarText = ref("");
 const checkingUpdate = ref(false);
 const updateInfo = ref<{ has_update: boolean; version: string; current_version: string; body?: string; date?: string } | null>(null);
 const installing = ref(false);
@@ -133,6 +135,8 @@ async function saveSettings() {
     setTimeout(() => (saved.value = false), 2000);
   } catch (e) {
     logger.error("Settings", "保存设置失败", e);
+    localSnackbarText.value = `保存设置失败: ${e}`;
+    localSnackbar.value = true;
   }
   saving.value = false;
 }
@@ -153,6 +157,8 @@ async function checkUpdate() {
     logger.info("Settings", "检查更新完成", info);
   } catch (e) {
     logger.error("Settings", "检查更新失败", e);
+    localSnackbarText.value = `检查更新失败: ${e}`;
+    localSnackbar.value = true;
   }
   checkingUpdate.value = false;
 }
@@ -496,6 +502,10 @@ onUnmounted(() => {
         </v-icon>
       </v-fade-transition>
     </div>
+
+    <v-snackbar v-model="localSnackbar" :timeout="3000" location="bottom" variant="tonal">
+      {{ localSnackbarText }}
+    </v-snackbar>
   </div>
 </template>
 

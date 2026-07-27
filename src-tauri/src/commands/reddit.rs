@@ -21,7 +21,11 @@ pub async fn start_reddit_download(
     let config = crate::state::load_config(&state)?;
     let cancel = setup_cancel_flag(&state);
     let app_clone = app.clone();
-    let client = state.http_client.lock().unwrap().clone();
+    let client = state
+        .http_client
+        .lock()
+        .map_err(|e| AppError::Other(format!("锁获取失败: {e}")))?
+        .clone();
 
     tokio::spawn(async move {
         let reddit_client = reddit::RedditClient::new(client.clone(), config.reddit_url.clone());

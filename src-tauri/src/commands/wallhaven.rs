@@ -49,7 +49,11 @@ pub async fn search_wallhaven(
     log::info!("[CMD] search_wallhaven: page={}", page);
     let config = crate::state::load_config(&state)?;
     let client = wallhaven::WallhavenClient::new(
-        state.http_client.lock().unwrap().clone(),
+        state
+            .http_client
+            .lock()
+            .map_err(|e| AppError::Other(format!("锁获取失败: {e}")))?
+            .clone(),
         config.wallhaven_api_key.clone(),
     );
 
@@ -108,7 +112,11 @@ pub async fn start_wallhaven_download(
     let config = crate::state::load_config(&state)?;
     let cancel = setup_cancel_flag(&state);
     let app_clone = app.clone();
-    let client = state.http_client.lock().unwrap().clone();
+    let client = state
+        .http_client
+        .lock()
+        .map_err(|e| AppError::Other(format!("锁获取失败: {e}")))?
+        .clone();
 
     tokio::spawn(async move {
         let wh_client =
@@ -326,7 +334,11 @@ pub async fn download_wallhaven_selected(
     let config = crate::state::load_config(&state)?;
     let cancel = setup_cancel_flag(&state);
     let app_clone = app.clone();
-    let client = state.http_client.lock().unwrap().clone();
+    let client = state
+        .http_client
+        .lock()
+        .map_err(|e| AppError::Other(format!("锁获取失败: {e}")))?
+        .clone();
     let total = images.len() as u32;
     let count = total;
 

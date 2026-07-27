@@ -14,6 +14,7 @@ const emit = defineEmits<{
 }>();
 
 interface DownloadedImage {
+  source: string;
   name: string;
   path: string;
 }
@@ -109,6 +110,36 @@ async function loadMissingCount() {
   }
 }
 
+async function startDownload() {
+  downloadedImages.value = [];
+  logger.action('Reddit', '开始下载');
+  emit('action', () => invoke('start_reddit_download'));
+}
+
+async function recoverAllFiles() {
+  logger.action('Reddit', '下载所有喜欢的文件');
+  emit('action', () => invoke('recover_database_files', { source: 'reddit' }));
+}
+
+async function markDisliked() {
+  emit('action', async () => {
+    const count = await invoke('mark_disliked_files', { source: 'reddit' }) as number;
+    localSnackbarText.value = `已标记 ${count} 张缺失图片为不喜欢`;
+    localSnackbar.value = true;
+    logger.action('Reddit', '标记缺失图片为不喜欢', { count });
+    await loadMissingCount();
+  });
+}
+
+async function restoreAll() {
+  emit('action', async () => {
+    const count = await invoke('restore_all_files', { source: 'reddit' }) as number;
+    localSnackbarText.value = `已还原 ${count} 张图片为喜欢`;
+    localSnackbar.value = true;
+    logger.action('Reddit', '全部恢复为喜欢', { count });
+  });
+}
+
 onMounted(async () => {
   alive = true;
   loadConfig();
@@ -117,6 +148,7 @@ onMounted(async () => {
   unlistenImageEvent = await listen<DownloadedImage>("image-downloaded", (e) => {
     if (e.payload.source === "reddit") {
       const img: DownloadedImage = {
+        source: e.payload.source,
         name: e.payload.name,
         path: convertFileSrc(e.payload.path),
       };
@@ -154,7 +186,7 @@ onUnmounted(() => {
           size="large"
           variant="flat"
           :disabled="downloading"
-          @click="() => { downloadedImages.value = []; logger.action('Reddit', '开始下载'); emit('action', () => invoke('start_reddit_download')); }"
+          @click="startDownload"
         >
           <v-icon start>mdi-download</v-icon>
           开始下载
@@ -165,7 +197,7 @@ onUnmounted(() => {
           class="ms-3"
           style="background: rgba(255,255,255,0.06)"
           :disabled="downloading"
-          @click="() => { logger.action('Reddit', '下载所有喜欢的文件'); emit('action', () => invoke('recover_database_files', { source: 'reddit' })); }"
+          @click="recoverAllFiles"
         >
           <v-icon start>mdi-database-sync</v-icon>
           下载所有喜欢的文件
@@ -267,23 +299,14 @@ onUnmounted(() => {
       </v-card-title>
       <v-card-text>
         <v-btn variant="tonal" color="warning" class="me-3" :disabled="downloading"
-          @click="emit('action', async () => {
-            const count = await invoke('mark_disliked_files', { source: 'reddit' }) as number;
-            localSnackbarText.value = `已标记 ${count} 张缺失图片为不喜欢`;
-            localSnackbar.value = true;
-            logger.action('Reddit', '标记缺失图片为不喜欢', { count });
-            await loadMissingCount();
-          })">
+          @click="markDisliked"
+        >
           <v-icon start>mdi-alert-circle</v-icon>
           标记缺失图片为不喜欢<template v-if="missingCount > 0">&nbsp;({{ missingCount }})</template>
         </v-btn>
         <v-btn variant="tonal" color="success" :disabled="downloading"
-          @click="emit('action', async () => {
-            const count = await invoke('restore_all_files', { source: 'reddit' }) as number;
-            localSnackbarText.value = `已还原 ${count} 张图片为喜欢`;
-            localSnackbar.value = true;
-            logger.action('Reddit', '全部恢复为喜欢', { count });
-          })">
+          @click="restoreAll"
+        >
           <v-icon start>mdi-check-circle</v-icon>
           全部恢复为喜欢
         </v-btn>

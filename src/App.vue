@@ -6,12 +6,15 @@ import { useTheme as useVuetifyTheme } from "vuetify";
 import { logger } from "./utils/logger";
 import { useTheme } from "./stores/theme";
 
-const Dashboard = defineAsyncComponent(() => import("./views/Dashboard.vue"));
-const WallhavenView = defineAsyncComponent(() => import("./views/WallhavenView.vue"));
-const RedditView = defineAsyncComponent(() => import("./views/RedditView.vue"));
-const GalleryView = defineAsyncComponent(() => import("./views/GalleryView.vue"));
-const DbSettingsView = defineAsyncComponent(() => import("./views/DbSettingsView.vue"));
-const SettingsView = defineAsyncComponent(() => import("./views/SettingsView.vue"));
+const asyncLoading = { template: '<div style="display:flex;justify-content:center;align-items:center;padding:60px;"><v-progress-circular indeterminate color="primary" size="32" width="3" /></div>' };
+const asyncError = { template: '<div style="display:flex;justify-content:center;align-items:center;padding:60px;color:var(--text-secondary);font-size:0.875rem;">组件加载失败，请检查网络后刷新</div>' };
+
+const Dashboard = defineAsyncComponent({ loader: () => import("./views/Dashboard.vue"), loadingComponent: asyncLoading, errorComponent: asyncError, delay: 200, timeout: 10000 });
+const WallhavenView = defineAsyncComponent({ loader: () => import("./views/WallhavenView.vue"), loadingComponent: asyncLoading, errorComponent: asyncError, delay: 200, timeout: 10000 });
+const RedditView = defineAsyncComponent({ loader: () => import("./views/RedditView.vue"), loadingComponent: asyncLoading, errorComponent: asyncError, delay: 200, timeout: 10000 });
+const GalleryView = defineAsyncComponent({ loader: () => import("./views/GalleryView.vue"), loadingComponent: asyncLoading, errorComponent: asyncError, delay: 200, timeout: 10000 });
+const DbSettingsView = defineAsyncComponent({ loader: () => import("./views/DbSettingsView.vue"), loadingComponent: asyncLoading, errorComponent: asyncError, delay: 200, timeout: 10000 });
+const SettingsView = defineAsyncComponent({ loader: () => import("./views/SettingsView.vue"), loadingComponent: asyncLoading, errorComponent: asyncError, delay: 200, timeout: 10000 });
 
 // Theme sync
 const { theme: appTheme, toggle: toggleTheme } = useTheme();
@@ -56,7 +59,7 @@ function applyTheme(t: 'dim' | 'light') {
     root.style.setProperty(key, val);
   }
   root.setAttribute('data-theme', t);
-  vuetifyTheme.name.value = t === 'dim' ? 'arknights' : 'light';
+  vuetifyTheme.global.name.value = t === 'dim' ? 'arknights' : 'light';
   const meta = document.querySelector('meta[name="theme-color"]');
   if (meta) {
     meta.setAttribute('content', t === 'dim' ? '#101218' : '#efece6');
@@ -123,29 +126,41 @@ let unlistenComplete: (() => void) | null = null;
 let unlistenUpdate: (() => void) | null = null;
 
 onMounted(async () => {
-  unlistenProgress = await listen<ProgressEvent>("download-progress", (e) => {
-    downloading.value = true;
-    progressMsg.value = e.payload.message;
-    progressDone.value = e.payload.done;
-    progressTotal.value = e.payload.total;
-    logger.info("App", "下载进度", e.payload);
-  });
+  try {
+    unlistenProgress = await listen<ProgressEvent>("download-progress", (e) => {
+      downloading.value = true;
+      progressMsg.value = e.payload.message;
+      progressDone.value = e.payload.done;
+      progressTotal.value = e.payload.total;
+      logger.info("App", "下载进度", e.payload);
+    });
+  } catch (e) {
+    logger.error("App", "监听下载进度失败", e);
+  }
 
-  unlistenComplete = await listen<CompleteEvent>("download-complete", (e) => {
-    downloading.value = false;
-    progressMsg.value = "";
-    progressDone.value = 0;
-    progressTotal.value = 0;
-    snackbarText.value = e.payload.message;
-    snackbar.value = true;
-    logger.info("App", "下载完成", e.payload);
-  });
+  try {
+    unlistenComplete = await listen<CompleteEvent>("download-complete", (e) => {
+      downloading.value = false;
+      progressMsg.value = "";
+      progressDone.value = 0;
+      progressTotal.value = 0;
+      snackbarText.value = e.payload.message;
+      snackbar.value = true;
+      logger.info("App", "下载完成", e.payload);
+    });
+  } catch (e) {
+    logger.error("App", "监听下载完成失败", e);
+  }
 
-  unlistenUpdate = await listen<UpdateInfo>("update-available", (e) => {
-    snackbarText.value = `发现新版本 ${e.payload.version}，请前往设置更新`;
-    snackbar.value = true;
-    logger.info("App", "发现新版本", e.payload);
-  });
+  try {
+    unlistenUpdate = await listen<UpdateInfo>("update-available", (e) => {
+      snackbarText.value = `发现新版本 ${e.payload.version}，请前往设置更新`;
+      snackbar.value = true;
+      logger.info("App", "发现新版本", e.payload);
+    });
+  } catch (e) {
+    logger.error("App", "监听更新事件失败", e);
+  }
 });
 
 function goToSettings() {

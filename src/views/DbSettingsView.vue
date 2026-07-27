@@ -40,6 +40,8 @@ const saving = ref(false);
 const saved = ref(false);
 const formValid = ref(false);
 const formRef = ref<VForm | null>(null);
+const localSnackbar = ref(false);
+const localSnackbarText = ref("");
 const whStats = ref<DbStats>({ total: 0, love: 0, dislike: 0 });
 const rdStats = ref<DbStats>({ total: 0, love: 0, dislike: 0 });
 
@@ -112,6 +114,8 @@ async function saveSettings() {
     setTimeout(() => (saved.value = false), 2000);
   } catch (e) {
     logger.error("DbSettings", "保存设置失败", e);
+    localSnackbarText.value = `保存设置失败: ${e}`;
+    localSnackbar.value = true;
   }
   saving.value = false;
 }
@@ -124,8 +128,12 @@ async function initDatabase() {
     await loadDbStats();
     await checkDbFiles();
     logger.info("DbSettings", "数据库已初始化");
+    localSnackbarText.value = "数据库已初始化";
+    localSnackbar.value = true;
   } catch (e) {
     logger.error("DbSettings", "初始化失败", e);
+    localSnackbarText.value = `初始化失败: ${e}`;
+    localSnackbar.value = true;
   }
 }
 
@@ -334,6 +342,10 @@ onMounted(loadConfig);
         </v-icon>
       </v-fade-transition>
     </div>
+
+    <v-snackbar v-model="localSnackbar" :timeout="3000" location="bottom" variant="tonal">
+      {{ localSnackbarText }}
+    </v-snackbar>
   </div>
 </template>
 
