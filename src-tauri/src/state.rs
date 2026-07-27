@@ -42,7 +42,6 @@ pub struct ImageDownloaded {
 
 pub struct FileListCache {
     pub items: Vec<FileEntry>,
-    pub total: usize,
     pub source: String,
     pub dir_path: String,
     pub cached_at: Instant,
@@ -54,6 +53,7 @@ pub struct FileEntry {
     pub path: String,
     pub size: u64,
     pub is_orphan: bool,
+    pub modified: Option<std::time::SystemTime>,
 }
 
 // ---------------------------------------------------------------------------
@@ -66,6 +66,7 @@ pub struct AppState {
     pub cancel_flag: Mutex<Option<Arc<AtomicBool>>>,
     pub http_client: Mutex<reqwest::Client>,
     pub config_cache: Mutex<Option<AppConfig>>,
+    pub slideshow_cancel: Mutex<Option<Arc<AtomicBool>>>,
 }
 
 // ---------------------------------------------------------------------------
@@ -260,10 +261,16 @@ pub fn setup_cancel_flag(state: &AppState) -> Arc<AtomicBool> {
     flag
 }
 
-pub fn rebuild_http_client(state: &AppState, timeout_secs: u64) -> Result<(), String> {
-    let new_client = reqwest::Client::builder()
+pub fn rebuild_http_client(state: &AppState, timeout_secs: u64, proxy_url: &str) -> Result<(), String> {
+    let mut builder = reqwest::Client::builder()
         .user_agent("RustWallhub/1.0")
-        .timeout(Duration::from_secs(timeout_secs))
+        .timeout(Duration::from_secs(timeout_secs));
+    if !proxy_url.is_empty() {
+        builder = builder
+            .proxy(reqwest::Proxy::all(proxy_url).map_err(|e| format!("代理设置失败: {e}"))?);
+        log::info!("[http] 使用代理: {}", proxy_url);
+    }
+    let new_client = builder
         .build()
         .map_err(|e| format!("创建 HTTP client 失败: {e}"))?;
     if let Ok(mut client) = state.http_client.lock() {

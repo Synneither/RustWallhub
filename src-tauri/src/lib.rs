@@ -15,7 +15,7 @@ use std::path::PathBuf;
 use std::sync::Mutex;
 use std::time::Duration;
 use tauri::Manager;
-use wallpaper::set_wallpaper;
+use wallpaper::{set_wallpaper, start_slideshow, stop_slideshow, is_slideshow_running, list_monitors};
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -77,9 +77,18 @@ pub fn run() {
                 log::error!("[startup] 初始化 reddit DB 失败: {e}");
             }
 
-            let client = reqwest::Client::builder()
+            let mut client_builder = reqwest::Client::builder()
                 .user_agent("RustWallhub/1.0")
-                .timeout(Duration::from_secs(config.request_timeout))
+                .timeout(Duration::from_secs(config.request_timeout));
+            if !config.proxy_url.is_empty() {
+                if let Ok(proxy) = reqwest::Proxy::all(&config.proxy_url) {
+                    client_builder = client_builder.proxy(proxy);
+                    log::info!("[startup] 使用代理: {}", config.proxy_url);
+                } else {
+                    log::warn!("[startup] 代理设置失败: {}", config.proxy_url);
+                }
+            }
+            let client = client_builder
                 .build()
                 .expect("创建 HTTP client 失败");
 
@@ -91,6 +100,7 @@ pub fn run() {
                 cancel_flag: Mutex::new(None),
                 http_client: Mutex::new(client),
                 config_cache: Mutex::new(Some(config)),
+                slideshow_cancel: Mutex::new(None),
             });
 
             if auto_update {
@@ -129,6 +139,7 @@ pub fn run() {
             delete_orphan_file,
             adopt_orphan_files,
             clean_thumbnails,
+            get_image_info,
             // database
             list_database_images,
             list_orphan_files,
@@ -141,6 +152,10 @@ pub fn run() {
             scan_directory,
             // wallpaper (from wallpaper module)
             set_wallpaper,
+            start_slideshow,
+            stop_slideshow,
+            is_slideshow_running,
+            list_monitors,
         ])
         .run(tauri::generate_context!())
         .expect("运行 Tauri 应用时出错");

@@ -68,7 +68,7 @@ pub async fn save_settings(
     std::fs::create_dir_all(std::path::Path::new(&config.db_dir)).ok();
     db::init_wallhaven_db(&config.wallhaven_db_path).ok();
     db::init_reddit_db(&config.reddit_db_path).ok();
-    let _ = rebuild_http_client(&state, config.request_timeout);
+    let _ = rebuild_http_client(&state, config.request_timeout, &config.proxy_url);
     let _ = app.emit("settings-changed", ());
     log::info!("[CMD] save_settings done");
     Ok(())

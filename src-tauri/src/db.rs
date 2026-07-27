@@ -526,6 +526,58 @@ pub fn get_all_filenames(db_path: &str) -> SqlResult<Vec<String>> {
     Ok(names)
 }
 
+/// Query a single image record by filename from the Wallhaven DB.
+pub fn get_wallhaven_image_by_name(db_path: &str, name: &str) -> SqlResult<Option<ImageRecord>> {
+    let conn = open(db_path)?;
+    let mut stmt = conn.prepare(
+        "SELECT id, name, hash, url, COALESCE(source_url, ''), COALESCE(resolution, 'unknown'), COALESCE(love, 1), COALESCE(created_at, '') FROM images WHERE name = ?1 LIMIT 1",
+    )?;
+    let mut images = stmt
+        .query_map(rusqlite::params![name], |row| {
+            Ok(ImageRecord {
+                id: row.get(0)?,
+                name: row.get(1)?,
+                hash: row.get(2)?,
+                url: row.get(3)?,
+                source_url: row.get(4)?,
+                resolution: row.get(5)?,
+                title: None,
+                permalink: None,
+                love: row.get(6)?,
+                created_at: row.get(7)?,
+                source: "wallhaven".to_string(),
+            })
+        })?
+        .collect::<SqlResult<Vec<_>>>()?;
+    Ok(images.pop())
+}
+
+/// Query a single image record by filename from the Reddit DB.
+pub fn get_reddit_image_by_name(db_path: &str, name: &str) -> SqlResult<Option<ImageRecord>> {
+    let conn = open(db_path)?;
+    let mut stmt = conn.prepare(
+        "SELECT id, name, hash, url, COALESCE(title, ''), COALESCE(permalink, ''), COALESCE(love, 1), COALESCE(created_at, '') FROM images WHERE name = ?1 LIMIT 1",
+    )?;
+    let mut images = stmt
+        .query_map(rusqlite::params![name], |row| {
+            Ok(ImageRecord {
+                id: row.get(0)?,
+                name: row.get(1)?,
+                hash: row.get(2)?,
+                url: row.get(3)?,
+                source_url: String::new(),
+                resolution: String::new(),
+                title: row.get(4).ok(),
+                permalink: row.get(5).ok(),
+                love: row.get(6)?,
+                created_at: row.get(7)?,
+                source: "reddit".to_string(),
+            })
+        })?
+        .collect::<SqlResult<Vec<_>>>()?;
+    Ok(images.pop())
+}
+
 pub fn get_reddit_missing_love(db_path: &str) -> SqlResult<Vec<ImageRecord>> {
     let conn = open(db_path)?;
     let mut stmt = conn.prepare(

@@ -28,6 +28,7 @@ interface AppConfig {
   thumbnail_dpr: number;
   request_timeout: number;
   auto_update: boolean;
+  proxy_url: string;
 }
 
 const config = ref<AppConfig | null>(null);
@@ -119,6 +120,7 @@ async function loadConfig() {
       thumbnail_dpr: 2,
       request_timeout: 30,
       auto_update: true,
+      proxy_url: "",
     };
   }
 }
@@ -350,6 +352,17 @@ onUnmounted(() => {
                 persistent-hint
                 :rules="[timeoutRule]"
                 class="settings-field"
+              />
+            </v-col>
+            <v-col cols="12" sm="12" md="4">
+              <v-text-field
+                v-model="config.proxy_url"
+                label="HTTP 代理地址"
+                hint="例如 http://127.0.0.1:7890，留空不使用代理"
+                persistent-hint
+                placeholder="http://127.0.0.1:7890"
+                class="settings-field"
+                append-inner-icon="mdi-lan-connect"
               />
             </v-col>
           </v-row>

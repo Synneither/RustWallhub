@@ -28,6 +28,7 @@ pub struct LocalImageEntry {
     pub thumb_path: Option<String>,
     pub size: u64,
     pub is_orphan: bool,
+    pub modified_date: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -47,6 +48,23 @@ pub struct CleanThumbnailsResult {
     pub reddit: u64,
 }
 
+#[derive(Serialize)]
+pub struct ImageInfo {
+    pub name: String,
+    pub path: String,
+    pub size: u64,
+    pub resolution: Option<String>,
+    pub format: Option<String>,
+    pub width: Option<u32>,
+    pub height: Option<u32>,
+    pub source_url: Option<String>,
+    pub download_url: Option<String>,
+    pub title: Option<String>,
+    pub permalink: Option<String>,
+    pub source: Option<String>,
+    pub created_at: Option<String>,
+}
+
 // ---------------------------------------------------------------------------
 // Commands
 // ---------------------------------------------------------------------------
@@ -58,13 +76,17 @@ pub async fn browse_image_files(
     offset: usize,
     limit: usize,
     custom_dir: Option<String>,
+    search: Option<String>,
+    sort_by: Option<String>,
 ) -> Result<LocalImageList, AppError> {
     log::info!(
-        "[CMD] browse_image_files: source={:?}, offset={}, limit={}, custom_dir={:?}",
+        "[CMD] browse_image_files: source={:?}, offset={}, limit={}, custom_dir={:?}, search={:?}, sort_by={:?}",
         source,
         offset,
         limit,
-        custom_dir
+        custom_dir,
+        search,
+        sort_by
     );
     let config = crate::state::load_config(&state)?;
     let dir = if let Some(ref custom) = custom_dir {
@@ -81,6 +103,9 @@ pub async fn browse_image_files(
         });
     }
 
+    let search_query = search.unwrap_or_default().trim().to_lowercase();
+    let sort = sort_by.unwrap_or_else(|| "default".to_string());
+
     {
         if let Ok(cache) = state.file_cache.lock() {
             if let Some(ref cached) = *cache {
@@ -89,22 +114,19 @@ pub async fn browse_image_files(
                     && cached.dir_path == dir
                     && cached.cached_at.elapsed().as_secs() < 30
                 {
-                    let page_start = offset.min(cached.total);
-                    let page_end = (page_start + limit).min(cached.total);
-                    let images = cached.items[page_start..page_end]
+                    let mut filtered = cached.items.clone();
+                    if !search_query.is_empty() {
+                        filtered.retain(|e| e.name.to_lowercase().contains(&search_query));
+                    }
+                    apply_sort(&mut filtered, &sort);
+                    let total = filtered.len();
+                    let page_start = offset.min(total);
+                    let page_end = (page_start + limit).min(total);
+                    let images = filtered[page_start..page_end]
                         .iter()
-                        .map(|e| LocalImageEntry {
-                            name: e.name.clone(),
-                            path: e.path.clone(),
-                            thumb_path: None,
-                            size: e.size,
-                            is_orphan: e.is_orphan,
-                        })
+                        .map(|e| file_entry_to_image(e))
                         .collect();
-                    return Ok(LocalImageList {
-                        images,
-                        total: cached.total,
-                    });
+                    return Ok(LocalImageList { images, total });
                 }
             }
         }
@@ -135,42 +157,36 @@ pub async fn browse_image_files(
             let file_path = entry.path();
             if file_path.is_file() && downloader::file_is_image(&file_path) {
                 let name = entry.file_name().to_string_lossy().to_string();
+                // Apply search filter early to avoid unnecessary metadata reads
+                if !search_query.is_empty() && !name.to_lowercase().contains(&search_query) {
+                    continue;
+                }
+                let metadata = entry.metadata().ok();
                 let is_orphan = !db_names.contains(&name);
                 entries.push(FileEntry {
                     name,
                     path: file_path.to_string_lossy().to_string(),
-                    size: entry.metadata().map_or(0, |m| m.len()),
+                    size: metadata.as_ref().map_or(0, |m| m.len()),
                     is_orphan,
+                    modified: metadata.and_then(|m| m.modified().ok()),
                 });
             }
         }
     }
 
-    entries.sort_by(|a, b| {
-        a.is_orphan
-            .cmp(&b.is_orphan)
-            .reverse()
-            .then(b.name.cmp(&a.name))
-    });
+    apply_sort(&mut entries, &sort);
     let total = entries.len();
 
     let page_start = offset.min(total);
     let page_end = (page_start + limit).min(total);
     let images = entries[page_start..page_end]
         .iter()
-        .map(|e| LocalImageEntry {
-            name: e.name.clone(),
-            path: e.path.clone(),
-            thumb_path: None,
-            size: e.size,
-            is_orphan: e.is_orphan,
-        })
+        .map(|e| file_entry_to_image(e))
         .collect();
 
     {
         if let Ok(mut cache) = state.file_cache.lock() {
             *cache = Some(FileListCache {
-                total,
                 source: source.to_string(),
                 dir_path: dir,
                 items: entries,
@@ -180,6 +196,54 @@ pub async fn browse_image_files(
     }
 
     Ok(LocalImageList { images, total })
+}
+
+fn apply_sort(entries: &mut [FileEntry], sort_by: &str) {
+    match sort_by {
+        "name_asc" => entries.sort_by(|a, b| a.name.cmp(&b.name)),
+        "name_desc" => entries.sort_by(|a, b| b.name.cmp(&a.name)),
+        "size_asc" => entries.sort_by(|a, b| a.size.cmp(&b.size)),
+        "size_desc" => entries.sort_by(|a, b| b.size.cmp(&a.size)),
+        "date_desc" => entries.sort_by(|a, b| b.modified.cmp(&a.modified)),
+        "date_asc" => entries.sort_by(|a, b| a.modified.cmp(&b.modified)),
+        _ => {
+            // default: orphans first, then by name desc
+            entries.sort_by(|a, b| {
+                a.is_orphan
+                    .cmp(&b.is_orphan)
+                    .reverse()
+                    .then(b.name.cmp(&a.name))
+            });
+        }
+    }
+}
+
+fn file_entry_to_image(e: &FileEntry) -> LocalImageEntry {
+    let modified_date = e.modified.and_then(|t| {
+        t.duration_since(std::time::UNIX_EPOCH)
+            .ok()
+            .map(|d| {
+                let secs = d.as_secs();
+                let days = secs / 86400;
+                let remainder = secs % 86400;
+                let h = remainder / 3600;
+                let m = (remainder % 3600) / 60;
+                let s = remainder % 60;
+                format!("{:04}-{:02}-{:02} {:02}:{:02}:{:02}",
+                    1970 + (days / 365),
+                    1 + ((days % 365) / 30),
+                    1 + (days % 30),
+                    h, m, s)
+            })
+    });
+    LocalImageEntry {
+        name: e.name.clone(),
+        path: e.path.clone(),
+        thumb_path: None,
+        size: e.size,
+        is_orphan: e.is_orphan,
+        modified_date,
+    }
 }
 
 #[tauri::command]
@@ -414,5 +478,106 @@ pub async fn clean_thumbnails(
     Ok(CleanThumbnailsResult {
         wallhaven: wh_cleaned,
         reddit: rd_cleaned,
+    })
+}
+
+#[tauri::command]
+pub async fn get_image_info(
+    state: tauri::State<'_, AppState>,
+    source: Source,
+    name: String,
+) -> Result<ImageInfo, AppError> {
+    log::info!("[CMD] get_image_info: source={:?}, name={}", source, name);
+    let config = crate::state::load_config(&state)?;
+    let save_dir = config.save_dir_for(source);
+    let file_path = state::safe_join(std::path::Path::new(&save_dir), &name)?;
+
+    let size = std::fs::metadata(&file_path).map(|m| m.len()).unwrap_or(0);
+
+    // Try reading image dimensions/format via the `image` crate
+    let (width, height, format) = match std::fs::read(&file_path) {
+        Ok(bytes) => {
+            let reader = image::ImageReader::new(std::io::Cursor::new(bytes))
+                .with_guessed_format();
+            match reader {
+                Ok(reader) => {
+                    let fmt = reader.format().map(|f| format!("{:?}", f));
+                    match reader.into_dimensions() {
+                        Ok((w, h)) => (Some(w), Some(h), fmt),
+                        Err(e) => {
+                            log::warn!("[get_image_info] failed to read dimensions: {}", e);
+                            (None, None, fmt)
+                        }
+                    }
+                }
+                Err(e) => {
+                    log::warn!("[get_image_info] failed to guess format: {}", e);
+                    (None, None, None)
+                }
+            }
+        }
+        Err(e) => {
+            log::warn!("[get_image_info] failed to read file: {}", e);
+            (None, None, None)
+        }
+    };
+
+    // Query the DB for metadata
+    let db_path = config.db_path_for(source);
+    let db_record = match source {
+        Source::Wallhaven => db::get_wallhaven_image_by_name(db_path, &name)?,
+        Source::Reddit => db::get_reddit_image_by_name(db_path, &name)?,
+        Source::All => {
+            // Try wallhaven first, then reddit
+            db::get_wallhaven_image_by_name(db_path, &name)?
+                .or_else(|| db::get_reddit_image_by_name(&config.reddit_db_path, &name).ok().flatten())
+        }
+    };
+
+    let (source_url, download_url, title, permalink, created_at, resolution) = match db_record {
+        Some(rec) => {
+            let res = if rec.resolution.is_empty() || rec.resolution == "unknown" {
+                if let (Some(w), Some(h)) = (width, height) {
+                    Some(format!("{}x{}", w, h))
+                } else {
+                    None
+                }
+            } else {
+                Some(rec.resolution)
+            };
+            (
+                if rec.source_url.is_empty() { None } else { Some(rec.source_url) },
+                Some(rec.url),
+                rec.title,
+                rec.permalink,
+                if rec.created_at.is_empty() { None } else { Some(rec.created_at) },
+                res,
+            )
+        }
+        None => {
+            // Orphan file — derive resolution from image dimensions
+            let res = if let (Some(w), Some(h)) = (width, height) {
+                Some(format!("{}x{}", w, h))
+            } else {
+                None
+            };
+            (None, None, None, None, None, res)
+        }
+    };
+
+    Ok(ImageInfo {
+        name: name.clone(),
+        path: file_path.to_string_lossy().to_string(),
+        size,
+        resolution,
+        format,
+        width,
+        height,
+        source_url,
+        download_url,
+        title,
+        permalink,
+        source: Some(source.to_string()),
+        created_at,
     })
 }

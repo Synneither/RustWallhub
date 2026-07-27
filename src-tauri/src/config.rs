@@ -71,6 +71,9 @@ pub struct AppConfig {
     /// 启动时自动检查应用更新
     #[serde(default = "default_auto_update")]
     pub auto_update: bool,
+    /// HTTP/HTTPS 代理地址 (例如 "http://127.0.0.1:7890", 空字符串表示不使用代理)
+    #[serde(default)]
+    pub proxy_url: String,
 }
 
 fn default_reddit_url() -> String {
@@ -232,6 +235,7 @@ impl Default for AppConfig {
             thumbnail_dpr: 2,
             request_timeout: 30,
             auto_update: true,
+            proxy_url: String::new(),
         }
     }
 }
