@@ -97,6 +97,7 @@ pub fn run() {
             save_settings,
             get_stats,
             check_update,
+            install_update,
             // wallhaven
             search_wallhaven,
             start_wallhaven_download,

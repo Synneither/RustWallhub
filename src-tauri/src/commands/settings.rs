@@ -22,6 +22,12 @@ pub struct UpdateInfo {
     pub date: Option<String>,
 }
 
+#[derive(Serialize, Clone)]
+pub struct UpdateProgress {
+    pub downloaded: u64,
+    pub total: Option<u64>,
+}
+
 #[tauri::command]
 pub async fn get_config(state: tauri::State<'_, AppState>) -> Result<AppConfig, AppError> {
     log::info!("[CMD] get_config called");
@@ -127,6 +133,54 @@ pub async fn check_update(app: tauri::AppHandle) -> Result<UpdateInfo, String> {
             date: None,
         })
     })
+}
+
+/// Downloads and installs the latest update, then restarts the app.
+/// Emits `update-progress` (with `UpdateProgress`) during download and
+/// `update-installing` when the download finishes and installation begins.
+#[tauri::command]
+pub async fn install_update(app: tauri::AppHandle) -> Result<(), String> {
+    log::info!("[CMD] install_update called");
+    let updater = app
+        .updater()
+        .map_err(|e| format!("初始化 updater 失败: {e}"))?;
+    match updater
+        .check()
+        .await
+        .map_err(|e| format!("检查更新失败: {e}"))?
+    {
+        Some(update) => {
+            log::info!("[updater] 开始下载安装更新: v{}", update.version);
+            let app_for_progress = app.clone();
+            let app_for_finish = app.clone();
+            let mut downloaded: u64 = 0;
+
+            update
+                .download_and_install(
+                    move |chunk_len, content_length| {
+                        downloaded += chunk_len as u64;
+                        let _ = app_for_progress.emit(
+                            "update-progress",
+                            UpdateProgress {
+                                downloaded,
+                                total: content_length,
+                            },
+                        );
+                    },
+                    move || {
+                        let _ = app_for_finish.emit("update-installing", ());
+                    },
+                )
+                .await
+                .map_err(|e| format!("下载安装失败: {e}"))?;
+
+            log::info!("[updater] 更新安装完成，正在重启...");
+            app.restart();
+            #[allow(unreachable_code)]
+            Ok(())
+        }
+        None => Err("没有可用的更新".into()),
+    }
 }
 
 /// Called from `lib.rs` setup to perform delayed auto-update check on startup.

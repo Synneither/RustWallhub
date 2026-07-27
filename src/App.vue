@@ -148,6 +148,13 @@ onMounted(async () => {
   });
 });
 
+function goToSettings() {
+  currentView.value = "settings";
+  drawer.value = true;
+  rail.value = false;
+  snackbar.value = false;
+}
+
 onUnmounted(() => {
   if (unlistenProgress) unlistenProgress();
   if (unlistenComplete) unlistenComplete();
@@ -339,8 +346,26 @@ async function runAction(fn: () => Promise<unknown>) {
       </div>
     </v-main>
 
-    <v-snackbar v-model="snackbar" :timeout="3000" location="bottom" class="ark-snackbar">
+    <v-snackbar v-model="snackbar" :timeout="snackbarText.includes('发现新版本') ? -1 : 3000" location="bottom" class="ark-snackbar">
       {{ snackbarText }}
+      <template v-slot:actions>
+        <v-btn
+          v-if="snackbarText.includes('发现新版本')"
+          color="primary"
+          variant="text"
+          size="small"
+          @click="goToSettings"
+        >
+          前往设置
+        </v-btn>
+        <v-btn
+          variant="text"
+          size="small"
+          @click="snackbar = false"
+        >
+          关闭
+        </v-btn>
+      </template>
     </v-snackbar>
 
     <div class="visually-hidden" aria-live="polite" aria-atomic="true">

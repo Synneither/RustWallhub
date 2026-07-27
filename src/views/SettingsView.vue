@@ -1,6 +1,7 @@
 <script setup lang="ts">
-import { ref, onMounted } from "vue";
+import { ref, onMounted, onUnmounted } from "vue";
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
 import { VForm } from "vuetify/components";
 import { logger } from "../utils/logger";
@@ -37,6 +38,18 @@ const formValid = ref(false);
 const formRef = ref<VForm | null>(null);
 const checkingUpdate = ref(false);
 const updateInfo = ref<{ has_update: boolean; version: string; current_version: string; body?: string; date?: string } | null>(null);
+const installing = ref(false);
+const updateProgress = ref<{ downloaded: number; total: number | null } | null>(null);
+const updateStatus = ref<"idle" | "downloading" | "installing" | "error">("idle");
+const updateError = ref("");
+let unlistenUpdateProgress: (() => void) | null = null;
+let unlistenUpdateInstalling: (() => void) | null = null;
+
+function formatBytes(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
 
 const requiredRule = (v: string) => !!v || '此项不能为空';
 const positiveInt = (v: number) => {
@@ -144,7 +157,39 @@ async function checkUpdate() {
   checkingUpdate.value = false;
 }
 
-onMounted(loadConfig);
+async function installUpdate() {
+  installing.value = true;
+  updateStatus.value = "downloading";
+  updateProgress.value = null;
+  updateError.value = "";
+  logger.action("Settings", "下载并安装更新");
+  try {
+    await invoke("install_update");
+    // App will restart; code below may not execute on Windows
+  } catch (e) {
+    logger.error("Settings", "更新安装失败", e);
+    updateStatus.value = "error";
+    updateError.value = String(e);
+  }
+}
+
+onMounted(async () => {
+  loadConfig();
+  unlistenUpdateProgress = await listen<{ downloaded: number; total: number | null }>(
+    "update-progress",
+    (e) => {
+      updateProgress.value = e.payload;
+    },
+  );
+  unlistenUpdateInstalling = await listen("update-installing", () => {
+    updateStatus.value = "installing";
+  });
+});
+
+onUnmounted(() => {
+  if (unlistenUpdateProgress) unlistenUpdateProgress();
+  if (unlistenUpdateInstalling) unlistenUpdateInstalling();
+});
 </script>
 
 <template>
@@ -370,11 +415,57 @@ onMounted(loadConfig);
                 class="mt-2"
               >
                 <template v-if="updateInfo.has_update">
-                  发现新版本 <strong>{{ updateInfo.version }}</strong>（当前 {{ updateInfo.current_version }}）
+                  <div class="d-flex align-center justify-space-between flex-wrap gap-2">
+                    <span>发现新版本 <strong>{{ updateInfo.version }}</strong>（当前 {{ updateInfo.current_version }}）</span>
+                    <v-btn
+                      v-if="!installing"
+                      variant="flat"
+                      size="small"
+                      color="primary"
+                      @click="installUpdate"
+                    >
+                      <v-icon start size="16">mdi-download</v-icon>
+                      立即更新
+                    </v-btn>
+                  </div>
                 </template>
                 <template v-else>
                   当前已是最新版本 <strong>{{ updateInfo.current_version }}</strong>
                 </template>
+              </v-alert>
+
+              <!-- Download progress -->
+              <div v-if="installing && updateStatus === 'downloading'" class="mt-3">
+                <div class="d-flex align-center justify-space-between mb-1">
+                  <span class="text-caption text-secondary">
+                    <v-icon size="14" class="me-1">mdi-download</v-icon>
+                    正在下载更新...
+                  </span>
+                  <span class="text-caption text-secondary" v-if="updateProgress">
+                    {{ formatBytes(updateProgress.downloaded) }}{{ updateProgress.total ? ' / ' + formatBytes(updateProgress.total) : '' }}
+                  </span>
+                </div>
+                <v-progress-linear
+                  :model-value="updateProgress && updateProgress.total ? (updateProgress.downloaded / updateProgress.total) * 100 : 0"
+                  color="primary"
+                  height="6"
+                  rounded
+                  :indeterminate="!updateProgress || !updateProgress.total"
+                />
+              </div>
+
+              <!-- Installing -->
+              <v-alert v-if="installing && updateStatus === 'installing'" type="info" variant="tonal" density="compact" class="mt-2">
+                <v-icon size="16" class="me-1 animate-spin">mdi-cog</v-icon>
+                下载完成，正在安装更新，应用将自动重启...
+              </v-alert>
+
+              <!-- Error -->
+              <v-alert v-if="updateStatus === 'error'" type="error" variant="tonal" density="compact" class="mt-2">
+                更新失败：{{ updateError }}
+                <v-btn variant="text" size="x-small" color="error" class="ms-2" @click="installing = false; updateStatus = 'idle'">
+                  重试
+                </v-btn>
               </v-alert>
             </v-col>
           </v-row>
@@ -453,6 +544,14 @@ onMounted(loadConfig);
 }
 .adv-header-icon {
   background: rgba(201,169,78,0.15);
+}
+
+.animate-spin {
+  animation: spin 1.5s linear infinite;
+}
+@keyframes spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
 }
 
 </style>
