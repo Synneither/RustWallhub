@@ -117,6 +117,7 @@ mod win_monitors {
 #[cfg(not(target_os = "windows"))]
 mod win_monitors {
     use super::MonitorInfo;
+    use std::process::Command;
 
     pub fn list_monitors() -> Vec<MonitorInfo> {
         // Linux: try xrandr or hyprctl
