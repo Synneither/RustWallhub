@@ -124,7 +124,7 @@ pub async fn browse_image_files(
                     let page_end = (page_start + limit).min(total);
                     let images = filtered[page_start..page_end]
                         .iter()
-                        .map(|e| file_entry_to_image(e))
+                        .map(file_entry_to_image)
                         .collect();
                     return Ok(LocalImageList { images, total });
                 }
@@ -181,7 +181,7 @@ pub async fn browse_image_files(
     let page_end = (page_start + limit).min(total);
     let images = entries[page_start..page_end]
         .iter()
-        .map(|e| file_entry_to_image(e))
+        .map(file_entry_to_image)
         .collect();
 
     {
@@ -199,13 +199,14 @@ pub async fn browse_image_files(
 }
 
 fn apply_sort(entries: &mut [FileEntry], sort_by: &str) {
+    use std::cmp::Reverse;
     match sort_by {
-        "name_asc" => entries.sort_by(|a, b| a.name.cmp(&b.name)),
-        "name_desc" => entries.sort_by(|a, b| b.name.cmp(&a.name)),
-        "size_asc" => entries.sort_by(|a, b| a.size.cmp(&b.size)),
-        "size_desc" => entries.sort_by(|a, b| b.size.cmp(&a.size)),
-        "date_desc" => entries.sort_by(|a, b| b.modified.cmp(&a.modified)),
-        "date_asc" => entries.sort_by(|a, b| a.modified.cmp(&b.modified)),
+        "name_asc" => entries.sort_by_key(|e| e.name.clone()),
+        "name_desc" => entries.sort_by_key(|e| Reverse(e.name.clone())),
+        "size_asc" => entries.sort_by_key(|e| e.size),
+        "size_desc" => entries.sort_by_key(|e| Reverse(e.size)),
+        "date_desc" => entries.sort_by_key(|e| e.modified),
+        "date_asc" => entries.sort_by_key(|e| Reverse(e.modified)),
         _ => {
             // default: orphans first, then by name desc
             entries.sort_by(|a, b| {

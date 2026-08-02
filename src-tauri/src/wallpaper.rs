@@ -26,6 +26,7 @@ pub struct MonitorInfo {
 // ---------------------------------------------------------------------------
 
 #[cfg(target_os = "windows")]
+#[allow(clippy::upper_case_acronyms)] // Win32/COM 类型别名保持官方命名（HDC/HRESULT/PCWSTR）
 mod win_monitors {
     use super::MonitorInfo;
 
@@ -142,7 +143,7 @@ mod win_monitors {
                             Some(MonitorInfo {
                                 id: name.clone(),
                                 name,
-                                is_primary: parts.get(0).map_or(false, |s| s.contains('*')),
+                                is_primary: parts.first().is_some_and(|s| s.contains('*')),
                                 width: dims.map(|(w, _)| w).unwrap_or(0),
                                 height: dims.map(|(_, h)| h).unwrap_or(0),
                             })
@@ -191,6 +192,7 @@ fn url_escape_path(path: &str) -> String {
 // ---------------------------------------------------------------------------
 
 #[cfg(target_os = "windows")]
+#[allow(clippy::upper_case_acronyms)] // COM 类型别名保持官方命名（HRESULT/PCWSTR 等）
 mod com_wallpaper {
     use std::os::windows::ffi::OsStrExt;
     use std::ptr;
@@ -698,7 +700,7 @@ pub(crate) async fn list_monitors() -> Result<Vec<MonitorInfo>, AppError> {
                 .collect();
         }
         log::info!("[list_monitors] found {} monitors", monitors.len());
-        return Ok(monitors);
+        Ok(monitors)
     }
 
     #[cfg(not(target_os = "windows"))]
