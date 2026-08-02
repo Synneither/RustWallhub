@@ -1,580 +1,346 @@
 <script setup lang="ts">
-import { ref, onMounted, onUnmounted } from "vue";
-import { invoke } from "@tauri-apps/api/core";
-import { listen } from "@tauri-apps/api/event";
-import { open } from "@tauri-apps/plugin-dialog";
-import { VForm } from "vuetify/components";
-import { logger } from "../utils/logger";
+import { computed, onMounted, reactive, ref } from "vue";
+import { open as openDialog } from "@tauri-apps/plugin-dialog";
+import type { AppConfig } from "../types";
+import { checkUpdate, installUpdate, saveSettings } from "../utils/api";
+import { appState, askConfirm, dbReady, ensureDatabases, toast, toastError } from "../stores/app";
+import { positiveInt, requiredRule } from "../utils/rules";
+import { useTheme, type Theme } from "../stores/theme";
+import { formatBytes } from "../utils/format";
 
-interface AppConfig {
-  wallhaven_save_dir: string;
-  reddit_save_dir: string;
-  db_dir: string;
-  wallhaven_db_path: string;
-  reddit_db_path: string;
-  wallhaven_api_key: string;
-  wallhaven_categories: string;
-  wallhaven_purity: string;
-  wallhaven_sorting: string;
-  wallhaven_top_range: string;
-  wallhaven_atleast: string;
-  wallhaven_ratios: string;
-  wallhaven_max_images: number;
-  reddit_url: string;
-  reddit_max_posts: number;
-  reddit_max_images: number;
-  thumbnails_dir: string;
-  download_concurrency: number;
-  thumbnail_dpr: number;
-  request_timeout: number;
-  auto_update: boolean;
-  proxy_url: string;
-}
+const { theme, set: setTheme, resetToSystem } = useTheme();
+const themeChoice = ref<"system" | Theme>("system");
 
-const config = ref<AppConfig | null>(null);
-const configError = ref("");
-const saving = ref(false);
-const saved = ref(false);
-const formValid = ref(false);
-const formRef = ref<VForm | null>(null);
-const localSnackbar = ref(false);
-const localSnackbarText = ref("");
-const checkingUpdate = ref(false);
-const updateInfo = ref<{ has_update: boolean; version: string; current_version: string; body?: string; date?: string } | null>(null);
-const installing = ref(false);
-const updateProgress = ref<{ downloaded: number; total: number | null } | null>(null);
-const updateStatus = ref<"idle" | "downloading" | "installing" | "error">("idle");
-const updateError = ref("");
-let unlistenUpdateProgress: (() => void) | null = null;
-let unlistenUpdateInstalling: (() => void) | null = null;
+const draft = reactive({
+  wallhaven_save_dir: "",
+  reddit_save_dir: "",
+  thumbnails_dir: "",
+  download_concurrency: 6,
+  request_timeout: 30,
+  thumbnail_dpr: 2,
+  proxy_url: "",
+  auto_update: true,
+});
 
-function formatBytes(bytes: number): string {
-  if (bytes < 1024) return `${bytes} B`;
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
-}
+onMounted(() => {
+  const c = appState.config;
+  if (!c) return;
+  draft.wallhaven_save_dir = c.wallhaven_save_dir;
+  draft.reddit_save_dir = c.reddit_save_dir;
+  draft.thumbnails_dir = c.thumbnails_dir;
+  draft.download_concurrency = c.download_concurrency;
+  draft.request_timeout = c.request_timeout;
+  draft.thumbnail_dpr = c.thumbnail_dpr;
+  draft.proxy_url = c.proxy_url;
+  draft.auto_update = c.auto_update;
+});
 
-const requiredRule = (v: string) => !!v || '此项不能为空';
-const positiveInt = (v: number) => {
-  if (v === undefined || v === null || v === 0) return true; // 0 = 无限制
-  if (typeof v !== 'number' || isNaN(v)) return '请输入有效数字';
-  if (v < 1) return '不能小于 1';
-  if (v > 100) return '不能超过 100';
-  return true;
-};
-const dprRule = (v: number) => {
-  if (v === undefined || v === null) return true;
-  const allowed = [1, 2, 3];
-  if (!allowed.includes(v)) return '仅支持 1、2、3';
-  return true;
-};
-const timeoutRule = (v: number) => {
-  if (!v) return '请输入超时秒数';
-  if (v < 5) return '不能低于 5 秒';
-  if (v > 120) return '不能超过 120 秒';
-  return true;
-};
-
-async function selectDirectory(field: keyof AppConfig) {
+async function pickDir(field: "wallhaven_save_dir" | "reddit_save_dir" | "thumbnails_dir") {
   try {
-    const selected = await open({
-      directory: true,
-      multiple: false,
-      title: "选择目录",
-    });
-    if (selected && config.value) {
-      (config.value as any)[field] = selected;
+    const selected = await openDialog({ directory: true, defaultPath: draft[field] || undefined });
+    if (typeof selected === "string") draft[field] = selected;
+  } catch (e) {
+    toastError(e);
+  }
+}
+
+/* ── 保存 ── */
+const saving = ref(false);
+const savedFlash = ref(false);
+
+async function onSave() {
+  if (!appState.config || saving.value) return;
+  saving.value = true;
+  try {
+    const next: AppConfig = { ...appState.config, ...draft };
+    await saveSettings(next);
+    appState.config = next;
+    savedFlash.value = true;
+    window.setTimeout(() => (savedFlash.value = false), 1500);
+    toast("设置已保存", "success");
+    // save_settings 只建目录不建库：保存后若库缺失，引导初始化
+    if (!dbReady.value) {
+      const ok = await askConfirm("初始化数据库", "数据库文件不存在，是否现在创建？", { confirmText: "创建" });
+      if (ok) {
+        const created = await ensureDatabases();
+        toast(created.length > 0 ? `已创建数据库：${created.join("、")}` : "数据库已就绪", "success");
+      }
     }
   } catch (e) {
-    logger.error("Settings", "目录选择失败", e);
+    toastError(e);
+  } finally {
+    saving.value = false;
   }
 }
 
-async function loadConfig() {
-  configError.value = "";
+/* ── 更新 ── */
+const checking = ref(false);
+const installing = ref(false);
+const checkDone = ref(false);
+
+const updateInfo = computed(() => appState.update.info);
+const updatePercent = computed(() => {
+  const u = appState.update;
+  if (!u.total || u.total <= 0) return null;
+  return Math.min(100, Math.round((u.downloaded / u.total) * 100));
+});
+
+async function onCheckUpdate() {
+  checking.value = true;
+  checkDone.value = false;
   try {
-    config.value = await invoke<AppConfig>("get_config");
-    logger.info("Settings", "配置已加载");
+    const info = await checkUpdate();
+    appState.update.info = info;
+    checkDone.value = true;
+    if (!info.has_update) toast("已是最新版本", "success");
   } catch (e) {
-    configError.value = String(e);
-    logger.error("Settings", "配置加载失败", e);
-    config.value = {
-      wallhaven_save_dir: "",
-      reddit_save_dir: "",
-      wallhaven_db_path: "",
-      reddit_db_path: "",
-      db_dir: "",
-      wallhaven_api_key: "",
-      wallhaven_categories: "010",
-      wallhaven_purity: "111",
-      wallhaven_sorting: "toplist",
-      wallhaven_top_range: "1y",
-      wallhaven_atleast: "1920x1080",
-      wallhaven_ratios: "landscape",
-      wallhaven_max_images: 100,
-      reddit_url: "",
-      reddit_max_posts: 100,
-      reddit_max_images: 100,
-      thumbnails_dir: "",
-      download_concurrency: 6,
-      thumbnail_dpr: 2,
-      request_timeout: 30,
-      auto_update: true,
-      proxy_url: "",
-    };
+    toastError(e);
+  } finally {
+    checking.value = false;
   }
 }
 
-async function saveSettings() {
-  if (!config.value) return;
-  saving.value = true;
-  saved.value = false;
-  logger.action("Settings", "保存设置");
-  try {
-    await invoke("save_settings", { config: config.value });
-    saved.value = true;
-    logger.info("Settings", "设置已保存");
-    setTimeout(() => (saved.value = false), 2000);
-  } catch (e) {
-    logger.error("Settings", "保存设置失败", e);
-    localSnackbarText.value = `保存设置失败: ${e}`;
-    localSnackbar.value = true;
-  }
-  saving.value = false;
-}
-
-async function checkUpdate() {
-  checkingUpdate.value = true;
-  updateInfo.value = null;
-  logger.action("Settings", "检查应用更新");
-  try {
-    const info = await invoke<{
-      has_update: boolean;
-      version: string;
-      current_version: string;
-      body?: string;
-      date?: string;
-    }>("check_update");
-    updateInfo.value = info;
-    logger.info("Settings", "检查更新完成", info);
-  } catch (e) {
-    logger.error("Settings", "检查更新失败", e);
-    localSnackbarText.value = `检查更新失败: ${e}`;
-    localSnackbar.value = true;
-  }
-  checkingUpdate.value = false;
-}
-
-async function installUpdate() {
+async function onInstall() {
   installing.value = true;
-  updateStatus.value = "downloading";
-  updateProgress.value = null;
-  updateError.value = "";
-  logger.action("Settings", "下载并安装更新");
+  appState.update.downloading = true;
+  appState.update.downloaded = 0;
+  appState.update.total = null;
   try {
-    await invoke("install_update");
-    // App will restart; code below may not execute on Windows
+    await installUpdate();
+    // 成功后应用会自动重启（update-installing 遮罩由全局事件驱动）
   } catch (e) {
-    logger.error("Settings", "更新安装失败", e);
-    updateStatus.value = "error";
-    updateError.value = String(e);
+    toastError(e);
+    appState.update.downloading = false;
+    installing.value = false;
   }
 }
 
-onMounted(async () => {
-  loadConfig();
-  unlistenUpdateProgress = await listen<{ downloaded: number; total: number | null }>(
-    "update-progress",
-    (e) => {
-      updateProgress.value = e.payload;
-    },
-  );
-  unlistenUpdateInstalling = await listen("update-installing", () => {
-    updateStatus.value = "installing";
-  });
-});
-
-onUnmounted(() => {
-  if (unlistenUpdateProgress) unlistenUpdateProgress();
-  if (unlistenUpdateInstalling) unlistenUpdateInstalling();
-});
+function onThemeChange(v: "system" | Theme) {
+  themeChoice.value = v;
+  if (v === "system") resetToSystem();
+  else setTheme(v);
+}
 </script>
 
 <template>
-  <div v-if="config" class="settings-root">
-    <v-alert
-      v-if="configError"
-      type="warning"
-      variant="tonal"
-      density="compact"
-      class="mb-3 animate-in"
-    >
-      <div class="d-flex align-center justify-space-between">
-        <span>配置加载失败，已使用默认设置: {{ configError }}</span>
-        <v-btn size="x-small" variant="text" color="warning" prepend-icon="mdi-refresh" @click="loadConfig">
-          重试
-        </v-btn>
-      </div>
-    </v-alert>
-    <v-form v-model="formValid" ref="formRef">
-    <v-card class="glass-card settings-card animate-in stagger-1">
-      <div class="settings-card-header wh-header-bg">
-        <div class="settings-header-icon wh-header-icon">
-          <v-icon color="#3b82f6">mdi-image-search</v-icon>
-        </div>
-        <div>
-          <div class="text-heading">Wallhaven 设置</div>
-          <div class="text-caption">保存目录与 API 配置</div>
-        </div>
-      </div>
-      <v-card-text class="pa-6 pt-4">
-        <div class="settings-group-label">下载配置</div>
-        <div class="settings-group">
-          <v-text-field
-            v-model="config.wallhaven_save_dir"
-            label="图片保存目录"
-            class="settings-field"
-            :rules="[requiredRule]"
-            append-inner-icon="mdi-folder-open"
-            @click:append-inner="selectDirectory('wallhaven_save_dir')"
-          />
-        </div>
-
-        <div class="settings-group-label">API 配置</div>
-        <div class="settings-group">
-          <v-row>
-            <v-col cols="12" sm="6" md="4">
-              <v-text-field
-                v-model="config.wallhaven_api_key"
-                label="API Key（可选）"
-                hint="提高 API 速率限制"
-                type="password"
-                class="settings-field"
-              />
-            </v-col>
-          </v-row>
-        </div>
-      </v-card-text>
-    </v-card>
-
-    <v-card class="glass-card settings-card animate-in stagger-2">
-      <div class="settings-card-header rd-header-bg">
-        <div class="settings-header-icon rd-header-icon">
-          <v-icon color="#f97316">mdi-reddit</v-icon>
-        </div>
-        <div>
-          <div class="text-heading">Reddit 设置</div>
-          <div class="text-caption">抓取配置与下载限制</div>
-        </div>
-      </div>
-      <v-card-text class="pa-6 pt-4">
-        <div class="settings-group-label">下载配置</div>
-        <div class="settings-group">
-          <v-row>
-            <v-col cols="12" sm="6">
-              <v-text-field
-                v-model="config.reddit_save_dir"
-                label="图片保存目录"
-                class="settings-field"
-                :rules="[requiredRule]"
-                append-inner-icon="mdi-folder-open"
-                @click:append-inner="selectDirectory('reddit_save_dir')"
-              />
-            </v-col>
-          </v-row>
-        </div>
-
-        <div class="settings-group-label">下载限制</div>
-        <div class="settings-group">
-          <v-row>
-            <v-col cols="12" sm="6" md="4">
-              <v-text-field
-                v-model.number="config.reddit_max_posts"
-                label="最大抓取帖子数"
-                type="number"
-                min="1"
-                max="500"
-                :rules="[positiveInt]"
-                class="settings-field"
-              />
-            </v-col>
-            <v-col cols="12" sm="6" md="4">
-              <v-text-field
-                v-model.number="config.reddit_max_images"
-                label="最大下载数量"
-                type="number"
-                min="1"
-                max="500"
-                :rules="[positiveInt]"
-                class="settings-field"
-              />
-            </v-col>
-          </v-row>
-        </div>
-      </v-card-text>
-    </v-card>
-
-    <v-card class="glass-card settings-card animate-in stagger-3">
-      <div class="settings-card-header adv-header-bg">
-        <div class="settings-header-icon adv-header-icon">
-          <v-icon color="#c9a94e">mdi-tune-variant</v-icon>
-        </div>
-        <div>
-          <div class="text-heading">高级设置</div>
-          <div class="text-caption">下载、缩略图与网络参数</div>
-        </div>
-      </div>
-      <v-card-text class="pa-6 pt-4">
-        <div class="settings-group-label">下载与网络</div>
-        <div class="settings-group">
-          <v-row>
-            <v-col cols="12" sm="6" md="4">
-              <v-text-field
-                v-model.number="config.download_concurrency"
-                label="并发下载数"
-                type="number"
-                min="1"
-                max="20"
-                hint="同时下载的文件数 (1-20)"
-                persistent-hint
-                :rules="[positiveInt]"
-                class="settings-field"
-              />
-            </v-col>
-            <v-col cols="12" sm="6" md="4">
-              <v-text-field
-                v-model.number="config.request_timeout"
-                label="请求超时(秒)"
-                type="number"
-                min="5"
-                max="120"
-                hint="单个 HTTP 请求超时 (5-120s)"
-                persistent-hint
-                :rules="[timeoutRule]"
-                class="settings-field"
-              />
-            </v-col>
-            <v-col cols="12" sm="12" md="4">
-              <v-text-field
-                v-model="config.proxy_url"
-                label="HTTP 代理地址"
-                hint="例如 http://127.0.0.1:7890，留空不使用代理"
-                persistent-hint
-                placeholder="http://127.0.0.1:7890"
-                class="settings-field"
-                append-inner-icon="mdi-lan-connect"
-              />
-            </v-col>
-          </v-row>
-        </div>
-
-        <div class="settings-group-label">缩略图</div>
-        <div class="settings-group">
-          <v-row>
-            <v-col cols="12" sm="6" md="4">
-              <v-select
-                v-model.number="config.thumbnail_dpr"
-                label="缩略图质量"
-                :items="[
-                  { title: '1x (省空间)', value: 1 },
-                  { title: '2x (推荐)', value: 2 },
-                  { title: '3x (高清)', value: 3 },
-                ]"
-                hint="质量越高占用存储越多"
-                persistent-hint
-                :rules="[dprRule]"
-                class="settings-field"
-              />
-            </v-col>
-            <v-col cols="12" sm="6" md="4">
-              <v-text-field
-                v-model="config.thumbnails_dir"
-                label="缩略图存储目录"
-                hint="留空使用默认缓存路径"
-                persistent-hint
-                class="settings-field"
-                append-inner-icon="mdi-folder-open"
-                @click:append-inner="selectDirectory('thumbnails_dir')"
-              />
-            </v-col>
-          </v-row>
-        </div>
-
-        <div class="settings-group-label">应用更新</div>
-        <div class="settings-group">
-          <v-row align="center">
-            <v-col cols="12" sm="6">
-              <v-switch
-                v-model="config.auto_update"
-                label="启动时自动检查更新"
-                color="primary"
-                hide-details
-                class="settings-field"
-              />
-            </v-col>
-            <v-col cols="12" sm="6" class="d-flex align-center">
-              <v-btn
-                variant="tonal"
-                size="small"
-                color="primary"
-                :loading="checkingUpdate"
-                @click="checkUpdate"
-              >
-                <v-icon start size="16">mdi-update</v-icon>
-                立即检查
-              </v-btn>
-            </v-col>
-          </v-row>
-          <v-row v-if="updateInfo">
-            <v-col cols="12">
-              <v-alert
-                :type="updateInfo.has_update ? 'info' : 'success'"
-                variant="tonal"
-                density="compact"
-                class="mt-2"
-              >
-                <template v-if="updateInfo.has_update">
-                  <div class="d-flex align-center justify-space-between flex-wrap gap-2">
-                    <span>发现新版本 <strong>{{ updateInfo.version }}</strong>（当前 {{ updateInfo.current_version }}）</span>
-                    <v-btn
-                      v-if="!installing"
-                      variant="flat"
-                      size="small"
-                      color="primary"
-                      @click="installUpdate"
-                    >
-                      <v-icon start size="16">mdi-download</v-icon>
-                      立即更新
-                    </v-btn>
-                  </div>
-                </template>
-                <template v-else>
-                  当前已是最新版本 <strong>{{ updateInfo.current_version }}</strong>
-                </template>
-              </v-alert>
-
-              <!-- Download progress -->
-              <div v-if="installing && updateStatus === 'downloading'" class="mt-3">
-                <div class="d-flex align-center justify-space-between mb-1">
-                  <span class="text-caption text-secondary">
-                    <v-icon size="14" class="me-1">mdi-download</v-icon>
-                    正在下载更新...
-                  </span>
-                  <span class="text-caption text-secondary" v-if="updateProgress">
-                    {{ formatBytes(updateProgress.downloaded) }}{{ updateProgress.total ? ' / ' + formatBytes(updateProgress.total) : '' }}
-                  </span>
-                </div>
-                <v-progress-linear
-                  :model-value="updateProgress && updateProgress.total ? (updateProgress.downloaded / updateProgress.total) * 100 : 0"
-                  color="primary"
-                  height="6"
-                  rounded
-                  :indeterminate="!updateProgress || !updateProgress.total"
-                />
-              </div>
-
-              <!-- Installing -->
-              <v-alert v-if="installing && updateStatus === 'installing'" type="info" variant="tonal" density="compact" class="mt-2">
-                <v-icon size="16" class="me-1 animate-spin">mdi-cog</v-icon>
-                下载完成，正在安装更新，应用将自动重启...
-              </v-alert>
-
-              <!-- Error -->
-              <v-alert v-if="updateStatus === 'error'" type="error" variant="tonal" density="compact" class="mt-2">
-                更新失败：{{ updateError }}
-                <v-btn variant="text" size="x-small" color="error" class="ms-2" @click="installing = false; updateStatus = 'idle'">
-                  重试
-                </v-btn>
-              </v-alert>
-            </v-col>
-          </v-row>
-        </div>
-      </v-card-text>
-    </v-card>
-    </v-form>
-
-    <div class="settings-save-bar">
-      <v-btn
-        class="gradient-btn"
-        size="large"
-        variant="flat"
-        :loading="saving"
-        :disabled="!formValid"
-        @click="saveSettings"
-      >
-        <v-icon start>mdi-content-save</v-icon>
-        保存设置
-      </v-btn>
-      <v-fade-transition>
-        <v-icon
-          v-if="saved"
-          color="success"
-          class="ms-3 saved-icon"
-        >
-          mdi-check-circle
-        </v-icon>
-      </v-fade-transition>
+  <div class="view settings-view">
+    <div class="view-header">
+      <span class="view-header__title">设置</span>
+      <span class="view-header__sub">存储、下载、网络与更新</span>
     </div>
 
-    <v-snackbar v-model="localSnackbar" :timeout="3000" location="bottom" variant="tonal">
-      {{ localSnackbarText }}
-    </v-snackbar>
+    <v-form class="settings-form" @submit.prevent>
+      <!-- 存储 -->
+      <div class="panel-card animate-in">
+        <div class="panel-card__title"><v-icon icon="mdi-folder-outline" size="18" color="primary" />存储</div>
+        <div
+          v-for="f in [
+            { key: 'wallhaven_save_dir', label: 'Wallhaven 保存目录' },
+            { key: 'reddit_save_dir', label: 'Reddit 保存目录' },
+            { key: 'thumbnails_dir', label: '缩略图目录' },
+          ]"
+          :key="f.key"
+          class="dir-field"
+        >
+          <v-text-field
+            v-model="draft[f.key as keyof typeof draft]"
+            :label="f.label"
+            :rules="[requiredRule]"
+            hide-details
+            class="settings-field"
+            readonly
+          />
+          <v-btn variant="tonal" @click="pickDir(f.key as 'wallhaven_save_dir' | 'reddit_save_dir' | 'thumbnails_dir')">
+            选择
+          </v-btn>
+        </div>
+      </div>
+
+      <!-- 下载 -->
+      <div class="panel-card animate-in stagger-1">
+        <div class="panel-card__title"><v-icon icon="mdi-download-outline" size="18" color="primary" />下载</div>
+        <div class="settings-grid">
+          <v-text-field
+            v-model.number="draft.download_concurrency"
+            type="number"
+            label="并发下载数"
+            hint="1 - 100"
+            persistent-hint
+            :rules="[(v: number) => positiveInt(v, { min: 1, max: 100 })]"
+            class="settings-field"
+          />
+          <v-text-field
+            v-model.number="draft.request_timeout"
+            type="number"
+            label="请求超时（秒）"
+            hint="5 - 120"
+            persistent-hint
+            :rules="[(v: number) => positiveInt(v, { min: 5, max: 120 })]"
+            class="settings-field"
+          />
+          <v-select
+            v-model.number="draft.thumbnail_dpr"
+            :items="[
+              { title: '1x（240px）', value: 1 },
+              { title: '2x（480px）', value: 2 },
+              { title: '3x（720px）', value: 3 },
+            ]"
+            label="缩略图清晰度"
+            hint="越高越清晰，占用空间越大"
+            persistent-hint
+            class="settings-field"
+          />
+        </div>
+      </div>
+
+      <!-- 网络 -->
+      <div class="panel-card animate-in stagger-2">
+        <div class="panel-card__title"><v-icon icon="mdi-web" size="18" color="primary" />网络</div>
+        <v-text-field
+          v-model="draft.proxy_url"
+          label="HTTP 代理"
+          placeholder="http://127.0.0.1:7890"
+          hint="留空表示直连；保存后立即生效"
+          persistent-hint
+          clearable
+          class="settings-field"
+        />
+      </div>
+
+      <!-- 更新 -->
+      <div class="panel-card animate-in stagger-3">
+        <div class="panel-card__title"><v-icon icon="mdi-rocket-launch-outline" size="18" color="primary" />更新</div>
+        <div class="update-row">
+          <v-switch
+            v-model="draft.auto_update"
+            label="启动时自动检查更新"
+            color="primary"
+            hide-details
+            density="compact"
+          />
+          <v-spacer />
+          <span class="text-caption">当前版本 v{{ updateInfo?.current_version ?? appState.update.info?.current_version ?? "-" }}</span>
+          <v-btn variant="tonal" :loading="checking" @click="onCheckUpdate">检查更新</v-btn>
+        </div>
+
+        <div v-if="updateInfo?.has_update" class="update-available">
+          <div class="update-available__head">
+            <v-icon icon="mdi-tag-outline" size="18" color="primary" />
+            <span class="text-body-lg">新版本 v{{ updateInfo.version }}</span>
+            <span v-if="updateInfo.date" class="text-caption">{{ updateInfo.date.slice(0, 10) }}</span>
+          </div>
+          <p v-if="updateInfo.body" class="text-caption update-available__body">{{ updateInfo.body }}</p>
+          <div v-if="appState.update.downloading" class="update-progress">
+            <v-progress-linear
+              :model-value="updatePercent ?? 0"
+              :indeterminate="updatePercent === null"
+              color="primary"
+              height="4"
+              rounded
+            />
+            <span class="text-caption">
+              正在下载 {{ formatBytes(appState.update.downloaded) }}<template v-if="appState.update.total"> / {{ formatBytes(appState.update.total) }}</template>
+            </span>
+          </div>
+          <v-btn
+            v-else
+            color="primary"
+            variant="flat"
+            :loading="installing"
+            @click="onInstall"
+          >
+            下载并安装（自动重启）
+          </v-btn>
+        </div>
+        <div v-else-if="checkDone" class="text-caption">已是最新版本</div>
+      </div>
+
+      <!-- 外观 -->
+      <div class="panel-card animate-in stagger-4">
+        <div class="panel-card__title"><v-icon icon="mdi-palette-outline" size="18" color="primary" />外观</div>
+        <div class="theme-row">
+          <v-btn
+            v-for="t in [
+              { key: 'system', label: '跟随系统', icon: 'mdi-monitor' },
+              { key: 'dim', label: '深色', icon: 'mdi-weather-night' },
+              { key: 'light', label: '浅色', icon: 'mdi-white-balance-sunny' },
+            ]"
+            :key="t.key"
+            :variant="(t.key === 'system' ? themeChoice === 'system' : theme === t.key && themeChoice !== 'system') ? 'flat' : 'outlined'"
+            :color="(t.key === 'system' ? themeChoice === 'system' : theme === t.key && themeChoice !== 'system') ? 'primary' : undefined"
+            :prepend-icon="t.icon"
+            size="small"
+            @click="onThemeChange(t.key as 'system' | Theme)"
+          >
+            {{ t.label }}
+          </v-btn>
+        </div>
+      </div>
+    </v-form>
+
+    <!-- 保存条 -->
+    <div class="settings-save-bar">
+      <v-btn color="primary" variant="flat" min-width="200" :loading="saving" @click="onSave">
+        <v-icon v-if="savedFlash" icon="mdi-check" class="saved-icon" start />
+        {{ savedFlash ? "已保存" : "保存全部设置" }}
+      </v-btn>
+    </div>
   </div>
 </template>
 
 <style scoped>
-.settings-root {
-  padding-bottom: 80px;
+.settings-view {
+  padding-bottom: 0;
 }
-
-.settings-card {
-  overflow: hidden;
+.settings-form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-5);
+  padding-bottom: var(--space-5);
 }
-
-.settings-card-header {
+.dir-field {
+  display: flex;
+  gap: var(--space-3);
+  align-items: center;
+}
+.dir-field .settings-field {
+  flex: 1;
+}
+.update-row {
   display: flex;
   align-items: center;
-  gap: 12px;
-  padding: 20px 24px 16px;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+  gap: var(--space-3);
 }
-
-.wh-header-bg {
-  background: linear-gradient(135deg, rgba(59,130,246,0.08) 0%, transparent 60%);
+.update-available {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  padding: var(--space-4);
+  border-radius: var(--radius-md);
+  background: var(--accent-primary-dim);
+  align-items: flex-start;
 }
-.rd-header-bg {
-  background: linear-gradient(135deg, rgba(249,115,22,0.08) 0%, transparent 60%);
-}
-.adv-header-bg {
-  background: linear-gradient(135deg, rgba(201,169,78,0.08) 0%, transparent 60%);
-}
-
-.settings-header-icon {
-  width: 40px;
-  height: 40px;
-  border-radius: 50%;
+.update-available__head {
   display: flex;
   align-items: center;
-  justify-content: center;
-  flex-shrink: 0;
+  gap: var(--space-2);
 }
-
-.wh-header-icon {
-  background: rgba(59,130,246,0.15);
+.update-available__body {
+  max-height: 120px;
+  overflow-y: auto;
+  white-space: pre-wrap;
 }
-.rd-header-icon {
-  background: rgba(249,115,22,0.15);
+.update-progress {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
 }
-.adv-header-icon {
-  background: rgba(201,169,78,0.15);
+.theme-row {
+  display: flex;
+  gap: var(--space-2);
 }
-
-.animate-spin {
-  animation: spin 1.5s linear infinite;
+.settings-save-bar {
+  margin: 0 calc(-1 * var(--space-8));
 }
-@keyframes spin {
-  from { transform: rotate(0deg); }
-  to { transform: rotate(360deg); }
-}
-
 </style>

@@ -1,60 +1,51 @@
 /* ========================================
-   RustWallhub — Arknights 风格设计系统
+   RustWallhub — 简洁设计系统
    ========================================
-   配色灵感：明日方舟（Arknights）
-   深色战术面板 · 青蓝光效 · 六角几何 · 终端数据美学
+   干净表面 · 克制色彩 · 功能优先
    ======================================== */
 
 :root {
-  /* ── Surface 深度层级 ── */
-  --surface-deep: #0a0b0e;
-  --surface-base: #101218;
-  --surface-card: #161827;
-  --surface-elevated: #1c1f32;
-  --surface-hover: #22263b;
-  --surface-card-rgb: 22, 24, 39;
-  --surface-deep-rgb: 10, 11, 14;
+  /* ── Surface 层级（中性灰，不偏蓝） ── */
+  --surface-deep: #0c0c0d;
+  --surface-base: #141416;
+  --surface-card: #1a1a1d;
+  --surface-elevated: #232327;
+  --surface-hover: #2a2a2e;
 
-  /* ── Arknights 品牌色 ── */
+  /* ── 强调色（克制使用） ── */
   --accent-primary: #3b82f6;
   --accent-primary-hover: #60a5fa;
-  --accent-primary-dim: rgba(59, 130, 246, 0.15);
-  --accent-glow: rgba(59, 130, 246, 0.2);
-  --accent-glow-strong: rgba(59, 130, 246, 0.35);
+  --accent-primary-dim: rgba(59, 130, 246, 0.12);
 
   --accent-reddit: #f97316;
-  --accent-reddit-hover: #fb923c;
-  --accent-reddit-glow: rgba(249, 115, 22, 0.2);
-
-  --accent-gold: #c9a94e;
-  --accent-gold-dim: rgba(201, 169, 78, 0.12);
 
   --accent-success: #10b981;
   --accent-warning: #f59e0b;
   --accent-error: #ef4444;
+  --accent-gold: #c9a94e;
+
+  /* ── 图片预览（固定深色查看器，不随主题变化） ── */
+  --preview-bg: #101012;
+  --preview-surface: #1b1b1e;
 
   /* ── 文本 ── */
-  --text-primary: #e2e4ea;
-  --text-secondary: #8b8fa3;
-  --text-tertiary: #5c6075;
-  --text-disabled: #3b3e50;
+  --text-primary: #e8e8ea;
+  --text-secondary: #909094;
+  --text-tertiary: #5a5a5e;
+  --text-disabled: #3a3a3e;
 
-  /* ── 边框 - 极细线高光美学 ── */
-  --border-deep: 1px solid rgba(255, 255, 255, 0.03);
-  --border-base: 1px solid rgba(255, 255, 255, 0.05);
-  --border-card: 1px solid rgba(255, 255, 255, 0.07);
-  --border-elevated: 1px solid rgba(255, 255, 255, 0.10);
-  --border-active: 1px solid rgba(59, 130, 246, 0.25);
-  --border-subtle: #2a2d40;
-  --border-default: #3a3d52;
+  /* ── 边框 ── */
+  --border-subtle: #252528;
+  --border-default: #333337;
+  --border-card: 1px solid rgba(255, 255, 255, 0.06);
+  --border-active: 1px solid rgba(59, 130, 246, 0.3);
 
-  /* ── 间距 - 4px 基准 ── */
+  /* ── 间距（4px 基准） ── */
   --space-1: 4px;  --space-2: 8px;  --space-3: 12px;
   --space-4: 16px; --space-5: 20px; --space-6: 24px;
   --space-8: 32px; --space-10: 40px; --space-12: 48px;
 
-  /* ── 圆角 - Arknights 多用尖角/少圆角 ── */
-  --radius-xs: 2px;
+  /* ── 圆角 ── */
   --radius-sm: 4px;
   --radius-md: 6px;
   --radius-lg: 8px;
@@ -64,76 +55,47 @@
   /* ── 缓动 ── */
   --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
   --ease-in-out: cubic-bezier(0.65, 0, 0.35, 1);
-  --ease-spring: cubic-bezier(0.34, 1.56, 0.64, 1);
 
-  /* ── 阴影 - 战术面板质感 ── */
-  --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.35);
-  --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.35);
-  --shadow-lg: 0 8px 32px rgba(0, 0, 0, 0.45);
-  --shadow-glow: 0 0 20px rgba(59, 130, 246, 0.1);
-  --shadow-glow-strong: 0 0 30px rgba(59, 130, 246, 0.15);
+  /* ── 阴影（功能性，非装饰） ── */
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.3);
+  --shadow-md: 0 2px 8px rgba(0, 0, 0, 0.25);
+  --shadow-lg: 0 8px 24px rgba(0, 0, 0, 0.35);
 }
 
 /* ── Light 主题 ── */
 [data-theme="light"] {
-  --surface-deep: #e2dfd8;
-  --surface-base: #efece6;
-  --surface-card: #faf8f5;
+  --surface-deep: #e8e6e1;
+  --surface-base: #f0eee9;
+  --surface-card: #faf9f7;
   --surface-elevated: #ffffff;
-  --surface-hover: #f4f1eb;
-  --surface-card-rgb: 250, 248, 245;
-  --surface-deep-rgb: 226, 223, 216;
+  --surface-hover: #f3f1ec;
 
-  --accent-primary: #3b82f6;
-  --accent-primary-hover: #2563eb;
-  --accent-primary-dim: rgba(59, 130, 246, 0.08);
-  --accent-glow: rgba(59, 130, 246, 0.12);
-  --accent-glow-strong: rgba(59, 130, 246, 0.2);
+  --accent-primary: #2563eb;
+  --accent-primary-hover: #3b82f6;
+  --accent-primary-dim: rgba(37, 99, 235, 0.08);
 
-  --text-primary: #1a1b23;
-  --text-secondary: #5c6075;
-  --text-tertiary: #8b8fa3;
-  --text-disabled: #b0b3c0;
+  --text-primary: #1a1a1c;
+  --text-secondary: #5a5a5e;
+  --text-tertiary: #909094;
+  --text-disabled: #c0c0c4;
 
-  --border-deep: 1px solid rgba(0, 0, 0, 0.04);
-  --border-base: 1px solid rgba(0, 0, 0, 0.06);
-  --border-card: 1px solid rgba(0, 0, 0, 0.08);
-  --border-elevated: 1px solid rgba(0, 0, 0, 0.12);
-  --border-active: 1px solid rgba(59, 130, 246, 0.3);
-  --border-subtle: #d4d2ce;
-  --border-default: #b0b3c0;
+  --border-subtle: #e0ddd8;
+  --border-default: #cccac4;
+  --border-card: 1px solid rgba(0, 0, 0, 0.07);
+  --border-active: 1px solid rgba(37, 99, 235, 0.3);
 
-  --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.06);
-  --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.06);
-  --shadow-lg: 0 8px 32px rgba(0, 0, 0, 0.08);
-  --shadow-glow: 0 0 20px rgba(59, 130, 246, 0.08);
-}
-
-/* ── 六角形背景纹理 ── */
-.hex-bg {
-  position: relative;
-}
-.hex-bg::before {
-  content: '';
-  position: absolute;
-  inset: 0;
-  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='56' height='100' viewBox='0 0 56 100'%3E%3Cpath d='M28 0L56 16v33L28 66 0 49V16z' fill='none' stroke='rgba(59,130,246,0.04)' stroke-width='0.5'/%3E%3Cpath d='M28 34L56 50v33L28 99 0 82V50z' fill='none' stroke='rgba(59,130,246,0.035)' stroke-width='0.5'/%3E%3C/svg%3E");
-  background-size: 56px 100px;
-  opacity: 0.6;
-  pointer-events: none;
-  z-index: 0;
-}
-[data-theme="light"] .hex-bg::before {
-  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='56' height='100' viewBox='0 0 56 100'%3E%3Cpath d='M28 0L56 16v33L28 66 0 49V16z' fill='none' stroke='rgba(59,130,246,0.06)' stroke-width='0.5'/%3E%3Cpath d='M28 34L56 50v33L28 99 0 82V50z' fill='none' stroke='rgba(59,130,246,0.05)' stroke-width='0.5'/%3E%3C/svg%3E");
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.04);
+  --shadow-md: 0 2px 8px rgba(0, 0, 0, 0.06);
+  --shadow-lg: 0 8px 24px rgba(0, 0, 0, 0.1);
 }
 
 /* ── Base ── */
 html {
   background-color: var(--surface-base) !important;
-  transition: background-color 0.45s ease;
+  transition: background-color 0.3s ease;
 }
 body {
-  font-family: 'Inter', system-ui, -apple-system, sans-serif;
+  font-family: 'Space Grotesk', system-ui, -apple-system, sans-serif;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
   background-color: var(--surface-base);
@@ -150,21 +112,20 @@ body {
 .v-navigation-drawer,
 .v-app-bar,
 .v-btn {
-  transition: background-color 0.3s ease, border-color 0.3s ease,
-    box-shadow 0.3s ease !important;
+  transition: background-color 0.25s ease, border-color 0.25s ease !important;
 }
 
 /* ── 滚动条 ── */
 ::-webkit-scrollbar {
-  width: 4px;
-  height: 4px;
+  width: 6px;
+  height: 6px;
 }
 ::-webkit-scrollbar-track {
   background: transparent;
 }
 ::-webkit-scrollbar-thumb {
   background: var(--border-default);
-  border-radius: 2px;
+  border-radius: 3px;
 }
 ::-webkit-scrollbar-thumb:hover {
   background: var(--text-tertiary);
@@ -172,126 +133,69 @@ body {
 
 /* ── 视图过渡 ── */
 .view-fade-enter-active {
-  transition: all 0.3s var(--ease-out);
+  transition: opacity 0.2s ease;
 }
 .view-fade-leave-active {
-  transition: all 0.2s var(--ease-in-out);
+  transition: opacity 0.15s ease;
 }
-.view-fade-enter-from {
-  opacity: 0;
-  transform: translateY(10px);
-}
+.view-fade-enter-from,
 .view-fade-leave-to {
   opacity: 0;
-  transform: translateY(-6px);
 }
 
-/* ── Arknights 终端玻璃卡 ── */
+/* ── 卡片 ── */
 .ark-card,
 .glass-card {
-  position: relative;
-  background: rgba(var(--surface-card-rgb), 0.7) !important;
-  backdrop-filter: blur(20px) saturate(140%);
-  -webkit-backdrop-filter: blur(20px) saturate(140%);
+  background: var(--surface-card) !important;
   border: var(--border-card) !important;
-  box-shadow: 0 0 0 1px rgba(59, 130, 246, 0.03),
-    inset 0 1px 0 rgba(255, 255, 255, 0.03), var(--shadow-md);
-}
-.ark-card::after,
-.glass-card::after {
-  content: '';
-  position: absolute;
-  top: 0;
-  left: 0;
-  right: 0;
-  height: 2px;
-  background: linear-gradient(90deg, var(--accent-primary), transparent 80%);
-  opacity: 0.6;
-  border-radius: var(--radius-xs);
+  box-shadow: var(--shadow-sm);
 }
 
-[data-theme="light"] .ark-card::after,
-[data-theme="light"] .glass-card::after {
-  opacity: 0.4;
-}
-[data-theme="light"] .ark-card,
-[data-theme="light"] .glass-card {
-  background: rgba(var(--surface-card-rgb), 0.85) !important;
-  border-color: rgba(0, 0, 0, 0.08) !important;
-  box-shadow: 0 1px 6px rgba(0, 0, 0, 0.04);
-}
-
-/* ── 数据面板（Arknight 数据终端） ── */
+/* ── 数据面板 ── */
 .data-panel {
-  position: relative;
-  background: rgba(var(--surface-card-rgb), 0.6) !important;
+  background: var(--surface-card) !important;
   border: var(--border-card) !important;
   border-left: 2px solid var(--accent-primary) !important;
   box-shadow: var(--shadow-sm);
   overflow: hidden;
 }
-.data-panel::before {
-  content: '';
-  position: absolute;
-  inset: 0;
-  background: linear-gradient(
-    180deg,
-    rgba(59, 130, 246, 0.03) 0%,
-    transparent 30%
-  );
-  pointer-events: none;
+.operations-panel {
+  border-left: 2px solid var(--accent-warning) !important;
 }
-
-/* ── 六角装饰角标 ── */
-.hex-badge {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 24px;
-  height: 28px;
-  clip-path: polygon(50% 0%, 100% 25%, 100% 75%, 50% 100%, 0% 75%, 0% 25%);
-  background: var(--accent-primary-dim);
-  font-size: 0.625rem;
-  font-weight: 700;
-  color: var(--accent-primary);
-  flex-shrink: 0;
+.progress-panel {
+  border-left: 2px solid var(--accent-primary) !important;
 }
 
 /* ── 数据统计数字 ── */
 .stat-number {
-  font-family: 'Rajdhani', 'Inter', system-ui, sans-serif;
+  font-family: 'Rajdhani', 'Space Grotesk', system-ui, sans-serif;
   font-variant-numeric: tabular-nums;
   font-weight: 700;
   letter-spacing: -0.01em;
   line-height: 1;
 }
 .text-display {
-  font-family: 'Rajdhani', 'Inter', system-ui, sans-serif;
+  font-family: 'Rajdhani', 'Space Grotesk', system-ui, sans-serif;
   font-size: 1.75rem;
   line-height: 1.1;
   font-weight: 700;
   letter-spacing: -0.01em;
 }
 .text-heading {
-  font-family: 'Rajdhani', 'Inter', system-ui, sans-serif;
+  font-family: 'Rajdhani', 'Space Grotesk', system-ui, sans-serif;
   font-size: 1.125rem;
   font-weight: 600;
   line-height: 1.3;
-  letter-spacing: 0.01em;
 }
 .text-label {
-  font-family: 'Rajdhani', 'Inter', system-ui, sans-serif;
+  font-family: 'Rajdhani', 'Space Grotesk', system-ui, sans-serif;
   font-size: 0.75rem;
   font-weight: 600;
-  letter-spacing: 0.05em;
+  letter-spacing: 0.04em;
   text-transform: uppercase;
 }
-.text-body-lg {
-  font-size: 0.9375rem;
-}
-.text-body {
-  font-size: 0.875rem;
-}
+.text-body-lg { font-size: 0.9375rem; }
+.text-body { font-size: 0.875rem; }
 .text-caption {
   font-size: 0.75rem;
   color: var(--text-secondary);
@@ -302,161 +206,51 @@ body {
   line-height: 1.4;
 }
 
-/* ── 青蓝渐变按钮（Arknight 风格） ── */
-.ark-btn,
-.gradient-btn {
-  position: relative;
-  background: linear-gradient(135deg, var(--accent-primary) 0%, #2563eb 100%) !important;
-  border: none !important;
-  color: #ffffff !important;
-  font-family: 'Rajdhani', 'Inter', system-ui, sans-serif !important;
-  font-weight: 600 !important;
-  letter-spacing: 0.03em !important;
-  transition: all 0.25s var(--ease-out) !important;
-  overflow: hidden;
-}
-.ark-btn::before,
-.gradient-btn::before {
-  content: '';
-  position: absolute;
-  inset: 0;
-  background: linear-gradient(
-    180deg,
-    rgba(255, 255, 255, 0.1) 0%,
-    transparent 50%
-  );
-  pointer-events: none;
-}
-.ark-btn:hover,
-.gradient-btn:hover {
-  box-shadow: var(--shadow-glow-strong) !important;
-  transform: translateY(-1px);
-}
-.ark-btn:active,
-.gradient-btn:active {
-  transform: scale(0.97);
-}
-
 /* ── 数值标签 ── */
 .stat-label {
-  font-family: 'Rajdhani', 'Inter', system-ui, sans-serif;
+  font-family: 'Rajdhani', 'Space Grotesk', system-ui, sans-serif;
   font-size: 0.6875rem;
   font-weight: 600;
-  letter-spacing: 0.06em;
+  letter-spacing: 0.04em;
   text-transform: uppercase;
   color: var(--text-tertiary);
 }
 
-/* ── 分隔装饰线 ── */
-.ark-divider {
-  height: 1px;
-  background: linear-gradient(
-    90deg,
-    var(--accent-primary) 0%,
-    var(--border-subtle) 30%,
-    transparent 100%
-  );
-  opacity: 0.5;
-  border: none;
-  margin: 0;
-}
-
-/* ── 操作面板 ── */
-.operations-panel {
-  position: relative;
-  border-left: 2px solid var(--accent-warning) !important;
-}
-
-/* ── 数据行（表格风格） ── */
+/* ── 数据行 ── */
 .data-row {
   display: flex;
   align-items: center;
   gap: 8px;
   padding: 6px 10px;
   border-radius: var(--radius-sm);
-  background: rgba(255, 255, 255, 0.02);
+  background: rgba(255, 255, 255, 0.015);
   transition: background 0.15s;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.03);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.04);
 }
 .data-row:hover {
-  background: rgba(255, 255, 255, 0.04);
-}
-
-/* ── 辉光动画效果 ── */
-@keyframes scan-line {
-  0% {
-    transform: translateY(-100%);
-  }
-  100% {
-    transform: translateY(100vh);
-  }
-}
-/* ── 扫描线效果（仅深色主题） ── */
-.scan-line::after {
-  content: '';
-  position: absolute;
-  left: 0;
-  right: 0;
-  height: 2px;
-  background: linear-gradient(
-    90deg,
-    transparent 0%,
-    rgba(59, 130, 246, 0.08) 50%,
-    transparent 100%
-  );
-  animation: scan-line 6s linear infinite;
-  pointer-events: none;
-}
-[data-theme="light"] .scan-line::after {
-  display: none;
+  background: rgba(255, 255, 255, 0.035);
 }
 
 /* ── 入场动画 ── */
 @keyframes fadeInUp {
-  from {
-    opacity: 0;
-    transform: translateY(8px);
-  }
-  to {
-    opacity: 1;
-    transform: translateY(0);
-  }
+  from { opacity: 0; transform: translateY(6px); }
+  to { opacity: 1; transform: translateY(0); }
 }
 .animate-in {
-  animation: fadeInUp 0.35s var(--ease-out) both;
+  animation: fadeInUp 0.25s var(--ease-out) both;
 }
-.stagger-1 {
-  animation-delay: 40ms;
-}
-.stagger-2 {
-  animation-delay: 80ms;
-}
-.stagger-3 {
-  animation-delay: 120ms;
-}
-.stagger-4 {
-  animation-delay: 160ms;
-}
-.stagger-5 {
-  animation-delay: 200ms;
-}
-.stagger-6 {
-  animation-delay: 240ms;
-}
+.stagger-1 { animation-delay: 30ms; }
+.stagger-2 { animation-delay: 60ms; }
+.stagger-3 { animation-delay: 90ms; }
+.stagger-4 { animation-delay: 120ms; }
+.stagger-5 { animation-delay: 150ms; }
+.stagger-6 { animation-delay: 180ms; }
 
 /* ── Surface 工具类 ── */
-.surface-card {
-  background: var(--surface-card);
-}
-.surface-elevated {
-  background: var(--surface-elevated);
-}
-.surface-base {
-  background: var(--surface-base);
-}
-.hairline-border {
-  border: var(--border-card);
-}
+.surface-card { background: var(--surface-card); }
+.surface-elevated { background: var(--surface-elevated); }
+.surface-base { background: var(--surface-base); }
+.hairline-border { border: var(--border-card); }
 
 /* ── Shimmer 加载 ── */
 .shimmer {
@@ -478,58 +272,54 @@ body {
   );
 }
 @keyframes shimmer {
-  0% {
-    background-position: 200% 0;
-  }
-  100% {
-    background-position: -200% 0;
-  }
+  0% { background-position: 200% 0; }
+  100% { background-position: -200% 0; }
 }
 
-/* ── Shared utilities (extracted by polish) ── */
-
-/* Settings group labels and fields (used by SettingsView, DbSettingsView) */
+/* ── Settings 共享样式 ── */
 .settings-group-label {
   font-size: 0.75rem;
   color: var(--text-secondary);
   text-transform: uppercase;
-  letter-spacing: 0.05em;
+  letter-spacing: 0.04em;
   padding: 16px 0 8px;
   font-weight: 600;
 }
 .settings-group-label:first-of-type {
   padding-top: 8px;
 }
-
 .settings-group {
   padding: 0 0 4px;
 }
-
 .settings-field :deep(.v-field) {
-  border-color: rgba(255, 255, 255, 0.1);
+  border-color: var(--border-default);
   transition: border-color 0.2s, box-shadow 0.2s;
 }
 .settings-field :deep(.v-field--focused) {
   border-color: var(--accent-primary);
-  box-shadow: 0 0 0 1px rgba(59, 130, 246, 0.2);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent-primary) 20%, transparent);
 }
 
-/* Source cards (used by RedditView, WallhavenView) */
+/* ── Source cards ── */
 .source-card { overflow: hidden; }
 .source-card-header {
   display: flex;
   align-items: center;
   gap: 12px;
   padding: 20px 24px 16px;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+  border-bottom: 1px solid var(--border-subtle);
 }
 .source-header-icon {
   width: 40px; height: 40px;
-  border-radius: 50%;
+  border-radius: var(--radius-md);
   display: flex;
   align-items: center;
   justify-content: center;
   flex-shrink: 0;
+  background: var(--accent-primary-dim);
+}
+.source-header--reddit .source-header-icon {
+  background: color-mix(in srgb, var(--accent-reddit) 15%, transparent);
 }
 .settings-grid {
   display: grid;
@@ -545,7 +335,7 @@ body {
 }
 .download-thumb {
   aspect-ratio: 16 / 9;
-  border-radius: 4px;
+  border-radius: var(--radius-sm);
   overflow: hidden;
   background: var(--surface-card);
 }
@@ -554,7 +344,86 @@ body {
   object-fit: cover; display: block;
 }
 
-/* Save bar pattern (used by SettingsView, DbSettingsView) */
+/* ── 空状态（全局复用：图库 / 搜索页） ── */
+.gallery-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  flex: 1;
+  padding: 60px 24px;
+  gap: 4px;
+}
+
+.empty-icon-wrap {
+  width: 100px;
+  height: 100px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  background: var(--surface-elevated);
+  margin-bottom: 12px;
+}
+
+.empty-icon-wrap--sm {
+  width: 56px;
+  height: 56px;
+  margin-bottom: 8px;
+}
+
+.empty-icon {
+  opacity: 0.5;
+}
+
+.empty-title {
+  font-size: 1.125rem;
+  font-weight: 600;
+  color: var(--text-secondary);
+  margin: 0;
+}
+
+.empty-desc {
+  font-size: 0.8125rem;
+  color: var(--text-tertiary);
+  margin: 4px 0 0;
+}
+
+.empty-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 16px;
+  flex-wrap: wrap;
+  justify-content: center;
+}
+
+.gallery-empty--error .empty-icon-wrap {
+  background: color-mix(in srgb, var(--accent-error) 10%, transparent);
+}
+
+.gallery-empty--error .empty-desc {
+  max-width: 480px;
+  text-align: center;
+  word-break: break-word;
+}
+
+.empty-dir {
+  margin-top: 16px;
+}
+
+/* ── 异步组件加载态 ── */
+.async-state {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  padding: 60px;
+}
+.async-state--error {
+  color: var(--text-secondary);
+  font-size: 0.875rem;
+}
+
+/* ── Save bar ── */
 .settings-save-bar {
   position: sticky;
   bottom: 0;
@@ -562,21 +431,17 @@ body {
   align-items: center;
   justify-content: center;
   padding: 16px;
-  background: rgba(15, 15, 17, 0.9);
-  backdrop-filter: blur(12px);
-  -webkit-backdrop-filter: blur(12px);
-  border-top: 1px solid rgba(255, 255, 255, 0.06);
+  background: var(--surface-deep);
+  border-top: 1px solid var(--border-subtle);
   z-index: 5;
 }
 
 .saved-icon {
-  animation: saved-pop 0.4s cubic-bezier(0.16, 1, 0.3, 1);
+  animation: saved-pop 0.3s var(--ease-out);
 }
-
 @keyframes saved-pop {
-  0% { transform: scale(0) rotate(-30deg); }
-  50% { transform: scale(1.2) rotate(5deg); }
-  100% { transform: scale(1) rotate(0deg); }
+  0% { transform: scale(0); }
+  100% { transform: scale(1); }
 }
 
 /* ── 无障碍：焦点环 ── */
@@ -589,8 +454,6 @@ textarea:focus-visible {
   outline: 2px solid var(--accent-primary);
   outline-offset: 2px;
 }
-
-/* Vuetify 组件焦点环兜底 */
 .v-btn:focus-visible::after,
 .v-list-item:focus-visible::after {
   border-radius: inherit;
@@ -599,31 +462,64 @@ textarea:focus-visible {
 
 /* ── 无障碍：减少动态效果 ── */
 @media (prefers-reduced-motion: reduce) {
-  *,
-  *::before,
-  *::after {
+  *, *::before, *::after {
     animation-duration: 0.01ms !important;
     animation-iteration-count: 1 !important;
     transition-duration: 0.01ms !important;
     scroll-behavior: auto !important;
   }
-
-  /* 保留功能型变换的即时反馈，但不播放过渡 */
-  .progress-bar-fill {
-    transition: none !important;
-  }
-
-  /* 扫描线、shimmer 等纯装饰动画直接隐藏 */
-  .scan-line::after,
   .shimmer {
     animation: none !important;
-  }
-
-  .scan-line::after {
-    display: none;
-  }
-
-  .shimmer {
     background: var(--surface-hover) !important;
   }
+}
+
+/* ════════════════════════════════════════
+   页面布局（视图根元素）
+   ════════════════════════════════════════ */
+.view {
+  height: 100%;
+  overflow-y: auto;
+  padding: var(--space-6) var(--space-8) var(--space-10);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-5);
+}
+.view-header {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  flex-wrap: wrap;
+}
+.view-header__title {
+  font-size: 1.25rem;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+}
+.view-header__sub {
+  font-size: 0.8125rem;
+  color: var(--text-tertiary);
+}
+
+/* 通用卡片区块 */
+.panel-card {
+  background: var(--surface-card);
+  border: var(--border-card);
+  border-radius: var(--radius-lg);
+  padding: var(--space-5) var(--space-6);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+.panel-card__title {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-size: 0.9375rem;
+  font-weight: 600;
+}
+.panel-card__hint {
+  font-size: 0.75rem;
+  color: var(--text-tertiary);
+  line-height: 1.6;
 }

@@ -1,1742 +1,785 @@
 <script setup lang="ts">
-import { ref, onMounted, onUnmounted, computed, nextTick, watch } from "vue";
-import { invoke, convertFileSrc } from "@tauri-apps/api/core";
-import { listen } from "@tauri-apps/api/event";
-import { open } from "@tauri-apps/plugin-dialog";
-import { logger } from "../utils/logger";
+import { computed, onMounted, reactive, ref, watch } from "vue";
+import { openUrl } from "@tauri-apps/plugin-opener";
+import type { ImageInfo, LocalImageEntry, MonitorInfo, OrphanFile } from "../types";
+import {
+  adoptOrphanFiles,
+  assetUrl,
+  browseImageFiles,
+  deleteOrphanFile,
+  dislikeFile,
+  getImageInfo,
+  listMonitors,
+  listOrphanFiles,
+  resolveThumbnails,
+  setWallpaper,
+  startSlideshow,
+  stopSlideshow,
+} from "../utils/api";
+import { appState, askConfirm, dbReady, toast, toastError } from "../stores/app";
+import { formatBytes } from "../utils/format";
+import EmptyState from "../components/EmptyState.vue";
+import ImageViewer from "../components/ImageViewer.vue";
 
-const emit = defineEmits<{
-  navigate: [view: string];
-}>();
+/* ════ 浏览状态 ════ */
+type SourceTab = "wallhaven" | "reddit";
+const source = ref<SourceTab>("wallhaven");
+const search = ref("");
+const searchDebounced = ref("");
+const sortBy = ref("default");
+const page = ref(1);
+const pageSize = ref(48);
+const orphanOnly = ref(false);
 
-interface LocalImage {
-  name: string;
-  path: string;
-  thumb_path?: string;
-  size: number;
-  is_orphan?: boolean;
-  modified_date?: string;
-}
+const SORT_ITEMS = [
+  { title: "默认（孤儿优先）", value: "default" },
+  { title: "名称 ↑", value: "name_asc" },
+  { title: "名称 ↓", value: "name_desc" },
+  { title: "大小 ↑", value: "size_asc" },
+  { title: "大小 ↓", value: "size_desc" },
+  { title: "日期 ↓", value: "date_desc" },
+  { title: "日期 ↑", value: "date_asc" },
+];
+const PAGE_SIZE_ITEMS = [24, 48, 96];
 
-interface ListResult {
-  images: LocalImage[];
-  total: number;
-}
-
-interface AppConfig {
-  wallhaven_save_dir: string;
-  reddit_save_dir: string;
-}
-
-interface ThumbnailResult {
-  name: string;
-  thumb_path: string;
-}
-
-interface ImageInfo {
-  name: string;
-  path: string;
-  size: number;
-  resolution: string | null;
-  format: string | null;
-  width: number | null;
-  height: number | null;
-  source_url: string | null;
-  download_url: string | null;
-  title: string | null;
-  permalink: string | null;
-  source: string | null;
-  created_at: string | null;
-}
-
-const source = ref("wallhaven");
-const allImages = ref<LocalImage[]>([]);
-const total = ref(0);
 const loading = ref(false);
 const loadError = ref("");
-const pageLoading = ref(false);
-const selectedIndex = ref(-1);
-const saveDir = ref("");
-const thumbLoading = ref(false);
-const settingWallpaper = ref(false);
-const imagesPerPage = ref(12);
-const currentPage = ref(1);
-const localSnackbar = ref(false);
-const localSnackbarText = ref("");
-const deletingIndex = ref(-1);
-const confirmDelete = ref(false);
-const pendingDeleteIndex = ref(-1);
-const deletingSelection = ref(false);
-const selectedPaths = ref<Set<string>>(new Set());
-const selectionMode = ref(false);
-const searchQuery = ref("");
-const sortBy = ref("default");
-let searchTimer: number | undefined;
-const pendingIsOrphan = computed(() => {
-  const img = displayImages.value[pendingDeleteIndex.value];
-  return img?.is_orphan ?? false;
-});
+const images = ref<LocalImageEntry[]>([]);
+const total = ref(0);
+/** 孤儿模式：全量孤儿列表，前端分页 */
+const orphanAll = ref<LocalImageEntry[]>([]);
+const thumbUrls = reactive<Record<string, string>>({});
 
-const selectedOrphanCount = computed(() => {
-  let count = 0;
-  for (const name of selectedPaths.value) {
-    if (allImages.value.find((i) => i.name === name)?.is_orphan) count++;
-  }
-  return count;
-});
-const showOrphansOnly = ref(false);
-const dpr = Math.ceil(window.devicePixelRatio || 1);
-const cleaningThumbnails = ref(false);
-const addingOrphanName = ref("");
-const currentWallpaper = ref("");
-const galleryRoot = ref<HTMLElement | null>(null);
-const galleryToolbar = ref<HTMLElement | null>(null);
-const customDir = ref("");
-const useCustomDir = ref(false);
-let resizeObserver: ResizeObserver | null = null;
-
-const imageInfo = ref<ImageInfo | null>(null);
-const showInfo = ref(false);
-const loadingInfo = ref(false);
-
-const slideshowActive = ref(false);
-const slideshowInterval = ref(30);
-const slideshowIndex = ref(0);
-const slideshowTotal = ref(0);
-let unlistenSlideshow: (() => void) | null = null;
-
-interface Monitor {
-  id: string;
-  name: string;
-  is_primary: boolean;
-  width: number;
-  height: number;
-}
-const monitors = ref<Monitor[]>([]);
-const selectedMonitor = ref<string>("all");
-
-const totalPages = computed(() => Math.max(1, Math.ceil(displayImages.value.length / imagesPerPage.value)));
-
-const orphanCount = computed(() =>
-  allImages.value.filter((img) => img.is_orphan).length
-);
-
-const displayImages = computed(() => {
-  if (showOrphansOnly.value) {
-    return allImages.value.filter((img) => img.is_orphan);
-  }
-  return allImages.value;
-});
-
-const visibleImages = computed(() => {
-  const list = displayImages.value;
-  const start = (currentPage.value - 1) * imagesPerPage.value;
-  return list.slice(start, start + imagesPerPage.value);
-});
-
-const dialogOpen = computed({
-  get: () => selectedIndex.value >= 0,
-  set: (v: boolean) => {
-    if (!v) selectedIndex.value = -1;
-  },
-});
-
-const selectedImage = computed(() =>
-  selectedIndex.value >= 0 && selectedIndex.value < displayImages.value.length
-    ? displayImages.value[selectedIndex.value]
-    : null
-);
-
-function getAssetUrl(path: string): string {
-  if (!path) return '';
-  try {
-    return convertFileSrc(path);
-  } catch {
-    return '';
-  }
-}
-
-function getImageUrl(img: LocalImage): string {
-  return getAssetUrl(img.thumb_path || img.path);
-}
-
-const imgLoaded = ref<Set<string>>(new Set());
-
-function onImgLoad(img: LocalImage) {
-  imgLoaded.value.add(img.name);
-}
-
-function onImgError(event: Event, img: LocalImage) {
-  const el = event.target as HTMLImageElement;
-  // 缩略图失败 → 回退到原图
-  if (img.thumb_path && img.path) {
-    const url = getAssetUrl(img.path);
-    if (url) {
-      el.src = url;
-      return;
-    }
-  }
-  // 全部失败 → 标记已加载（显示空白而非转圈）
-  imgLoaded.value.add(img.name);
-}
-
-function getPreviewUrl(img: LocalImage): string {
-  try {
-    return convertFileSrc(img.path);
-  } catch {
-    return '';
-  }
-}
-
-const resizeState = {
-  itemWidth: 220,
-  itemHeight: 124,
-  horizontalGap: 12,
-  verticalGap: 12,
-  toolbarBottomMargin: 16,
-  contentPaddingTop: 12,
-  contentPaddingBottom: 120,
-};
-
-function updateImagesPerPage() {
-  const root = galleryRoot.value;
-  if (!root) return;
-  const rect = root.getBoundingClientRect();
-  const width = rect.width;
-  const height = window.innerHeight;
-  const topHeight = galleryToolbar.value?.offsetHeight ?? 0;
-  const availableWidth = Math.max(0, width - 32);
-  const cols = Math.max(
-    1,
-    Math.floor((availableWidth + resizeState.horizontalGap) / (resizeState.itemWidth + resizeState.horizontalGap))
-  );
-  const availableHeight = Math.max(
-    0,
-    height - topHeight - resizeState.toolbarBottomMargin - resizeState.contentPaddingTop - resizeState.contentPaddingBottom
-  );
-  const rows = Math.max(
-    1,
-    Math.floor((availableHeight + resizeState.verticalGap) / (resizeState.itemHeight + resizeState.verticalGap))
-  );
-  const minRows = 4;
-  imagesPerPage.value = Math.max(1, cols * Math.max(rows, minRows));
-}
-
-let resizeTimer: number | undefined;
-function handleResize() {
-  if (resizeTimer) window.clearTimeout(resizeTimer);
-  resizeTimer = window.setTimeout(() => {
-    updateImagesPerPage();
-    if (currentPage.value > totalPages.value) {
-      currentPage.value = totalPages.value;
-    }
-  }, 150);
-}
-
-function onSearchInput() {
-  if (searchTimer) window.clearTimeout(searchTimer);
-  searchTimer = window.setTimeout(() => {
-    currentPage.value = 1;
-    loadImages();
+let searchTimer: ReturnType<typeof setTimeout> | null = null;
+watch(search, (v) => {
+  if (searchTimer) clearTimeout(searchTimer);
+  searchTimer = setTimeout(() => {
+    searchDebounced.value = v.trim();
   }, 300);
-}
-
-function onSortChange() {
-  currentPage.value = 1;
-  loadImages();
-}
-
-async function startSlideshow() {
-  if (displayImages.value.length === 0) return;
-  const paths = displayImages.value.map(img => img.path);
-  try {
-    await invoke("start_slideshow", {
-      filePaths: paths,
-      intervalSecs: slideshowInterval.value,
-    });
-    slideshowActive.value = true;
-    slideshowTotal.value = paths.length;
-    logger.action("Gallery", "启动轮播", { count: paths.length, interval: slideshowInterval.value });
-  } catch (e) {
-    localSnackbarText.value = `启动轮播失败: ${e}`;
-    localSnackbar.value = true;
-  }
-}
-
-async function stopSlideshow() {
-  try {
-    await invoke("stop_slideshow");
-    slideshowActive.value = false;
-    logger.action("Gallery", "停止轮播");
-  } catch (e) {
-    localSnackbarText.value = `停止轮播失败: ${e}`;
-    localSnackbar.value = true;
-  }
-}
-
-watch(imagesPerPage, () => {
-  if (currentPage.value > totalPages.value) {
-    currentPage.value = totalPages.value;
-  }
 });
 
-async function loadImages() {
-  if (loading.value) return;
+const totalPages = computed(() => Math.max(1, Math.ceil(total.value / pageSize.value)));
+const orphanCountOnPage = computed(() => images.value.filter((i) => i.is_orphan).length);
+
+function toEntry(o: OrphanFile): LocalImageEntry {
+  return { name: o.name, path: o.path, thumb_path: null, size: o.size, is_orphan: true, modified_date: null };
+}
+
+async function load() {
+  if (!dbReady.value) return;
   loading.value = true;
   loadError.value = "";
   try {
-    const result = await invoke<ListResult>("browse_image_files", {
-      source: source.value,
-      offset: 0,
-      limit: 9999,
-      customDir: useCustomDir.value && customDir.value.trim() ? customDir.value.trim() : null,
-      search: searchQuery.value.trim() || null,
-      sortBy: sortBy.value,
-    });
-    allImages.value = result.images;
-    // 当前壁纸排最前面，孤立文件其次，其余按名称降序（后端已排好）
-    if (currentWallpaper.value) {
-      allImages.value.sort((a, b) => {
-        if (a.path === currentWallpaper.value) return -1;
-        if (b.path === currentWallpaper.value) return 1;
-        return 0;
+    if (orphanOnly.value) {
+      const all = (await listOrphanFiles(source.value)).map(toEntry);
+      orphanAll.value = all;
+      total.value = all.length;
+      const start = (page.value - 1) * pageSize.value;
+      images.value = all.slice(start, start + pageSize.value);
+    } else {
+      const res = await browseImageFiles(source.value, {
+        offset: (page.value - 1) * pageSize.value,
+        limit: pageSize.value,
+        search: searchDebounced.value || undefined,
+        sortBy: sortBy.value,
       });
+      total.value = res.total;
+      images.value = res.images;
     }
-    total.value = result.total;
-    currentPage.value = 1;
-    selectedPaths.value.clear();
-    logger.info("Gallery", "图片已加载", { total: result.total, source: source.value });
-    await nextTick();
-    // 按需生成可见页面的缩略图
-    await requestThumbnails();
+    await loadThumbs();
   } catch (e) {
     loadError.value = String(e);
-    logger.error("Gallery", "加载图片失败", e);
+    images.value = [];
+    total.value = 0;
+  } finally {
+    loading.value = false;
   }
-  loading.value = false;
 }
 
-async function selectCustomDirectory() {
+async function loadThumbs() {
+  const names = images.value.map((i) => i.name);
+  if (names.length === 0) return;
   try {
-    const selected = await open({
-      directory: true,
-      multiple: false,
-      title: "选择自定义目录",
-    });
-    if (selected) {
-      customDir.value = selected;
-      useCustomDir.value = true;
-      resetAndLoad();
+    const dpr = appState.config?.thumbnail_dpr ?? 2;
+    const batch = await resolveThumbnails(source.value, names, dpr);
+    for (const it of batch.items) {
+      thumbUrls[it.name] = assetUrl(it.thumb_path);
     }
   } catch (e) {
-    logger.error("Gallery", "目录选择失败", e);
+    // 缩略图失败不致命，回退原图
+    for (const img of images.value) {
+      if (!thumbUrls[img.name]) thumbUrls[img.name] = assetUrl(img.path);
+    }
   }
 }
 
-async function resetAndLoad() {
-  allImages.value = [];
-  total.value = 0;
-  selectedIndex.value = -1;
-  selectedPaths.value.clear();
-  await loadCurrentWallpaper();
-  await nextTick();
-  await loadImages();
+function thumbOf(img: LocalImageEntry): string {
+  return thumbUrls[img.name] ?? assetUrl(img.path);
 }
 
-watch(source, async (to) => {
-  saveDir.value = "";
-  useCustomDir.value = false;
-  logger.action("Gallery", "切换源", { source: to });
-  await loadSaveDir();
-  await resetAndLoad();
+/* 触发重载 */
+watch([source, searchDebounced, sortBy, orphanOnly], () => {
+  page.value = 1;
+  load();
+});
+watch([page, pageSize], () => load());
+watch(
+  () => appState.galleryEpoch,
+  () => load(),
+);
+
+onMounted(() => {
+  load();
+  loadMonitors();
 });
 
-async function loadSaveDir() {
-  if (useCustomDir.value && customDir.value.trim()) {
-    saveDir.value = customDir.value.trim();
-    return;
-  }
-  try {
-    const config = await invoke<AppConfig>("get_config");
-    saveDir.value = source.value === "wallhaven" ? config.wallhaven_save_dir : config.reddit_save_dir;
-  } catch (e) {
-    saveDir.value = "";
-  }
+/* ════ 多选与批量 ════ */
+const selectionMode = ref(false);
+const selected = reactive(new Set<string>());
+
+function toggleSelect(name: string) {
+  if (selected.has(name)) selected.delete(name);
+  else selected.add(name);
 }
-
-async function requestThumbnails() {
-  const capturedSource = source.value;
-  const toProcess = visibleImages.value
-    .filter(img => !img.thumb_path)
-    .map(img => img.name);
-  if (toProcess.length === 0) return;
-
-  thumbLoading.value = true;
-
-  try {
-    const result = await invoke<{ items: ThumbnailResult[] }>("resolve_thumbnails", {
-      source: capturedSource,
-      filenames: toProcess,
-      dpr: dpr,
-    });
-    if (source.value !== capturedSource) return;
-
-    const imageMap = new Map(allImages.value.map(img => [img.name, img]));
-    for (const item of result.items) {
-      const img = imageMap.get(item.name);
-      if (img) img.thumb_path = item.thumb_path;
-    }
-  } catch (e) {
-    logger.error("Gallery", "缩略图生成失败", e);
-  }
-
-  thumbLoading.value = false;
+function clearSelection() {
+  selected.clear();
+  selectionMode.value = false;
 }
-
-async function deleteImage(index: number) {
-  const img = displayImages.value[index];
-  if (!img) return;
-  deletingIndex.value = index;
-  try {
-    if (img.is_orphan) {
-      await invoke<boolean>("delete_orphan_file", {
-        source: source.value,
-        name: img.name,
-      });
-      localSnackbarText.value = `已删除: ${img.name}`;
-      logger.action("Gallery", "删除孤立文件", { name: img.name });
-    } else {
-      await invoke<boolean>("dislike_file", {
-        source: source.value,
-        name: img.name,
-      });
-      localSnackbarText.value = `已标记为不喜欢: ${img.name}`;
-      logger.action("Gallery", "标记为不喜欢", { name: img.name });
-    }
-    // Remove from allImages by finding the actual index
-    const allIdx = allImages.value.findIndex(i => i.name === img.name);
-    if (allIdx >= 0) {
-      allImages.value.splice(allIdx, 1);
-      total.value -= 1;
-    }
-    if (selectedIndex.value === index) {
-      selectedIndex.value = -1;
-    } else if (selectedIndex.value > index) {
-      selectedIndex.value -= 1;
-    }
-    localSnackbar.value = true;
-  } catch (e) {
-    localSnackbarText.value = `操作失败: ${e}`;
-    localSnackbar.value = true;
-  }
-  deletingIndex.value = -1;
-}
-
-async function deleteSelected() {
-  if (selectedPaths.value.size === 0) return;
-  deletingSelection.value = true;
-  let count = 0;
-  for (const name of selectedPaths.value) {
-    try {
-      // 检查是否为孤立文件（从当前列表中查找）
-      const img = allImages.value.find((i) => i.name === name);
-      if (img?.is_orphan) {
-        await invoke<boolean>("delete_orphan_file", { source: source.value, name });
-        logger.action("Gallery", "批量删除孤立文件", { name });
-      } else {
-        await invoke<boolean>("dislike_file", { source: source.value, name });
-        logger.action("Gallery", "批量标记不喜欢", { name });
-      }
-      count++;
-    } catch (e) {
-      logger.error("Gallery", "批量操作失败", { name, error: e });
-    }
-  }
-  localSnackbarText.value = `批量操作完成: ${count} 张`;
-  localSnackbar.value = true;
-  logger.action("Gallery", "批量操作", { count });
-  selectedPaths.value.clear();
-  deletingSelection.value = false;
-  await resetAndLoad();
-}
-
-function toggleSelection(img: LocalImage) {
-  if (selectedPaths.value.has(img.name)) {
-    selectedPaths.value.delete(img.name);
+function onCardClick(img: LocalImageEntry) {
+  if (selectionMode.value) {
+    toggleSelect(img.name);
   } else {
-    selectedPaths.value.add(img.name);
+    openViewerFor(img);
   }
 }
 
-function isSelected(img: LocalImage): boolean {
-  return selectedPaths.value.has(img.name);
-}
+const batchRunning = ref(false);
 
-function shuffleImages() {
-  logger.action("Gallery", "随机排序");
-  const shuffled = [...allImages.value];
-  for (let i = shuffled.length - 1; i > 0; i--) {
-    const j = Math.floor(Math.random() * (i + 1));
-    [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
-  }
-  allImages.value = shuffled;
-  currentPage.value = 1;
-  selectedIndex.value = -1;
-  selectedPaths.value.clear();
-}
-
-async function setAsWallpaper() {
-  const img = selectedImage.value;
-  if (!img) return;
-  settingWallpaper.value = true;
+async function onBatchDelete() {
+  const names = [...selected];
+  if (names.length === 0) return;
+  const isOrphanMode = orphanOnly.value;
+  const ok = await askConfirm(
+    isOrphanMode ? "删除孤儿文件" : "批量删除",
+    isOrphanMode
+      ? `将永久删除 ${names.length} 个孤儿文件及其缩略图，无法恢复。`
+      : `将把 ${names.length} 张图片标记为不喜欢并删除本地文件及缩略图。`,
+    { danger: true, confirmText: "删除" },
+  );
+  if (!ok) return;
+  batchRunning.value = true;
+  let done = 0;
   try {
-    const result = await invoke<string>("set_wallpaper", {
-      filePath: img.path,
-      monitor: selectedMonitor.value !== "all" ? selectedMonitor.value : null,
-    });
-    localSnackbarText.value = result;
-    localSnackbar.value = true;
-    currentWallpaper.value = img.path;
-    logger.action("Gallery", "设为壁纸", { name: img.name, monitor: selectedMonitor.value });
+    for (const name of names) {
+      try {
+        if (isOrphanMode) await deleteOrphanFile(source.value, name);
+        else await dislikeFile(source.value, name);
+        done++;
+      } catch (e) {
+        toastError(e);
+      }
+    }
+    toast(`已处理 ${done} / ${names.length} 张`, done === names.length ? "success" : "info");
+    clearSelection();
+    await load();
+  } finally {
+    batchRunning.value = false;
+  }
+}
+
+async function onBatchAdopt() {
+  const names = [...selected];
+  if (names.length === 0) return;
+  batchRunning.value = true;
+  try {
+    const n = await adoptOrphanFiles(source.value, names);
+    toast(`已收养 ${n} 个文件入库`, "success");
+    clearSelection();
+    await load();
   } catch (e) {
-    localSnackbarText.value = `设置壁纸失败: ${e}`;
-    localSnackbar.value = true;
-  }
-  settingWallpaper.value = false;
-}
-
-function onDialogKeydown(e: KeyboardEvent) {
-  if (!dialogOpen.value) return;
-  if (e.key === "ArrowLeft") {
-    logger.action("Gallery", "预览导航", { direction: "prev" });
-    navigateImage(-1);
-  } else if (e.key === "ArrowRight") {
-    logger.action("Gallery", "预览导航", { direction: "next" });
-    navigateImage(1);
-  } else if (e.key === "Escape") {
-    selectedIndex.value = -1;
+    toastError(e);
+  } finally {
+    batchRunning.value = false;
   }
 }
 
-function navigateImage(direction: number) {
-  const newIndex = selectedIndex.value + direction;
-  if (newIndex >= 0 && newIndex < displayImages.value.length) {
-    selectedIndex.value = newIndex;
-    logger.info("Gallery", "切换到图片", { index: newIndex, name: displayImages.value[newIndex]?.name });
-  }
+/* ════ 查看器 ════ */
+const viewerOpen = ref(false);
+const viewerIndex = ref(0);
+
+const viewerImages = computed(() => images.value.map((i) => ({ name: i.name, path: i.path })));
+
+function openViewerFor(img: LocalImageEntry) {
+  const idx = images.value.findIndex((i) => i.name === img.name);
+  viewerIndex.value = Math.max(0, idx);
+  viewerOpen.value = true;
 }
 
-function formatSize(bytes: number): string {
-  if (bytes < 1024) return bytes + " B";
-  if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + " KB";
-  return (bytes / (1024 * 1024)).toFixed(1) + " MB";
-}
+/* ════ 详情 ════ */
+const detailOpen = ref(false);
+const detailLoading = ref(false);
+const detail = ref<ImageInfo | null>(null);
 
-function isCurrentWallpaper(img: LocalImage): boolean {
-  return !!currentWallpaper.value && img.path === currentWallpaper.value;
-}
-
-async function loadCurrentWallpaper() {
+async function openDetail(img: LocalImageEntry) {
+  detailOpen.value = true;
+  detailLoading.value = true;
+  detail.value = null;
   try {
-    const data = await invoke<{ path: string }>("get_active_wallpaper");
-    currentWallpaper.value = data.path || "";
-  } catch {
-    currentWallpaper.value = "";
+    detail.value = await getImageInfo(source.value, img.name);
+  } catch (e) {
+    toastError(e);
+    detailOpen.value = false;
+  } finally {
+    detailLoading.value = false;
   }
 }
+
+async function onOpenLink(url: string | null) {
+  if (!url) return;
+  try {
+    await openUrl(url);
+  } catch (e) {
+    toastError(e);
+  }
+}
+
+/* ════ 壁纸 ════ */
+const monitors = ref<MonitorInfo[]>([]);
+const monitorChoice = ref<string>("all");
+const settingWallpaper = ref(false);
 
 async function loadMonitors() {
   try {
-    const result = await invoke<Monitor[]>("list_monitors");
-    monitors.value = result;
-    logger.info("Gallery", "显示器列表已加载", { count: result.length });
-  } catch (e) {
-    logger.error("Gallery", "获取显示器列表失败", e);
+    monitors.value = await listMonitors();
+  } catch {
     monitors.value = [];
   }
 }
 
-async function loadImageInfo() {
-  const img = selectedImage.value;
-  if (!img) return;
-  loadingInfo.value = true;
+const monitorItems = computed(() => [
+  { title: "全部显示器", value: "all" },
+  ...monitors.value.map((m) => ({
+    title: `${m.name}${m.is_primary ? "（主）" : ""} · ${m.width}×${m.height}`,
+    value: m.id,
+  })),
+]);
+
+async function onSetWallpaper(path: string, monitor?: string) {
+  if (settingWallpaper.value) return;
+  settingWallpaper.value = true;
   try {
-    imageInfo.value = await invoke<ImageInfo>("get_image_info", {
-      source: source.value,
-      name: img.name,
-    });
+    const msg = await setWallpaper(path, monitor && monitor !== "all" ? monitor : undefined);
+    toast(msg, "success");
   } catch (e) {
-    logger.error("Gallery", "获取图片信息失败", e);
-    imageInfo.value = null;
+    toastError(e);
+  } finally {
+    settingWallpaper.value = false;
   }
-  loadingInfo.value = false;
 }
 
-watch(showInfo, (v) => {
-  if (v && selectedImage.value && !imageInfo.value) {
-    loadImageInfo();
-  }
-});
-
-watch(selectedIndex, () => {
-  imageInfo.value = null;
-  if (showInfo.value && selectedImage.value) {
-    loadImageInfo();
-  }
-});
-
-async function batchAddOrphans() {
-  const orphanNames = allImages.value
-    .filter((img) => img.is_orphan && selectedPaths.value.has(img.name))
-    .map((img) => img.name);
-  if (orphanNames.length === 0) return;
-
-  addingOrphanName.value = "batch";
-  try {
-    const count = await invoke<number>("adopt_orphan_files", {
-      source: source.value,
-      names: orphanNames,
-    });
-    localSnackbarText.value = `已入库 ${count} 个孤立文件`;
-    localSnackbar.value = true;
-    logger.action("Gallery", "批量入库孤立文件", { count });
-    // 更新本地状态
-    for (const img of allImages.value) {
-      if (img.is_orphan && selectedPaths.value.has(img.name)) {
-        img.is_orphan = false;
-      }
-    }
-    selectedPaths.value.clear();
-  } catch (e) {
-    localSnackbarText.value = `入库失败: ${e}`;
-    localSnackbar.value = true;
-  }
-  addingOrphanName.value = "";
-}
-
-async function addOrphanFromGallery(img: LocalImage) {
-  addingOrphanName.value = img.name;
-  try {
-    const count = await invoke<number>("adopt_orphan_files", {
-      source: source.value,
-      names: [img.name],
-    });
-    if (count > 0) {
-      img.is_orphan = false;
-      localSnackbarText.value = `已入库: ${img.name}`;
-      logger.action("Gallery", "孤立文件已入库", { name: img.name });
-    } else {
-      localSnackbarText.value = `入库失败或重复: ${img.name}`;
-    }
-    localSnackbar.value = true;
-  } catch (e) {
-    localSnackbarText.value = `入库失败: ${e}`;
-    localSnackbar.value = true;
-  }
-  addingOrphanName.value = "";
-}
-
-async function cleanThumbnails() {
-  cleaningThumbnails.value = true;
-  try {
-    const result = await invoke<{ wallhaven: number; reddit: number }>("clean_thumbnails");
-    const total = result.wallhaven + result.reddit;
-    localSnackbarText.value = `已清理 ${total} 个失效缩略图 (Wallhaven: ${result.wallhaven}, Reddit: ${result.reddit})`;
-    localSnackbar.value = true;
-    logger.action("Gallery", "清理缩略图", { wallhaven: result.wallhaven, reddit: result.reddit });
-  } catch (e) {
-    localSnackbarText.value = `清理缩略图失败: ${e}`;
-    localSnackbar.value = true;
-  }
-  cleaningThumbnails.value = false;
-}
-
-async function prevPage() {
-  if (currentPage.value <= 1) return;
-  currentPage.value -= 1;
-  logger.action("Gallery", "翻页", { page: currentPage.value });
-  pageLoading.value = true;
-  await nextTick();
-  pageLoading.value = false;
-  requestThumbnails();
-}
-
-async function nextPage() {
-  if (currentPage.value >= totalPages.value) return;
-  currentPage.value += 1;
-  logger.action("Gallery", "翻页", { page: currentPage.value });
-  pageLoading.value = true;
-  await nextTick();
-  pageLoading.value = false;
-  requestThumbnails();
-}
-
-onMounted(async () => {
-  await loadSaveDir();
-  await loadCurrentWallpaper();
-  await loadMonitors();
-  updateImagesPerPage();
-  window.addEventListener("resize", handleResize);
-  if (galleryRoot.value && 'ResizeObserver' in window) {
-    resizeObserver = new ResizeObserver(() => updateImagesPerPage());
-    resizeObserver.observe(galleryRoot.value);
-  }
-  await loadImages();
-
-  unlistenSlideshow = await listen<{ index: number; total: number; name: string; path: string }>(
-    "slideshow-tick",
-    (e) => {
-      slideshowIndex.value = e.payload.index;
-      slideshowTotal.value = e.payload.total;
-      currentWallpaper.value = e.payload.path;
-    },
+/* ════ 删除（单张） ════ */
+async function onDeleteSingle(img: LocalImageEntry) {
+  const isOrphan = img.is_orphan;
+  const ok = await askConfirm(
+    isOrphan ? "删除孤儿文件" : "删除图片",
+    isOrphan
+      ? `将永久删除「${img.name}」及其缩略图，无法恢复。`
+      : `将把「${img.name}」标记为不喜欢并删除本地文件及缩略图。`,
+    { danger: true, confirmText: "删除" },
   );
-});
+  if (!ok) return;
+  try {
+    if (isOrphan) await deleteOrphanFile(source.value, img.name);
+    else await dislikeFile(source.value, img.name);
+    toast("已删除", "success");
+    detailOpen.value = false;
+    await load();
+  } catch (e) {
+    toastError(e);
+  }
+}
 
-onUnmounted(() => {
-  window.removeEventListener("resize", handleResize);
-  if (resizeTimer) window.clearTimeout(resizeTimer);
-  if (searchTimer) window.clearTimeout(searchTimer);
-  if (resizeObserver) {
-    resizeObserver.disconnect();
-    resizeObserver = null;
+/* ════ 轮播 ════ */
+const slideshowInterval = ref(60);
+const startingSlideshow = ref(false);
+
+const slideshow = computed(() => appState.slideshow);
+
+async function onStartSlideshow() {
+  if (startingSlideshow.value) return;
+  if (slideshowInterval.value < 5) {
+    toast("轮播间隔不能小于 5 秒", "error");
+    return;
   }
-  if (unlistenSlideshow) unlistenSlideshow();
-  // Stop slideshow when leaving the gallery
-  if (slideshowActive.value) {
-    invoke("stop_slideshow").catch(() => {});
+  startingSlideshow.value = true;
+  try {
+    // 取当前筛选（含搜索词）的全量图片
+    let paths: string[];
+    if (orphanOnly.value) {
+      paths = orphanAll.value.map((i) => i.path);
+    } else {
+      const res = await browseImageFiles(source.value, {
+        offset: 0,
+        limit: Math.max(total.value, 1),
+        search: searchDebounced.value || undefined,
+        sortBy: sortBy.value,
+      });
+      paths = res.images.map((i) => i.path);
+    }
+    if (paths.length === 0) {
+      toast("当前筛选没有图片", "info");
+      return;
+    }
+    await startSlideshow(paths, slideshowInterval.value);
+    appState.slideshow.running = true;
+    toast(`轮播已启动：${paths.length} 张，每 ${slideshowInterval.value} 秒切换`, "success");
+  } catch (e) {
+    toastError(e);
+  } finally {
+    startingSlideshow.value = false;
   }
-});
+}
+
+async function onStopSlideshow() {
+  try {
+    await stopSlideshow();
+    appState.slideshow.running = false;
+    appState.slideshow.current = null;
+    toast("轮播已停止", "info");
+  } catch (e) {
+    toastError(e);
+  }
+}
 </script>
 
 <template>
-  <div class="gallery-root" ref="galleryRoot">
-    <div class="gallery-toolbar glass-card" ref="galleryToolbar">
-      <div class="toolbar-inner">
-        <v-btn-toggle v-model="source" :mandatory="!useCustomDir" color="primary" density="compact" rounded="pill" class="toolbar-source-toggle">
-          <v-btn value="wallhaven" prepend-icon="mdi-image-search" size="small">Wallhaven</v-btn>
-          <v-btn value="reddit" prepend-icon="mdi-reddit" size="small">Reddit</v-btn>
-        </v-btn-toggle>
+  <div class="view gallery-view">
+    <div class="view-header">
+      <span class="view-header__title">图库</span>
+      <v-btn-toggle v-model="source" mandatory density="compact" color="primary" class="ml-2">
+        <v-btn value="wallhaven" size="small">Wallhaven</v-btn>
+        <v-btn value="reddit" size="small">Reddit</v-btn>
+      </v-btn-toggle>
+      <v-spacer />
+      <v-text-field
+        v-model="search"
+        placeholder="搜索文件名…"
+        prepend-inner-icon="mdi-magnify"
+        density="compact"
+        hide-details
+        clearable
+        class="gallery-search settings-field"
+      />
+      <v-select
+        v-model="sortBy"
+        :items="SORT_ITEMS"
+        density="compact"
+        hide-details
+        :disabled="orphanOnly"
+        class="settings-field"
+        style="max-width: 170px"
+      />
+      <v-btn icon="mdi-refresh" variant="text" size="small" :loading="loading" @click="load" />
+    </div>
 
-        <v-btn
-          variant="text"
-          size="small"
-          :color="useCustomDir ? 'primary' : 'grey'"
-          @click="useCustomDir = !useCustomDir; if (!useCustomDir) { source = 'wallhaven'; }"
-          class="toolbar-action-btn"
-        >
-          <v-icon start size="14">mdi-folder-open</v-icon>
-          {{ useCustomDir ? '退出自定义' : '自定义目录' }}
-        </v-btn>
-
-        <template v-if="useCustomDir">
-          <v-text-field
-            v-model="customDir"
-            label="目录路径"
-            density="compact"
-            hide-details
-            variant="outlined"
-            class="toolbar-dir-input"
-            style="max-width: 280px;"
-            append-inner-icon="mdi-folder-open"
-            @click:append-inner="selectCustomDirectory"
-            @keydown.enter="resetAndLoad"
-          />
-          <v-btn
-            variant="tonal"
-            size="small"
-            color="primary"
-            @click="resetAndLoad"
-            class="toolbar-action-btn"
-          >
-            <v-icon size="14">mdi-magnify</v-icon>
-          </v-btn>
-        </template>
-        <template v-else>
-          <v-chip v-if="saveDir" size="x-small" variant="outlined" class="toolbar-dir-chip text-truncate">
-            <v-icon start size="11">mdi-folder</v-icon>
-            {{ saveDir }}
-          </v-chip>
-        </template>
-
+    <!-- 轮播控制条 -->
+    <div class="panel-card slideshow-bar animate-in">
+      <v-icon icon="mdi-play-circle-outline" size="18" color="primary" />
+      <template v-if="!slideshow.running">
+        <span class="text-body">壁纸轮播</span>
         <v-text-field
-          v-model="searchQuery"
+          v-model.number="slideshowInterval"
+          type="number"
+          suffix="秒"
           density="compact"
-          variant="outlined"
-          placeholder="搜索文件名..."
           hide-details
-          prepend-inner-icon="mdi-magnify"
-          clearable
-          class="toolbar-search"
-          style="max-width: 180px;"
-          @update:model-value="onSearchInput"
-          @click:clear="searchQuery = ''; onSearchInput()"
+          class="settings-field slideshow-bar__interval"
         />
-
-        <v-select
-          v-model="sortBy"
-          density="compact"
-          variant="outlined"
-          hide-details
-          :items="[
-            { title: '默认', value: 'default' },
-            { title: '名称 A-Z', value: 'name_asc' },
-            { title: '名称 Z-A', value: 'name_desc' },
-            { title: '大小 ↑', value: 'size_asc' },
-            { title: '大小 ↓', value: 'size_desc' },
-            { title: '日期 ↓', value: 'date_desc' },
-            { title: '日期 ↑', value: 'date_asc' },
-          ]"
-          class="toolbar-sort"
-          style="max-width: 120px;"
-          @update:model-value="onSortChange"
-        />
-
-        <div class="toolbar-actions">
-          <v-btn variant="text" color="default" :loading="loading" @click="() => { logger.action('Gallery', '刷新'); resetAndLoad(); }" icon="mdi-refresh" size="small" class="toolbar-action-btn" />
-          <v-btn variant="text" color="default" @click="shuffleImages" size="small" class="toolbar-action-btn">
-            <v-icon start size="14">mdi-shuffle</v-icon>
-            随机
-          </v-btn>
-          <v-btn v-if="!slideshowActive" variant="text" color="success" @click="startSlideshow" size="small" class="toolbar-action-btn">
-            <v-icon start size="14">mdi-play-circle-outline</v-icon>
-            轮播
-          </v-btn>
-          <template v-else>
-            <v-btn variant="text" color="error" @click="stopSlideshow" size="small" class="toolbar-action-btn">
-              <v-icon start size="14">mdi-stop-circle-outline</v-icon>
-              停止
-            </v-btn>
-            <v-chip color="success" variant="tonal" size="x-small" class="toolbar-chip">
-              {{ slideshowIndex + 1 }}/{{ slideshowTotal }}
-            </v-chip>
+        <v-btn size="small" color="primary" variant="flat" :loading="startingSlideshow" @click="onStartSlideshow">
+          用当前筛选启动（{{ total }} 张）
+        </v-btn>
+      </template>
+      <template v-else>
+        <span class="text-body">轮播中</span>
+        <span class="text-caption slideshow-bar__tick">
+          <template v-if="slideshow.current">
+            {{ slideshow.current.index + 1 }} / {{ slideshow.current.total }} · {{ slideshow.current.name }}
           </template>
-          <v-select
-            v-model="slideshowInterval"
-            density="compact"
-            variant="outlined"
-            hide-details
-            :items="[
-              { title: '10s', value: 10 },
-              { title: '30s', value: 30 },
-              { title: '1m', value: 60 },
-              { title: '5m', value: 300 },
-              { title: '15m', value: 900 },
-              { title: '30m', value: 1800 },
-              { title: '1h', value: 3600 },
-            ]"
-            class="toolbar-slideshow-interval"
-            style="max-width: 80px;"
-            :disabled="slideshowActive"
+          <template v-else>等待切换…</template>
+        </span>
+        <v-btn size="small" variant="tonal" color="error" @click="onStopSlideshow">停止轮播</v-btn>
+      </template>
+    </div>
+
+    <!-- 统计条 -->
+    <div class="gallery-meta">
+      <span class="text-caption">
+        共 {{ total }} 张 · 第 {{ page }} / {{ totalPages }} 页
+        <template v-if="!orphanOnly && orphanCountOnPage > 0"> · 本页含 {{ orphanCountOnPage }} 个孤儿文件</template>
+      </span>
+      <v-chip
+        v-if="!orphanOnly"
+        size="x-small"
+        variant="outlined"
+        class="gallery-meta__orphan-chip"
+        @click="orphanOnly = true"
+      >
+        仅看孤儿文件
+      </v-chip>
+      <v-chip v-else size="x-small" color="warning" variant="tonal" closable @click:close="orphanOnly = false">
+        孤儿文件模式
+      </v-chip>
+      <v-spacer />
+      <v-btn
+        size="x-small"
+        :variant="selectionMode ? 'flat' : 'text'"
+        :color="selectionMode ? 'primary' : undefined"
+        @click="selectionMode ? clearSelection() : (selectionMode = true)"
+      >
+        {{ selectionMode ? `完成选择（${selected.size}）` : "选择" }}
+      </v-btn>
+      <v-select
+        v-model="pageSize"
+        :items="PAGE_SIZE_ITEMS"
+        density="compact"
+        hide-details
+        class="settings-field"
+        style="max-width: 90px"
+      />
+    </div>
+
+    <!-- 批量操作条 -->
+    <div v-if="selectionMode && selected.size > 0" class="gallery-batch animate-in">
+      <span class="text-body">已选 {{ selected.size }} 项</span>
+      <v-spacer />
+      <v-btn
+        v-if="orphanOnly"
+        size="small"
+        variant="tonal"
+        :loading="batchRunning"
+        @click="onBatchAdopt"
+      >
+        收养入库
+      </v-btn>
+      <v-btn size="small" variant="tonal" color="error" :loading="batchRunning" @click="onBatchDelete">
+        删除
+      </v-btn>
+    </div>
+
+    <!-- 内容区 -->
+    <EmptyState
+      v-if="!dbReady"
+      icon="mdi-database-alert-outline"
+      title="数据库未初始化"
+      desc="请先在启动弹窗或「数据库」页面创建数据库"
+    />
+    <EmptyState
+      v-else-if="loadError"
+      error
+      icon="mdi-alert-circle-outline"
+      title="图库加载失败"
+      :desc="loadError"
+    >
+      <v-btn variant="tonal" @click="load">重试</v-btn>
+    </EmptyState>
+    <div v-else-if="loading && images.length === 0" class="gallery-grid">
+      <div v-for="i in 12" :key="i" class="gallery-card shimmer" />
+    </div>
+    <EmptyState
+      v-else-if="images.length === 0 && searchDebounced"
+      icon="mdi-magnify-close"
+      title="没有匹配的图片"
+      :desc="`文件名包含「${searchDebounced}」的图片不存在`"
+    />
+    <EmptyState
+      v-else-if="images.length === 0"
+      :icon="orphanOnly ? 'mdi-folder-check-outline' : 'mdi-image-off-outline'"
+      :title="orphanOnly ? '没有孤儿文件' : '图库为空'"
+      :desc="orphanOnly ? '保存目录中的文件都已在数据库中登记' : '前往 Wallhaven 或 Reddit 页面下载图片'"
+    />
+
+    <div v-else class="gallery-grid">
+      <div
+        v-for="img in images"
+        :key="img.name"
+        class="gallery-card"
+        :class="{ 'gallery-card--selected': selectionMode && selected.has(img.name) }"
+        @click="onCardClick(img)"
+      >
+        <img :src="thumbOf(img)" :alt="img.name" loading="lazy" />
+        <span v-if="img.is_orphan" class="gallery-card__orphan">孤儿</span>
+
+        <!-- 选择态角标 -->
+        <span v-if="selectionMode" class="gallery-card__check">
+          <v-icon
+            :icon="selected.has(img.name) ? 'mdi-checkbox-marked-circle' : 'mdi-checkbox-blank-circle-outline'"
+            size="20"
+            :color="selected.has(img.name) ? 'primary' : 'white'"
           />
-          <v-btn variant="text" :color="selectionMode ? 'warning' : 'default'" @click="() => { const newMode = !selectionMode; logger.action('Gallery', '选择模式', { mode: newMode }); selectionMode = newMode; selectedPaths.clear(); }" size="small" class="toolbar-action-btn">
-            <v-icon start size="14">{{ selectionMode ? 'mdi-close' : 'mdi-checkbox-multiple-marked-outline' }}</v-icon>
-            {{ selectionMode ? '退出选择' : '批量选择' }}
-          </v-btn>
-          <v-btn v-if="selectionMode && selectedOrphanCount > 0" color="success" variant="text" :loading="addingOrphanName !== ''" @click="batchAddOrphans" size="small" class="toolbar-action-btn">
-            <v-icon start size="14">mdi-database-plus</v-icon>
-            入库 ({{ selectedOrphanCount }})
-          </v-btn>
-          <v-btn v-if="selectionMode && selectedPaths.size > 0" color="error" variant="text" :loading="deletingSelection" @click="deleteSelected" size="small" class="toolbar-action-btn">
-            <v-icon start size="14">mdi-close-circle</v-icon>
-            标记不喜欢 ({{ selectedPaths.size }})
-          </v-btn>
-        </div>
+        </span>
 
-        <div class="toolbar-meta">
+        <!-- hover 操作 -->
+        <div v-if="!selectionMode" class="gallery-card__overlay" @click.stop>
+          <v-btn icon="mdi-monitor" size="x-small" variant="flat" class="overlay-btn" title="设为壁纸" @click="onSetWallpaper(img.path)" />
+          <v-btn icon="mdi-information-outline" size="x-small" variant="flat" class="overlay-btn" title="详情" @click="openDetail(img)" />
+          <v-btn icon="mdi-delete-outline" size="x-small" variant="flat" class="overlay-btn overlay-btn--danger" title="删除" @click="onDeleteSingle(img)" />
+        </div>
+      </div>
+    </div>
+
+    <!-- 分页 -->
+    <div v-if="totalPages > 1" class="gallery-pager">
+      <v-btn icon="mdi-chevron-left" variant="text" size="small" :disabled="page <= 1 || loading" @click="page--" />
+      <span class="text-caption">{{ page }} / {{ totalPages }}</span>
+      <v-btn icon="mdi-chevron-right" variant="text" size="small" :disabled="page >= totalPages || loading" @click="page++" />
+    </div>
+
+    <!-- 详情抽屉 -->
+    <v-navigation-drawer v-model="detailOpen" location="right" width="360" temporary class="detail-drawer">
+      <div v-if="detailLoading" class="async-state"><v-progress-circular indeterminate color="primary" /></div>
+      <div v-else-if="detail" class="detail-body">
+        <div class="detail-head">
+          <span class="text-heading detail-head__name">{{ detail.name }}</span>
+          <v-spacer />
+          <v-btn icon="mdi-close" variant="text" size="small" @click="detailOpen = false" />
+        </div>
+        <div class="detail-preview">
+          <img :src="assetUrl(detail.path)" :alt="detail.name" @click="openViewerFor({ name: detail!.name, path: detail!.path, thumb_path: null, size: detail!.size, is_orphan: false, modified_date: null })" />
+        </div>
+        <div class="detail-rows">
+          <div class="detail-row"><span class="stat-label">分辨率</span><span class="text-body">{{ detail.resolution ?? (detail.width && detail.height ? `${detail.width}×${detail.height}` : "-") }}</span></div>
+          <div class="detail-row"><span class="stat-label">格式</span><span class="text-body">{{ detail.format ?? "-" }}</span></div>
+          <div class="detail-row"><span class="stat-label">大小</span><span class="text-body">{{ formatBytes(detail.size) }}</span></div>
+          <div class="detail-row"><span class="stat-label">来源</span><span class="text-body">{{ detail.source ?? "未入库" }}</span></div>
+          <div v-if="detail.created_at" class="detail-row"><span class="stat-label">入库时间</span><span class="text-body">{{ detail.created_at.slice(0, 16) }}</span></div>
+          <div v-if="detail.title" class="detail-row detail-row--col"><span class="stat-label">标题</span><span class="text-body">{{ detail.title }}</span></div>
+          <div v-if="detail.source_url || detail.permalink || detail.download_url" class="detail-row detail-row--col">
+            <span class="stat-label">链接</span>
+            <div class="detail-links">
+              <v-btn v-if="detail.source_url" size="x-small" variant="text" color="primary" @click="onOpenLink(detail.source_url)">来源页面</v-btn>
+              <v-btn v-if="detail.permalink" size="x-small" variant="text" color="primary" @click="onOpenLink(detail.permalink)">Reddit 帖子</v-btn>
+              <v-btn v-if="detail.download_url" size="x-small" variant="text" color="primary" @click="onOpenLink(detail.download_url)">原图 URL</v-btn>
+            </div>
+          </div>
+        </div>
+        <div class="detail-actions">
+          <v-select
+            v-model="monitorChoice"
+            :items="monitorItems"
+            label="显示器"
+            density="compact"
+            hide-details
+            class="settings-field"
+          />
           <v-btn
-            variant="text"
-            size="x-small"
-            :color="showOrphansOnly ? 'orange' : 'grey'"
-            @click="showOrphansOnly = !showOrphansOnly; currentPage = 1"
-            class="toolbar-action-btn"
+            color="primary"
+            variant="flat"
+            prepend-icon="mdi-monitor"
+            :loading="settingWallpaper"
+            @click="onSetWallpaper(detail.path, monitorChoice)"
           >
-            <v-icon start size="13">mdi-file-remove</v-icon>
-            孤立文件
-            <v-chip
-              v-if="orphanCount > 0"
-              size="x-small"
-              :color="showOrphansOnly ? 'orange' : 'grey'"
-              variant="tonal"
-              class="ms-1"
-              style="height: 16px !important; font-size: 0.5625rem"
-            >
-              {{ orphanCount }}
-            </v-chip>
+            设为壁纸
           </v-btn>
-          <v-btn variant="text" size="x-small" color="grey" :loading="cleaningThumbnails" @click="cleanThumbnails" class="toolbar-action-btn">
-            <v-icon start size="12">mdi-broom</v-icon>
-            清理缩略图
-          </v-btn>
-          <v-chip color="primary" variant="tonal" size="x-small" class="toolbar-chip">
-            {{ visibleImages.length }} / {{ showOrphansOnly ? orphanCount : total }}
-          </v-chip>
-          <v-chip color="secondary" variant="tonal" size="x-small" class="toolbar-chip">
-            第 {{ currentPage }}/{{ totalPages }} 页
-          </v-chip>
-          <v-chip v-if="pageLoading" color="primary" variant="outlined" size="x-small" class="toolbar-chip">
-            <v-progress-circular indeterminate size="10" width="2" class="me-1" />
-            加载中
-          </v-chip>
-          <v-chip v-if="thumbLoading" color="warning" variant="outlined" size="x-small" class="toolbar-chip">
-            <v-progress-circular indeterminate size="10" width="2" class="me-1" />
-            缩略图中
-          </v-chip>
-        </div>
-      </div>
-    </div>
-
-    <div class="gallery-content">
-      <div v-if="loading && allImages.length === 0" class="gallery-grid" aria-busy="true" aria-label="加载图片中">
-        <div v-for="n in 6" :key="n" class="gallery-skeleton shimmer" />
-      </div>
-
-      <div v-else-if="loadError" class="gallery-empty gallery-empty--error">
-        <div class="empty-icon-wrap">
-          <v-icon size="72" color="error" class="empty-icon">mdi-alert-circle-outline</v-icon>
-        </div>
-        <p class="empty-title">加载失败</p>
-        <p class="empty-desc">{{ loadError }}</p>
-        <div class="empty-actions">
-          <v-btn color="primary" variant="tonal" prepend-icon="mdi-refresh" @click="resetAndLoad">
-            重试
+          <v-btn variant="tonal" color="error" prepend-icon="mdi-delete-outline" @click="onDeleteSingle({ name: detail.name, path: detail.path, thumb_path: null, size: detail.size, is_orphan: !detail.source, modified_date: null })">
+            删除
           </v-btn>
         </div>
       </div>
+    </v-navigation-drawer>
 
-      <div v-else-if="allImages.length > 0" class="gallery-grid-wrapper" :class="{ 'gallery-grid-wrapper--loading': pageLoading }">
-        <div class="gallery-grid" :class="{ 'gallery-grid--fade': pageLoading }">
-          <div
-            v-for="(img, i) in visibleImages"
-            :key="img.path"
-            class="gallery-item"
-            :class="{ 'gallery-item-selected': isSelected(img) }"
-            role="button"
-            tabindex="0"
-            :aria-label="selectionMode ? `切换选择 ${img.name}` : `预览 ${img.name}`"
-            @click="selectionMode ? toggleSelection(img) : (selectedIndex = (currentPage - 1) * imagesPerPage + i)"
-            @keydown.enter.space.prevent="selectionMode ? toggleSelection(img) : (selectedIndex = (currentPage - 1) * imagesPerPage + i)"
-          >
-            <div class="gallery-thumb-wrap">
-              <img
-                :src="getImageUrl(img)"
-                :alt="img.name"
-                class="gallery-img"
-                :class="{ 'gallery-img--visible': imgLoaded.has(img.name) }"
-                decoding="async"
-                loading="lazy"
-                @load="onImgLoad(img)"
-                @error="onImgError($event, img)"
-              />
-              <div v-if="!imgLoaded.has(img.name)" class="gallery-thumb-loading">
-                <v-progress-circular indeterminate size="28" width="2" color="#3b82f6" />
-              </div>
-            </div>
-            <div class="gallery-overlay">
-              <span class="overlay-name">{{ img.name }}</span>
-              <span class="overlay-size">{{ formatSize(img.size) }}</span>
-            </div>
-            <div class="gallery-badges">
-              <div v-if="img.is_orphan" class="orphan-badge">
-                <v-icon size="11">mdi-file-remove</v-icon>
-                <span>孤立</span>
-              </div>
-              <div v-if="isCurrentWallpaper(img)" class="current-wallpaper-badge">
-                <v-icon size="12">mdi-wallpaper</v-icon>
-                <span>当前</span>
-              </div>
-            </div>
-            <div class="gallery-item-actions">
-              <div v-if="img.is_orphan" class="gallery-orphan-actions">
-                <v-btn
-                  icon="mdi-database-plus"
-                  size="x-small"
-                  color="success"
-                  variant="flat"
-                  class="gallery-action-btn"
-                  :loading="addingOrphanName === img.name"
-                  @click.stop="addOrphanFromGallery(img)"
-                />
-              </div>
-              <v-btn
-                v-if="!useCustomDir"
-                icon="mdi-delete"
-                size="x-small"
-                color="error"
-                variant="flat"
-                class="gallery-action-btn"
-                @click.stop="pendingDeleteIndex = (currentPage - 1) * imagesPerPage + i; confirmDelete = true"
-              />
-            </div>
-            <div v-if="selectionMode" class="gallery-checkbox" @click.stop="toggleSelection(img)">
-              <v-icon :color="isSelected(img) ? 'primary' : 'white'">
-                {{ isSelected(img) ? 'mdi-checkbox-marked-circle' : 'mdi-checkbox-blank-circle-outline' }}
-              </v-icon>
-            </div>
-          </div>
-        </div>
-      </div>
-
-      <div v-else class="gallery-empty">
-        <div class="empty-icon-wrap">
-          <v-icon size="72" color="grey" class="empty-icon">mdi-image-off-outline</v-icon>
-        </div>
-        <p class="empty-title">暂无本地图片</p>
-        <p class="empty-desc">请先从 Wallhaven 或 Reddit 下载壁纸</p>
-        <div class="empty-actions">
-          <v-btn color="primary" variant="tonal" prepend-icon="mdi-image-search" size="small" @click="emit('navigate', 'wallhaven')">
-            去 Wallhaven
-          </v-btn>
-          <v-btn color="reddit" variant="tonal" prepend-icon="mdi-reddit" size="small" @click="emit('navigate', 'reddit')">
-            去 Reddit
-          </v-btn>
-        </div>
-        <div v-if="saveDir" class="empty-dir">
-          <v-chip variant="outlined" color="grey" size="small">
-            <v-icon start size="14">mdi-folder</v-icon>
-            {{ saveDir }}
-          </v-chip>
-        </div>
-      </div>
-    </div>
-
-    <div v-if="allImages.length > 0" class="gallery-pagination-bar">
-      <v-btn icon="mdi-chevron-left" variant="text" size="small" :disabled="currentPage <= 1" @click="prevPage" />
-      <span class="pagination-info">第 <strong>{{ currentPage }}</strong> / {{ totalPages }} 页</span>
-      <v-btn icon="mdi-chevron-right" variant="text" size="small" :disabled="currentPage >= totalPages" @click="nextPage" />
-    </div>
-
-    <v-dialog v-model="dialogOpen" max-width="90vw" scrollable @keydown="onDialogKeydown" transition="dialog-transition">
-      <v-card v-if="selectedImage" class="preview-card">
-        <div class="preview-navbar">
-          <div class="navbar-left">
-            <v-btn icon="mdi-chevron-left" variant="text" color="white" size="small" :disabled="selectedIndex <= 0" @click="navigateImage(-1)" />
-            <span class="navbar-position">{{ selectedIndex + 1 }} / {{ displayImages.length }}</span>
-            <v-btn icon="mdi-chevron-right" variant="text" color="white" size="small" :disabled="selectedIndex >= displayImages.length - 1" @click="navigateImage(1)" />
-          </div>
-          <v-btn icon="mdi-close" variant="text" color="white" size="small" @click="selectedIndex = -1" />
-        </div>
-        <div class="preview-image-wrap">
-          <v-img :src="selectedImage ? getPreviewUrl(selectedImage) : ''" max-height="70vh" contain class="preview-image">
-            <template v-slot:placeholder>
-              <div class="d-flex align-center justify-center fill-height">
-                <v-progress-circular indeterminate size="40" width="3" color="white" />
-              </div>
-            </template>
-          </v-img>
-        </div>
-        <div class="preview-actions">
-          <div class="preview-info">
-            <span class="info-name">{{ selectedImage.name }}</span>
-            <span class="info-size">{{ formatSize(selectedImage.size) }}</span>
-          </div>
-          <div class="preview-buttons">
-            <v-select
-              v-if="monitors.length > 1"
-              v-model="selectedMonitor"
-              density="compact"
-              variant="outlined"
-              hide-details
-              :items="[
-                { title: '所有显示器', value: 'all' },
-                ...monitors.map(m => ({ title: `${m.name}${m.width ? ` (${m.width}x${m.height})` : ''}${m.is_primary ? ' ★' : ''}`, value: m.id })),
-              ]"
-              class="preview-monitor-select"
-              style="max-width: 180px;"
-            />
-            <v-btn color="info" variant="tonal" prepend-icon="mdi-information-outline" :class="{ 'preview-btn-active': showInfo }" @click="showInfo = !showInfo" size="small" class="preview-btn">
-              详情
-            </v-btn>
-            <v-btn color="primary" variant="tonal" prepend-icon="mdi-wallpaper" :loading="settingWallpaper" @click="setAsWallpaper" size="small" class="preview-btn">
-              设为壁纸
-            </v-btn>
-            <v-btn color="warning" variant="tonal" prepend-icon="mdi-close-circle" :loading="deletingIndex >= 0" @click="pendingDeleteIndex = selectedIndex; confirmDelete = true" size="small" class="preview-btn">
-              不喜欢
-            </v-btn>
-          </div>
-        </div>
-        <v-expand-transition>
-          <div v-if="showInfo" class="preview-info-panel">
-            <div v-if="loadingInfo" class="d-flex justify-center align-center pa-4">
-              <v-progress-circular indeterminate size="24" width="2" color="primary" />
-            </div>
-            <div v-else-if="imageInfo" class="info-grid">
-              <div v-if="imageInfo.resolution || imageInfo.width" class="info-item">
-                <span class="info-label"><v-icon size="14">mdi-image-size-actual-large</v-icon> 分辨率</span>
-                <span class="info-value">{{ imageInfo.resolution || (imageInfo.width && imageInfo.height ? `${imageInfo.width}x${imageInfo.height}` : '未知') }}</span>
-              </div>
-              <div v-if="imageInfo.format" class="info-item">
-                <span class="info-label"><v-icon size="14">mdi-file-image</v-icon> 格式</span>
-                <span class="info-value">{{ imageInfo.format }}</span>
-              </div>
-              <div class="info-item">
-                <span class="info-label"><v-icon size="14">mdi-file</v-icon> 文件大小</span>
-                <span class="info-value">{{ formatSize(imageInfo.size) }}</span>
-              </div>
-              <div v-if="imageInfo.source" class="info-item">
-                <span class="info-label"><v-icon size="14">mdi-source-branch</v-icon> 来源</span>
-                <span class="info-value">{{ imageInfo.source }}</span>
-              </div>
-              <div v-if="imageInfo.source_url" class="info-item info-item-wide">
-                <span class="info-label"><v-icon size="14">mdi-link</v-icon> 源页面</span>
-                <a :href="imageInfo.source_url" target="_blank" class="info-link">{{ imageInfo.source_url }}</a>
-              </div>
-              <div v-if="imageInfo.title" class="info-item info-item-wide">
-                <span class="info-label"><v-icon size="14">mdi-format-title</v-icon> 标题</span>
-                <span class="info-value">{{ imageInfo.title }}</span>
-              </div>
-              <div v-if="imageInfo.permalink" class="info-item info-item-wide">
-                <span class="info-label"><v-icon size="14">mdi-reddit</v-icon> 帖子链接</span>
-                <a :href="imageInfo.permalink.startsWith('http') ? imageInfo.permalink : `https://www.reddit.com${imageInfo.permalink}`" target="_blank" class="info-link">{{ imageInfo.permalink }}</a>
-              </div>
-              <div v-if="imageInfo.created_at" class="info-item">
-                <span class="info-label"><v-icon size="14">mdi-clock-outline</v-icon> 下载时间</span>
-                <span class="info-value">{{ imageInfo.created_at }}</span>
-              </div>
-              <div v-if="imageInfo.path" class="info-item info-item-wide">
-                <span class="info-label"><v-icon size="14">mdi-folder</v-icon> 文件路径</span>
-                <span class="info-value info-path">{{ imageInfo.path }}</span>
-              </div>
-            </div>
-            <div v-else class="pa-4 text-center text-secondary text-caption">
-              无法获取图片信息
-            </div>
-          </div>
-        </v-expand-transition>
-      </v-card>
-    </v-dialog>
-
-    <!-- 确认对话框 -->
-    <v-dialog v-model="confirmDelete" max-width="380">
-      <v-card class="pa-4 confirm-dialog">
-        <v-card-title class="text-h6 d-flex align-center pa-0 pb-3">
-          <v-icon :color="pendingIsOrphan ? 'error' : 'warning'" class="me-2">mdi-alert-circle</v-icon>
-          {{ pendingIsOrphan ? '确认删除' : '确认标记为不喜欢' }}
-        </v-card-title>
-        <v-card-text class="pa-0 pb-4 text-body-2 text-secondary">
-          <template v-if="pendingIsOrphan">
-            该文件<strong>无数据库记录</strong>，删除后无法通过补下载恢复。<br />
-            直接删除文件本身。
-          </template>
-          <template v-else>
-            将删除文件并标记为不喜欢，之后<strong>不再补下载</strong>。<br />
-            可通过「全部恢复为喜欢」还原。
-          </template>
-        </v-card-text>
-        <v-card-actions class="pa-0 d-flex justify-end ga-2">
-          <v-btn variant="text" color="grey" @click="confirmDelete = false">取消</v-btn>
-          <v-btn :color="pendingIsOrphan ? 'error' : 'warning'" variant="tonal" @click="confirmDelete = false; deleteImage(pendingDeleteIndex)">
-            <v-icon start size="16">{{ pendingIsOrphan ? 'mdi-delete' : 'mdi-close-circle' }}</v-icon>
-            {{ pendingIsOrphan ? '确定删除' : '确定标记' }}
-          </v-btn>
-        </v-card-actions>
-      </v-card>
-    </v-dialog>
-
-    <v-snackbar v-model="localSnackbar" :timeout="3000" location="bottom" variant="tonal">
-      {{ localSnackbarText }}
-    </v-snackbar>
+    <!-- 全屏查看器 -->
+    <ImageViewer
+      v-if="viewerOpen"
+      :images="viewerImages"
+      :start-index="viewerIndex"
+      @close="viewerOpen = false"
+    />
   </div>
 </template>
 
 <style scoped>
-.gallery-root {
-  min-height: 100vh;
-  display: flex;
-  flex-direction: column;
-}
-
-.gallery-toolbar {
-  position: sticky;
-  top: 0;
-  z-index: 10;
-  margin: 0 16px 16px;
-  border-radius: 12px;
+.gallery-view {
   overflow: hidden;
-  flex-shrink: 0;
-}
-
-.toolbar-inner {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 10px 14px;
-  flex-wrap: wrap;
-}
-
-.toolbar-source-toggle {
-  flex-shrink: 0;
-}
-
-.toolbar-source-toggle .v-btn {
-  font-size: 0.8125rem;
-  letter-spacing: 0.01em;
-}
-
-.toolbar-dir-chip {
-  max-width: 200px;
-  opacity: 0.7;
-  font-size: 0.6875rem;
-}
-
-.toolbar-search :deep(.v-field__input),
-.toolbar-sort :deep(.v-field__input) {
-  font-size: 0.75rem;
-  min-height: 32px;
-  padding-top: 0;
-  padding-bottom: 0;
-}
-
-.toolbar-search :deep(.v-field),
-.toolbar-sort :deep(.v-field) {
-  border-radius: 8px;
-}
-
-.toolbar-search :deep(.v-field__prepend-inner),
-.toolbar-sort :deep(.v-field__append-inner) {
-  padding-top: 4px;
-}
-
-.toolbar-slideshow-interval :deep(.v-field__input) {
-  font-size: 0.75rem;
-  min-height: 32px;
-  padding-top: 0;
-  padding-bottom: 0;
-}
-
-.toolbar-slideshow-interval :deep(.v-field) {
-  border-radius: 8px;
-}
-
-.toolbar-actions {
-  display: flex;
-  align-items: center;
-  gap: 2px;
-  flex-shrink: 0;
-}
-
-.toolbar-action-btn {
-  opacity: 0.75;
-  transition: opacity 0.2s var(--ease-out, cubic-bezier(0.16, 1, 0.3, 1));
-}
-
-.toolbar-action-btn:hover {
-  opacity: 1;
-}
-
-.toolbar-meta {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  margin-left: auto;
-  flex-shrink: 0;
-}
-
-.toolbar-chip {
-  font-size: 0.6875rem;
-  height: 22px !important;
-}
-
-.gallery-content {
-  flex: 1;
   display: flex;
   flex-direction: column;
-  min-height: 0;
 }
-
-.gallery-grid-wrapper {
+.gallery-view > .gallery-grid,
+.gallery-view > .gallery-empty {
   flex: 1;
-  overflow: auto;
-  padding: 12px 16px 24px;
-  box-sizing: border-box;
-  transition: opacity 0.2s ease;
+  overflow-y: auto;
 }
-
-.gallery-grid-wrapper--loading {
-  opacity: 0.5;
-  pointer-events: none;
+.gallery-search {
+  max-width: 240px;
 }
-
-.gallery-grid--fade {
-  transition: opacity 0.15s ease;
+.gallery-meta {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
 }
-
+.gallery-meta__orphan-chip {
+  cursor: pointer;
+}
+.gallery-batch {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-2) var(--space-4);
+  border-radius: var(--radius-md);
+  background: var(--accent-primary-dim);
+  border: var(--border-active);
+}
 .gallery-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
-  gap: 10px;
+  grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+  gap: var(--space-2);
+  align-content: start;
+  padding-bottom: var(--space-4);
 }
-
-.gallery-item {
+.gallery-card {
   position: relative;
+  aspect-ratio: 16 / 10;
   border-radius: var(--radius-md);
   overflow: hidden;
+  background: var(--surface-elevated);
+  border: 2px solid transparent;
   cursor: pointer;
-  transition: transform 0.3s var(--ease-out), box-shadow 0.3s var(--ease-out);
-  box-shadow: var(--shadow-sm), 0 0 0 1px rgba(59, 130, 246, 0.03);
-  background: var(--surface-card);
-  aspect-ratio: 16 / 9;
+  min-height: 96px;
 }
-
-.gallery-item:hover {
-  transform: scale(1.03);
-  box-shadow: var(--shadow-lg), 0 0 0 1px rgba(59, 130, 246, 0.1);
-}
-
-.gallery-item:active {
-  transform: scale(0.97);
-}
-
-.gallery-item-selected {
-  outline: 2px solid #3b82f6;
-  outline-offset: -2px;
-  box-shadow: 0 0 16px rgba(59, 130, 246, 0.25), 0 0 0 1px rgba(59, 130, 246, 0.15);
-}
-
-.gallery-item-selected:hover {
-  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.3), 0 0 20px rgba(59, 130, 246, 0.35);
-}
-
-.gallery-item-actions {
-  position: absolute;
-  top: 6px;
-  right: 6px;
-  z-index: 3;
-  opacity: 0;
-  transition: opacity 0.2s var(--ease-out);
-  display: flex;
-  gap: 4px;
-}
-
-.gallery-item:hover .gallery-item-actions {
-  opacity: 1;
-}
-
-.gallery-badges {
-  position: absolute;
-  top: 6px;
-  left: 6px;
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  z-index: 4;
-  pointer-events: none;
-}
-
-.orphan-badge {
-  display: flex;
-  align-items: center;
-  gap: 3px;
-  padding: 2px 6px;
-  border-radius: var(--radius-sm);
-  background: rgba(245, 158, 11, 0.85);
-  backdrop-filter: blur(4px);
-  font-size: 0.625rem;
-  color: white;
-  white-space: nowrap;
-}
-
-.current-wallpaper-badge {
-  display: flex;
-  align-items: center;
-  gap: 3px;
-  padding: 2px 6px;
-  border-radius: var(--radius-sm);
-  background: rgba(59, 130, 246, 0.85);
-  backdrop-filter: blur(4px);
-  font-size: 0.625rem;
-  color: white;
-  white-space: nowrap;
-}
-
-.gallery-action-btn {
-  min-width: 28px !important;
-  width: 28px !important;
-  height: 28px !important;
-  background: rgba(0, 0, 0, 0.6) !important;
-  backdrop-filter: blur(4px);
-  border-radius: var(--radius-md) !important;
-}
-.gallery-orphan-actions .gallery-action-btn:hover {
-  background: rgba(16, 185, 129, 0.8) !important;
-}
-.gallery-action-btn:hover {
-  background: rgba(226, 228, 234, 0.4) !important;
-}
-
-.gallery-img {
+.gallery-card img {
   width: 100%;
   height: 100%;
   object-fit: cover;
   display: block;
-  opacity: 0;
-  transition: opacity 0.3s ease, transform 0.35s cubic-bezier(0.16, 1, 0.3, 1);
+  transition: transform 0.2s var(--ease-out);
 }
-
-.gallery-img--visible {
-  opacity: 1;
+.gallery-card:hover img {
+  transform: scale(1.03);
 }
-
-.gallery-thumb-wrap {
-  width: 100%;
-  height: 100%;
-  position: relative;
-  overflow: hidden;
+.gallery-card--selected {
+  border-color: var(--accent-primary);
 }
-
-.gallery-thumb-loading {
+.gallery-card__orphan {
   position: absolute;
-  inset: 0;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  background: var(--surface-card);
-  z-index: 1;
+  left: 6px;
+  top: 6px;
+  padding: 1px 7px;
+  border-radius: var(--radius-full);
+  font-size: 0.625rem;
+  background: color-mix(in srgb, var(--accent-reddit) 85%, black);
+  color: #fff;
 }
-
-.gallery-item:hover .gallery-img {
-  transform: scale(1.08);
-}
-
-.gallery-overlay {
+.gallery-card__check {
   position: absolute;
-  bottom: 0;
+  right: 6px;
+  top: 6px;
+  filter: drop-shadow(0 1px 2px rgba(0, 0, 0, 0.6));
+}
+.gallery-card__overlay {
+  position: absolute;
   left: 0;
   right: 0;
-  padding: 10px 10px 8px;
-  background: linear-gradient(to top, rgba(0, 0, 0, 0.75) 0%, transparent 100%);
+  bottom: 0;
+  display: flex;
+  justify-content: center;
+  gap: 6px;
+  padding: 18px 6px 8px;
+  background: linear-gradient(to top, rgba(0, 0, 0, 0.72), transparent);
   opacity: 0;
-  transform: translateY(4px);
-  transition: opacity 0.25s cubic-bezier(0.16, 1, 0.3, 1), transform 0.25s cubic-bezier(0.16, 1, 0.3, 1);
+  transition: opacity 0.15s;
 }
-
-.gallery-item:hover .gallery-overlay {
+.gallery-card:hover .gallery-card__overlay {
   opacity: 1;
-  transform: translateY(0);
 }
-
-.overlay-name {
-  color: var(--text-primary);
-  font-size: 0.75rem;
-  line-height: 1.3;
-  display: block;
+.overlay-btn {
+  background: rgba(30, 30, 34, 0.9) !important;
+  color: #fff !important;
+}
+.overlay-btn--danger {
+  color: var(--accent-error) !important;
+}
+.gallery-pager {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-3);
+  padding: var(--space-2) 0 var(--space-4);
+}
+.slideshow-bar {
+  flex-direction: row;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-3) var(--space-4);
+}
+.slideshow-bar__interval {
+  max-width: 110px;
+}
+.slideshow-bar__tick {
+  color: var(--text-tertiary);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  flex: 1;
 }
-
-.overlay-size {
-  color: rgba(255, 255, 255, 0.6);
-  font-size: 0.6875rem;
-  line-height: 1.4;
+.detail-drawer {
+  background: var(--surface-card) !important;
+  border-left: 1px solid var(--border-subtle);
 }
-
-.gallery-checkbox {
-  position: absolute;
-  top: 8px;
-  left: 8px;
-  z-index: 2;
-  cursor: pointer;
-  opacity: 0.85;
-  transition: opacity 0.2s ease;
-}
-
-.gallery-checkbox:hover {
-  opacity: 1;
-}
-
-.gallery-skeleton {
-  aspect-ratio: 16 / 9;
-  border-radius: var(--radius-lg);
-  overflow: hidden;
-  background: var(--surface-card);
-}
-
-.gallery-skeleton.shimmer {
-  background: linear-gradient(90deg, var(--surface-card) 25%, var(--surface-hover) 50%, var(--surface-card) 75%);
-  background-size: 200% 100%;
-  animation: shimmer 1.5s infinite;
-}
-
-.gallery-empty {
+.detail-body {
   display: flex;
   flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  flex: 1;
-  padding: 60px 24px;
-  gap: 4px;
-}
-
-.empty-icon-wrap {
-  width: 100px;
-  height: 100px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  border-radius: 50%;
-  background: rgba(42, 43, 48, 0.5);
-  margin-bottom: 12px;
-}
-
-.empty-icon {
-  opacity: 0.5;
-}
-
-.empty-title {
-  font-size: 1.125rem;
-  font-weight: 600;
-  color: var(--text-secondary);
-  margin: 0;
-}
-
-.empty-desc {
-  font-size: 0.8125rem;
-  color: var(--text-disabled);
-  margin: 4px 0 0;
-}
-
-.empty-actions {
-  display: flex;
-  gap: 8px;
-  margin-top: 16px;
-  flex-wrap: wrap;
-  justify-content: center;
-}
-
-.gallery-empty--error .empty-icon-wrap {
-  background: rgba(239, 68, 68, 0.1);
-}
-
-.gallery-empty--error .empty-desc {
-  max-width: 480px;
-  text-align: center;
-  word-break: break-word;
-}
-
-.empty-dir {
-  margin-top: 16px;
-}
-
-.gallery-pagination-bar {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 12px;
-  margin: 0 16px 16px;
-  padding: 8px 20px;
-  border-radius: 100px;
-  background: rgba(var(--surface-card-rgb), 0.35);
-  backdrop-filter: blur(16px);
-  -webkit-backdrop-filter: blur(16px);
-  border: 1px solid rgba(255, 255, 255, 0.06);
-  box-shadow: 0 1px 8px rgba(0, 0, 0, 0.06);
-  flex-shrink: 0;
-  width: fit-content;
-  margin-left: auto;
-  margin-right: auto;
-}
-
-.pagination-info {
-  font-size: 0.8125rem;
-  color: var(--text-secondary);
-  white-space: nowrap;
-}
-
-.pagination-info strong {
-  color: var(--text-primary);
-  font-weight: 600;
-}
-
-.preview-card {
-  overflow: hidden;
-  border-radius: var(--radius-xl);
-  background: rgba(var(--surface-deep-rgb), 0.92);
-  backdrop-filter: blur(30px);
-  -webkit-backdrop-filter: blur(30px);
-  border: 1px solid rgba(255, 255, 255, 0.06);
-}
-
-.preview-navbar {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 8px 12px;
-  user-select: none;
-  background: rgba(0, 0, 0, 0.3);
-  border-bottom: 1px solid rgba(255, 255, 255, 0.04);
-}
-
-.navbar-left {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-}
-
-.navbar-position {
-  color: var(--text-secondary);
-  font-size: 0.8125rem;
-  font-weight: 500;
-  letter-spacing: 0.02em;
-  min-width: 60px;
-  text-align: center;
-}
-
-.preview-image-wrap {
-  background: var(--surface-base);
-}
-
-.preview-image {
-  background: var(--surface-base);
-}
-
-.preview-actions {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 12px 16px;
-  background: rgba(0, 0, 0, 0.3);
-  border-top: 1px solid rgba(255, 255, 255, 0.04);
-  gap: 12px;
-}
-
-.preview-info {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  min-width: 0;
-  flex: 1;
-  padding-left: 12px;
-}
-
-.info-name {
-  color: var(--text-primary);
-  font-size: 0.875rem;
-  font-weight: 500;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.info-size {
-  color: var(--text-disabled);
-  font-size: 0.75rem;
-}
-
-.preview-buttons {
-  display: flex;
-  gap: 8px;
-  flex-shrink: 0;
-}
-
-.preview-btn {
-  font-size: 0.8125rem;
-}
-
-.preview-monitor-select :deep(.v-field__input) {
-  font-size: 0.75rem;
-  min-height: 32px;
-  padding-top: 0;
-  padding-bottom: 0;
-}
-
-.preview-monitor-select :deep(.v-field) {
-  border-radius: 8px;
-  background: rgba(255, 255, 255, 0.05);
-}
-
-.preview-btn-active {
-  background: rgba(59, 130, 246, 0.2) !important;
-}
-
-.preview-info-panel {
-  padding: 12px 16px;
-  background: rgba(0, 0, 0, 0.25);
-  border-top: 1px solid rgba(255, 255, 255, 0.04);
-  max-height: 200px;
+  gap: var(--space-4);
+  padding: var(--space-4);
+  height: 100%;
   overflow-y: auto;
 }
-
-.info-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
-  gap: 10px 16px;
-}
-
-.info-item {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  min-width: 0;
-}
-
-.info-item-wide {
-  grid-column: 1 / -1;
-}
-
-.info-label {
+.detail-head {
   display: flex;
   align-items: center;
+  gap: var(--space-2);
+}
+.detail-head__name {
+  font-size: 0.9375rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.detail-preview {
+  border-radius: var(--radius-md);
+  overflow: hidden;
+  background: var(--preview-bg);
+  cursor: zoom-in;
+}
+.detail-preview img {
+  width: 100%;
+  display: block;
+  object-fit: contain;
+  max-height: 240px;
+}
+.detail-rows {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+.detail-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+}
+.detail-row--col {
+  flex-direction: column;
+  align-items: flex-start;
   gap: 4px;
-  color: var(--text-disabled);
-  font-size: 0.6875rem;
-  text-transform: uppercase;
-  letter-spacing: 0.03em;
 }
-
-.info-value {
-  color: var(--text-primary);
-  font-size: 0.8125rem;
-  word-break: break-all;
+.detail-links {
+  display: flex;
+  gap: var(--space-1);
+  flex-wrap: wrap;
 }
-
-.info-path {
-  font-family: 'Cascadia Code', 'Consolas', monospace;
-  font-size: 0.75rem;
-  opacity: 0.8;
-}
-
-.info-link {
-  color: #60a5fa;
-  font-size: 0.8125rem;
-  text-decoration: none;
-  word-break: break-all;
-  transition: color 0.2s;
-}
-
-.info-link:hover {
-  color: #93c5fd;
-  text-decoration: underline;
-}
-
-.confirm-dialog {
-  border-radius: var(--radius-xl);
-}
-
-@media (max-width: 600px) {
-  .preview-actions {
-    flex-direction: column;
-    align-items: stretch;
-    gap: 8px;
-  }
-  .preview-info {
-    padding-left: 0;
-    align-items: center;
-  }
-  .preview-buttons {
-    width: 100%;
-  }
-  .preview-buttons .v-btn {
-    flex: 1;
-  }
-}
-
-@media (max-height: 600px) {
-  .preview-card :deep(.v-img__img) {
-    max-height: 55vh;
-  }
-  .preview-actions {
-    padding: 8px 12px;
-  }
+.detail-actions {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  margin-top: auto;
 }
 </style>

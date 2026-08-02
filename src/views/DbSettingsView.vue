@@ -1,477 +1,555 @@
 <script setup lang="ts">
-import { ref, onMounted } from "vue";
-import { invoke } from "@tauri-apps/api/core";
-import { open } from "@tauri-apps/plugin-dialog";
-import { logger } from "../utils/logger";
-import { VForm } from "vuetify/components";
+import { computed, onMounted, ref } from "vue";
+import { open as openDialog } from "@tauri-apps/plugin-dialog";
+import type { AppConfig, ImageRecord, OrphanFile } from "../types";
+import {
+  adoptOrphanFiles,
+  checkDatabases,
+  cleanThumbnails,
+  countMissingImages,
+  deleteOrphanFile,
+  downloadMissingImages,
+  listDatabaseImages,
+  listMissingImages,
+  listOrphanFiles,
+  markDislikedFiles,
+  recoverDatabaseFiles,
+  restoreAllFiles,
+  saveSettings,
+} from "../utils/api";
+import { appState, askConfirm, dbReady, ensureDatabases, refreshStats, toast, toastError } from "../stores/app";
+import { requiredRule } from "../utils/rules";
+import { formatBytes, formatDateTime } from "../utils/format";
+import StatPanel from "../components/StatPanel.vue";
+import EmptyState from "../components/EmptyState.vue";
+import ProgressCard from "../components/ProgressCard.vue";
 
-interface AppConfig {
-  wallhaven_save_dir: string;
-  reddit_save_dir: string;
-  db_dir: string;
-  wallhaven_db_path: string;
-  reddit_db_path: string;
-  wallhaven_api_key: string;
-  wallhaven_categories: string;
-  wallhaven_purity: string;
-  wallhaven_sorting: string;
-  wallhaven_top_range: string;
-  wallhaven_atleast: string;
-  wallhaven_ratios: string;
-  wallhaven_max_images: number;
-  reddit_url: string;
-  reddit_max_posts: number;
-  reddit_max_images: number;
-  thumbnails_dir: string;
-  download_concurrency: number;
-  thumbnail_dpr: number;
-  request_timeout: number;
-}
+/* ════ 库状态与 db_dir ════ */
+const dbDir = ref("");
+const savingDir = ref(false);
 
-interface DbStats {
-  total: number;
-  love: number;
-  dislike: number;
-}
+onMounted(async () => {
+  dbDir.value = appState.config?.db_dir ?? "";
+  await reloadAll();
+});
 
-const config = ref<AppConfig | null>(null);
-const configError = ref("");
-const saving = ref(false);
-const saved = ref(false);
-const formValid = ref(false);
-const formRef = ref<VForm | null>(null);
-const localSnackbar = ref(false);
-const localSnackbarText = ref("");
-const whStats = ref<DbStats>({ total: 0, love: 0, dislike: 0 });
-const rdStats = ref<DbStats>({ total: 0, love: 0, dislike: 0 });
-
-const requiredRule = (v: string) => !!v || "此项不能为空";
-
-const whPathExists = ref(false);
-const rdPathExists = ref(false);
-const whSize = ref("");
-const rdSize = ref("");
-
-async function selectDirectory() {
+async function pickDbDir() {
   try {
-    const selected = await open({
-      directory: true,
-      multiple: false,
-      title: "选择数据库目录",
-    });
-    if (selected && config.value) {
-      config.value.db_dir = selected;
-      checkDbFiles();
+    const selected = await openDialog({ directory: true, defaultPath: dbDir.value || undefined });
+    if (typeof selected === "string") dbDir.value = selected;
+  } catch (e) {
+    toastError(e);
+  }
+}
+
+async function onSaveDir() {
+  if (!appState.config || savingDir.value) return;
+  savingDir.value = true;
+  try {
+    const next: AppConfig = { ...appState.config, db_dir: dbDir.value };
+    await saveSettings(next);
+    appState.config = next;
+    appState.dbStatus = await checkDatabases();
+    toast("数据库目录已保存", "success");
+    if (!dbReady.value) {
+      const ok = await askConfirm("初始化数据库", "新目录下数据库文件不存在，是否现在创建？", { confirmText: "创建" });
+      if (ok) await onInitDatabases();
+    } else {
+      await reloadAll();
     }
   } catch (e) {
-    logger.error("DbSettings", "目录选择失败", e);
+    toastError(e);
+  } finally {
+    savingDir.value = false;
   }
 }
 
-function formatSize(bytes: number): string {
-  if (bytes < 1024) return bytes + " B";
-  if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + " KB";
-  return (bytes / 1024 / 1024).toFixed(1) + " MB";
-}
-
-async function checkDbFiles() {
-  if (!config.value) return;
+const initializing = ref(false);
+async function onInitDatabases() {
+  initializing.value = true;
   try {
-    const files: { name: string; path: string; size: number }[] = await invoke("scan_directory", { dir: config.value.db_dir });
-    const whFile = files.find((f) => f.name === "wallhaven_images.db");
-    const rdFile = files.find((f) => f.name === "reddit_images.db");
-    whPathExists.value = !!whFile;
-    rdPathExists.value = !!rdFile;
-    whSize.value = whFile ? formatSize(whFile.size) : "";
-    rdSize.value = rdFile ? formatSize(rdFile.size) : "";
-  } catch {
-    whPathExists.value = false;
-    rdPathExists.value = false;
-  }
-}
-
-async function loadDbStats() {
-  try {
-    const stats: { wallhaven: DbStats; reddit: DbStats } = await invoke("get_stats");
-    whStats.value = stats.wallhaven;
-    rdStats.value = stats.reddit;
+    const created = await ensureDatabases();
+    toast(created.length > 0 ? `已创建数据库：${created.join("、")}` : "数据库已就绪", "success");
+    await reloadAll();
   } catch (e) {
-    logger.error("DbSettings", "加载统计失败", e);
+    toastError(e);
+  } finally {
+    initializing.value = false;
   }
 }
 
-async function saveSettings() {
-  if (!config.value) return;
-  saving.value = true;
-  saved.value = false;
-  logger.action("DbSettings", "保存数据库设置");
+/* ════ 数据加载 ════ */
+const loading = ref(false);
+const missingCount = ref(0);
+const missing = ref<ImageRecord[]>([]);
+const orphans = ref<OrphanFile[]>([]);
+
+async function reloadAll() {
+  if (!dbReady.value) return;
+  loading.value = true;
   try {
-    await invoke("save_settings", { config: config.value });
-    saved.value = true;
-    logger.info("DbSettings", "设置已保存");
-    await loadDbStats();
-    await checkDbFiles();
-    setTimeout(() => (saved.value = false), 2000);
+    const [c, m, o] = await Promise.all([
+      countMissingImages("all"),
+      listMissingImages("all"),
+      listOrphanFiles("all"),
+    ]);
+    missingCount.value = c;
+    missing.value = m;
+    orphans.value = o;
+    await refreshStats();
+    await loadRecords();
   } catch (e) {
-    logger.error("DbSettings", "保存设置失败", e);
-    localSnackbarText.value = `保存设置失败: ${e}`;
-    localSnackbar.value = true;
+    toastError(e);
+  } finally {
+    loading.value = false;
   }
-  saving.value = false;
 }
 
-async function initDatabase() {
-  if (!config.value) return;
-  logger.action("DbSettings", "初始化数据库");
+/* ════ 缺失文件操作 ════ */
+const missingSelected = ref<ImageRecord[]>([]);
+
+async function onDownloadSelectedMissing() {
+  if (missingSelected.value.length === 0) return;
+  const bySource = groupBySource(missingSelected.value);
   try {
-    await invoke("save_settings", { config: config.value });
-    await loadDbStats();
-    await checkDbFiles();
-    logger.info("DbSettings", "数据库已初始化");
-    localSnackbarText.value = "数据库已初始化";
-    localSnackbar.value = true;
+    for (const [source, records] of Object.entries(bySource)) {
+      const msg = await downloadMissingImages(source as "wallhaven" | "reddit", records);
+      toast(msg, "info");
+    }
+    missingSelected.value = [];
   } catch (e) {
-    logger.error("DbSettings", "初始化失败", e);
-    localSnackbarText.value = `初始化失败: ${e}`;
-    localSnackbar.value = true;
+    toastError(e);
   }
 }
 
-async function loadConfig() {
-  configError.value = "";
+async function onRecoverAll() {
+  const ok = await askConfirm(
+    "全部补下载",
+    `将把两个库中所有标记缺失的图片（共 ${missingCount.value} 张）按记录的原 URL 重新下载。\n该任务在后台执行，可随时取消。是否继续？`,
+    { confirmText: "开始补下载" },
+  );
+  if (!ok) return;
   try {
-    config.value = await invoke<AppConfig>("get_config");
-    logger.info("DbSettings", "配置已加载");
-    await loadDbStats();
-    await checkDbFiles();
+    // 后端 recover 对 "all" 只处理 Reddit，需两源分别调用
+    await recoverDatabaseFiles("wallhaven");
+    await recoverDatabaseFiles("reddit");
+    toast("补下载任务已启动（Wallhaven + Reddit）", "info");
   } catch (e) {
-    configError.value = String(e);
-    logger.error("DbSettings", "配置加载失败", e);
-    config.value = {
-      wallhaven_save_dir: "",
-      reddit_save_dir: "",
-      wallhaven_db_path: "",
-      reddit_db_path: "",
-      db_dir: "",
-      wallhaven_api_key: "",
-      wallhaven_categories: "010",
-      wallhaven_purity: "111",
-      wallhaven_sorting: "toplist",
-      wallhaven_top_range: "1y",
-      wallhaven_atleast: "1920x1080",
-      wallhaven_ratios: "landscape",
-      wallhaven_max_images: 100,
-      reddit_url: "",
-      reddit_max_posts: 100,
-      reddit_max_images: 100,
-      thumbnails_dir: "",
-      download_concurrency: 6,
-      thumbnail_dpr: 2,
-      request_timeout: 30,
-    };
+    toastError(e);
   }
 }
 
-onMounted(loadConfig);
+async function onMarkDisliked() {
+  const ok = await askConfirm(
+    "标记为不喜欢",
+    `将把 ${missingCount.value} 条缺失记录标记为不喜欢（love=0），不再计入缺失。\n此操作不删除任何文件，可通过「恢复所有已标记」撤销。`,
+    { danger: true, confirmText: "标记" },
+  );
+  if (!ok) return;
+  try {
+    const n = await markDislikedFiles("all");
+    toast(`已标记 ${n} 条记录`, "success");
+    await reloadAll();
+  } catch (e) {
+    toastError(e);
+  }
+}
+
+/* ════ 孤儿文件操作 ════ */
+const orphanSelected = ref<OrphanFile[]>([]);
+
+function groupBySource<T extends { source: string }>(items: T[]): Record<string, T[]> {
+  const out: Record<string, T[]> = {};
+  for (const it of items) {
+    (out[it.source] ??= []).push(it);
+  }
+  return out;
+}
+
+async function onAdopt() {
+  if (orphanSelected.value.length === 0) return;
+  const bySource = groupBySource(orphanSelected.value);
+  let total = 0;
+  try {
+    for (const [source, files] of Object.entries(bySource)) {
+      total += await adoptOrphanFiles(
+        source as "wallhaven" | "reddit",
+        files.map((f) => f.name),
+      );
+    }
+    toast(`已收养 ${total} 个文件入库`, "success");
+    orphanSelected.value = [];
+    await reloadAll();
+  } catch (e) {
+    toastError(e);
+  }
+}
+
+async function onDeleteOrphans() {
+  if (orphanSelected.value.length === 0) return;
+  const ok = await askConfirm(
+    "删除孤儿文件",
+    `将永久删除 ${orphanSelected.value.length} 个文件及其缩略图。\n这些文件不在数据库中，删除后无法通过补下载恢复。`,
+    { danger: true, confirmText: "删除" },
+  );
+  if (!ok) return;
+  let removed = 0;
+  try {
+    for (const f of orphanSelected.value) {
+      if (await deleteOrphanFile(f.source as "wallhaven" | "reddit", f.name)) removed++;
+    }
+    toast(`已删除 ${removed} 个文件`, "success");
+    orphanSelected.value = [];
+    await reloadAll();
+  } catch (e) {
+    toastError(e);
+  }
+}
+
+/* ════ 维护 ════ */
+async function onCleanThumbnails() {
+  try {
+    const r = await cleanThumbnails();
+    toast(`已清理孤儿缩略图：Wallhaven ${r.wallhaven} 个，Reddit ${r.reddit} 个`, "success");
+  } catch (e) {
+    toastError(e);
+  }
+}
+
+async function onRestoreAll() {
+  const ok = await askConfirm(
+    "恢复所有已标记",
+    "将把两个库中所有 love=0 的记录恢复为正常（love=1）。是否继续？",
+    { confirmText: "恢复" },
+  );
+  if (!ok) return;
+  try {
+    const n = await restoreAllFiles("all");
+    toast(`已恢复 ${n} 条记录`, "success");
+    await reloadAll();
+  } catch (e) {
+    toastError(e);
+  }
+}
+
+/* ════ 记录浏览 ════ */
+const recordSource = ref<"wallhaven" | "reddit">("wallhaven");
+const records = ref<ImageRecord[]>([]);
+const recordPage = ref(1);
+const RECORD_PAGE_SIZE = 20;
+const recordsLoading = ref(false);
+
+const recordTotal = computed(() =>
+  recordSource.value === "wallhaven"
+    ? (appState.stats?.wallhaven.total ?? 0)
+    : (appState.stats?.reddit.total ?? 0),
+);
+const recordTotalPages = computed(() =>
+  Math.max(1, Math.ceil(recordTotal.value / RECORD_PAGE_SIZE)),
+);
+
+async function loadRecords() {
+  recordsLoading.value = true;
+  try {
+    records.value = await listDatabaseImages(
+      recordSource.value,
+      RECORD_PAGE_SIZE,
+      (recordPage.value - 1) * RECORD_PAGE_SIZE,
+    );
+  } catch (e) {
+    toastError(e);
+  } finally {
+    recordsLoading.value = false;
+  }
+}
+
+async function onRecordSourceChange(s: "wallhaven" | "reddit") {
+  recordSource.value = s;
+  recordPage.value = 1;
+  await loadRecords();
+}
+
+async function onRecordPage(delta: number) {
+  const next = recordPage.value + delta;
+  if (next < 1 || next > recordTotalPages.value) return;
+  recordPage.value = next;
+  await loadRecords();
+}
+
+const tab = ref<"missing" | "orphan" | "records">("missing");
 </script>
 
 <template>
-  <div v-if="config" class="db-settings-root">
-    <v-alert
-      v-if="configError"
-      type="warning"
-      variant="tonal"
-      density="compact"
-      class="mb-3 animate-in"
-    >
-      <div class="d-flex align-center justify-space-between">
-        <span>配置加载失败，已使用默认设置: {{ configError }}</span>
-        <v-btn size="x-small" variant="text" color="warning" prepend-icon="mdi-refresh" @click="loadConfig">
-          重试
-        </v-btn>
-      </div>
-    </v-alert>
-    <v-form v-model="formValid" ref="formRef">
-      <v-card class="glass-card db-card animate-in stagger-1">
-        <div class="db-card-header">
-          <div class="db-header-icon">
-            <v-icon color="#10b981" size="28">mdi-database-cog</v-icon>
-          </div>
-          <div>
-            <div class="text-heading">数据库目录</div>
-            <div class="text-caption">统一管理 Wallhaven 和 Reddit 数据库存储位置</div>
-          </div>
-        </div>
-        <v-card-text class="pa-6 pt-4">
-          <div class="settings-group-label">存储路径</div>
-          <div class="settings-group">
-            <v-text-field
-              v-model="config.db_dir"
-              label="数据库目录"
-              hint="存放 wallhaven_images.db 和 reddit_images.db"
-              persistent-hint
-              class="settings-field"
-              :rules="[requiredRule]"
-              append-inner-icon="mdi-folder-open"
-              @click:append-inner="selectDirectory"
-            />
-          </div>
-
-          <div class="settings-group-label">数据库文件</div>
-          <div class="db-file-list">
-            <div class="db-file-item">
-              <div class="db-file-left">
-                <v-icon color="#3b82f6" size="20">mdi-database</v-icon>
-                <div class="db-file-info">
-                  <span class="db-file-name">wallhaven_images.db</span>
-                  <span class="db-file-meta">Wallhaven 数据库</span>
-                </div>
-              </div>
-              <div class="db-file-right">
-                <v-chip v-if="whPathExists" size="x-small" color="success" variant="flat">已存在 {{ whSize }}</v-chip>
-                <v-chip v-else size="x-small" color="warning" variant="flat">未创建</v-chip>
-              </div>
-            </div>
-            <div class="db-file-item">
-              <div class="db-file-left">
-                <v-icon color="#f97316" size="20">mdi-database</v-icon>
-                <div class="db-file-info">
-                  <span class="db-file-name">reddit_images.db</span>
-                  <span class="db-file-meta">Reddit 数据库</span>
-                </div>
-              </div>
-              <div class="db-file-right">
-                <v-chip v-if="rdPathExists" size="x-small" color="success" variant="flat">已存在 {{ rdSize }}</v-chip>
-                <v-chip v-else size="x-small" color="warning" variant="flat">未创建</v-chip>
-              </div>
-            </div>
-          </div>
-        </v-card-text>
-      </v-card>
-
-      <v-card class="glass-card db-card animate-in stagger-2">
-        <div class="db-card-header db-stats-header">
-          <div class="db-header-icon">
-            <v-icon color="#c9a94e" size="28">mdi-chart-box-outline</v-icon>
-          </div>
-          <div>
-            <div class="text-heading">数据库概览</div>
-            <div class="text-caption">当前数据库中的图片统计</div>
-          </div>
-        </div>
-        <v-card-text class="pa-6 pt-4">
-          <v-row>
-            <v-col cols="12" sm="6">
-              <div class="stat-box wh-stat-box">
-                <div class="stat-box-header">
-                  <v-icon color="#3b82f6" size="16">mdi-image-search</v-icon>
-                  <span>Wallhaven</span>
-                </div>
-                <div class="stat-numbers">
-                  <div class="stat-item">
-                    <span class="stat-value">{{ whStats.total }}</span>
-                    <span class="stat-label">总计</span>
-                  </div>
-                  <div class="stat-item">
-                    <span class="stat-value stat-love">{{ whStats.love }}</span>
-                    <span class="stat-label">可用</span>
-                  </div>
-                  <div class="stat-item">
-                    <span class="stat-value stat-dislike">{{ whStats.dislike }}</span>
-                    <span class="stat-label">缺失</span>
-                  </div>
-                </div>
-              </div>
-            </v-col>
-            <v-col cols="12" sm="6">
-              <div class="stat-box rd-stat-box">
-                <div class="stat-box-header">
-                  <v-icon color="#f97316" size="16">mdi-reddit</v-icon>
-                  <span>Reddit</span>
-                </div>
-                <div class="stat-numbers">
-                  <div class="stat-item">
-                    <span class="stat-value">{{ rdStats.total }}</span>
-                    <span class="stat-label">总计</span>
-                  </div>
-                  <div class="stat-item">
-                    <span class="stat-value stat-love">{{ rdStats.love }}</span>
-                    <span class="stat-label">可用</span>
-                  </div>
-                  <div class="stat-item">
-                    <span class="stat-value stat-dislike">{{ rdStats.dislike }}</span>
-                    <span class="stat-label">缺失</span>
-                  </div>
-                </div>
-              </div>
-            </v-col>
-          </v-row>
-        </v-card-text>
-      </v-card>
-    </v-form>
-
-    <div class="settings-save-bar">
-      <v-btn
-        class="gradient-btn"
-        size="large"
-        variant="flat"
-        :loading="saving"
-        :disabled="!formValid"
-        @click="saveSettings"
-      >
-        <v-icon start>mdi-content-save</v-icon>
-        保存设置
-      </v-btn>
-      <v-btn
-        class="ms-3"
-        variant="outlined"
-        color="#c9a94e"
-        size="large"
-        @click="initDatabase"
-      >
-        <v-icon start>mdi-database-refresh</v-icon>
-        初始化数据库
-      </v-btn>
-      <v-fade-transition>
-        <v-icon
-          v-if="saved"
-          color="success"
-          class="ms-3 saved-icon"
-        >
-          mdi-check-circle
-        </v-icon>
-      </v-fade-transition>
+  <div class="view">
+    <div class="view-header">
+      <span class="view-header__title">数据库</span>
+      <span class="view-header__sub">库状态、缺失与孤儿文件管理</span>
     </div>
 
-    <v-snackbar v-model="localSnackbar" :timeout="3000" location="bottom" variant="tonal">
-      {{ localSnackbarText }}
-    </v-snackbar>
+    <!-- 库状态 -->
+    <div class="panel-card animate-in">
+      <div class="panel-card__title"><v-icon icon="mdi-database-outline" size="18" color="primary" />库状态</div>
+      <div class="dir-field">
+        <v-text-field
+          v-model="dbDir"
+          label="数据库目录"
+          hint="两个数据库文件路径由该目录派生"
+          persistent-hint
+          :rules="[requiredRule]"
+          class="settings-field"
+        />
+        <v-btn variant="tonal" @click="pickDbDir">选择</v-btn>
+        <v-btn color="primary" variant="flat" :loading="savingDir" @click="onSaveDir">保存</v-btn>
+      </div>
+      <div class="db-paths">
+        <div class="db-path-row">
+          <v-icon
+            :icon="appState.dbStatus?.wallhaven_exists ? 'mdi-check-circle' : 'mdi-alert-circle-outline'"
+            size="16"
+            :color="appState.dbStatus?.wallhaven_exists ? 'success' : 'warning'"
+          />
+          <span class="text-caption db-path-row__path">{{ appState.dbStatus?.wallhaven_path ?? "-" }}</span>
+        </div>
+        <div class="db-path-row">
+          <v-icon
+            :icon="appState.dbStatus?.reddit_exists ? 'mdi-check-circle' : 'mdi-alert-circle-outline'"
+            size="16"
+            :color="appState.dbStatus?.reddit_exists ? 'success' : 'warning'"
+          />
+          <span class="text-caption db-path-row__path">{{ appState.dbStatus?.reddit_path ?? "-" }}</span>
+        </div>
+      </div>
+      <div v-if="!dbReady">
+        <v-btn color="primary" variant="flat" :loading="initializing" @click="onInitDatabases">
+          创建数据库
+        </v-btn>
+      </div>
+    </div>
+
+    <EmptyState
+      v-if="!dbReady"
+      icon="mdi-database-off-outline"
+      title="数据库未初始化"
+      desc="创建数据库后，统计、缺失与孤儿文件管理才可用"
+    />
+
+    <template v-else>
+      <!-- 统计 -->
+      <div class="db-stats">
+        <StatPanel source="wallhaven" :stats="appState.stats?.wallhaven ?? null" :loading="!appState.stats" class="animate-in stagger-1" />
+        <StatPanel source="reddit" :stats="appState.stats?.reddit ?? null" :loading="!appState.stats" class="animate-in stagger-2" />
+      </div>
+
+      <ProgressCard source="wallhaven" title="Wallhaven 补下载" />
+      <ProgressCard source="reddit" title="Reddit 补下载" />
+
+      <!-- 管理区 -->
+      <div class="panel-card animate-in stagger-3">
+        <v-tabs v-model="tab" density="compact" color="primary">
+          <v-tab value="missing">
+            缺失文件
+            <v-chip v-if="missingCount > 0" size="x-small" color="warning" class="ml-2">{{ missingCount }}</v-chip>
+          </v-tab>
+          <v-tab value="orphan">
+            孤儿文件
+            <v-chip v-if="orphans.length > 0" size="x-small" class="ml-2">{{ orphans.length }}</v-chip>
+          </v-tab>
+          <v-tab value="records">全部记录</v-tab>
+        </v-tabs>
+
+        <v-window v-model="tab">
+          <!-- 缺失文件 -->
+          <v-window-item value="missing">
+            <div class="tab-actions">
+              <v-btn size="small" variant="tonal" icon="mdi-refresh" :loading="loading" @click="reloadAll" />
+              <v-spacer />
+              <v-btn size="small" variant="tonal" :disabled="missingSelected.length === 0" @click="onDownloadSelectedMissing">
+                补下载选中（{{ missingSelected.length }}）
+              </v-btn>
+              <v-btn size="small" variant="tonal" :disabled="missingCount === 0" @click="onRecoverAll">
+                全部补下载
+              </v-btn>
+              <v-btn size="small" variant="tonal" color="error" :disabled="missingCount === 0" @click="onMarkDisliked">
+                标记为不喜欢
+              </v-btn>
+            </div>
+            <EmptyState
+              v-if="missing.length === 0 && !loading"
+              small
+              icon="mdi-check-circle-outline"
+              title="没有缺失文件"
+              desc="数据库记录与磁盘文件一致"
+            />
+            <v-data-table
+              v-else
+              v-model="missingSelected"
+              :items="missing"
+              :loading="loading"
+              show-select
+              item-value="name"
+              density="compact"
+              class="db-table"
+              :headers="[
+                { title: '文件名', key: 'name' },
+                { title: '来源', key: 'source', width: 100 },
+                { title: '分辨率', key: 'resolution', width: 110 },
+                { title: '入库时间', key: 'created_at', width: 150 },
+              ]"
+              :items-per-page="10"
+            >
+              <template #[`item.source`]="{ item }">
+                <v-chip size="x-small" :color="item.source === 'wallhaven' ? 'primary' : undefined" variant="tonal">
+                  {{ item.source }}
+                </v-chip>
+              </template>
+              <template #[`item.created_at`]="{ item }">
+                <span class="text-caption">{{ formatDateTime(item.created_at) }}</span>
+              </template>
+            </v-data-table>
+          </v-window-item>
+
+          <!-- 孤儿文件 -->
+          <v-window-item value="orphan">
+            <div class="tab-actions">
+              <v-btn size="small" variant="tonal" icon="mdi-refresh" :loading="loading" @click="reloadAll" />
+              <v-spacer />
+              <v-btn size="small" variant="tonal" :disabled="orphanSelected.length === 0" @click="onAdopt">
+                收养入库（{{ orphanSelected.length }}）
+              </v-btn>
+              <v-btn size="small" variant="tonal" color="error" :disabled="orphanSelected.length === 0" @click="onDeleteOrphans">
+                删除（{{ orphanSelected.length }}）
+              </v-btn>
+            </div>
+            <EmptyState
+              v-if="orphans.length === 0 && !loading"
+              small
+              icon="mdi-folder-check-outline"
+              title="没有孤儿文件"
+              desc="保存目录中的文件都已在数据库中登记"
+            />
+            <v-data-table
+              v-else
+              v-model="orphanSelected"
+              :items="orphans"
+              :loading="loading"
+              show-select
+              item-value="name"
+              density="compact"
+              class="db-table"
+              :headers="[
+                { title: '文件名', key: 'name' },
+                { title: '来源', key: 'source', width: 100 },
+                { title: '大小', key: 'size', width: 100 },
+              ]"
+              :items-per-page="10"
+            >
+              <template #[`item.source`]="{ item }">
+                <v-chip size="x-small" :color="item.source === 'wallhaven' ? 'primary' : undefined" variant="tonal">
+                  {{ item.source }}
+                </v-chip>
+              </template>
+              <template #[`item.size`]="{ item }">
+                <span class="text-caption">{{ formatBytes(item.size) }}</span>
+              </template>
+            </v-data-table>
+          </v-window-item>
+
+          <!-- 全部记录 -->
+          <v-window-item value="records">
+            <div class="tab-actions">
+              <v-btn-toggle :model-value="recordSource" mandatory density="compact" color="primary" @update:model-value="onRecordSourceChange">
+                <v-btn value="wallhaven" size="small">Wallhaven</v-btn>
+                <v-btn value="reddit" size="small">Reddit</v-btn>
+              </v-btn-toggle>
+              <v-spacer />
+              <span class="text-caption">第 {{ recordPage }} / {{ recordTotalPages }} 页 · 共 {{ recordTotal }} 条</span>
+              <v-btn size="small" variant="text" icon="mdi-chevron-left" :disabled="recordPage <= 1 || recordsLoading" @click="onRecordPage(-1)" />
+              <v-btn size="small" variant="text" icon="mdi-chevron-right" :disabled="recordPage >= recordTotalPages || recordsLoading" @click="onRecordPage(1)" />
+            </div>
+            <v-data-table
+              :items="records"
+              :loading="recordsLoading"
+              density="compact"
+              class="db-table"
+              :headers="[
+                { title: '文件名', key: 'name' },
+                { title: '状态', key: 'love', width: 80 },
+                { title: '分辨率', key: 'resolution', width: 110 },
+                { title: '入库时间', key: 'created_at', width: 150 },
+              ]"
+              :items-per-page="20"
+              hide-default-footer
+            >
+              <template #[`item.love`]="{ item }">
+                <v-chip size="x-small" :color="item.love === 1 ? 'success' : 'error'" variant="tonal">
+                  {{ item.love === 1 ? "正常" : "标记" }}
+                </v-chip>
+              </template>
+              <template #[`item.created_at`]="{ item }">
+                <span class="text-caption">{{ formatDateTime(item.created_at) }}</span>
+              </template>
+            </v-data-table>
+          </v-window-item>
+        </v-window>
+      </div>
+
+      <!-- 维护 -->
+      <div class="panel-card animate-in stagger-4">
+        <div class="panel-card__title"><v-icon icon="mdi-wrench-outline" size="18" color="primary" />维护</div>
+        <div class="maint-actions">
+          <v-btn variant="tonal" prepend-icon="mdi-image-off-outline" @click="onCleanThumbnails">
+            清理孤儿缩略图
+          </v-btn>
+          <v-btn variant="tonal" prepend-icon="mdi-restore" @click="onRestoreAll">
+            恢复所有已标记
+          </v-btn>
+        </div>
+      </div>
+    </template>
   </div>
 </template>
 
 <style scoped>
-.db-settings-root {
-  padding-bottom: 80px;
+.dir-field {
+  display: flex;
+  gap: var(--space-3);
+  align-items: flex-start;
 }
-
-.db-card {
+.dir-field .settings-field {
+  flex: 1;
+}
+.db-paths {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.db-path-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+.db-path-row__path {
   overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
-
-.db-card-header {
+.db-stats {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+  gap: var(--space-4);
+}
+.tab-actions {
   display: flex;
   align-items: center;
-  gap: 12px;
-  padding: 20px 24px 16px;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
-  background: linear-gradient(135deg, rgba(16, 185, 129, 0.06) 0%, transparent 60%);
+  gap: var(--space-2);
+  padding: var(--space-3) 0;
 }
-
-.db-stats-header {
-  background: linear-gradient(135deg, rgba(201, 169, 78, 0.06) 0%, transparent 60%);
+.db-table {
+  background: transparent !important;
 }
-
-.db-header-icon {
-  width: 40px;
-  height: 40px;
-  border-radius: 50%;
+.maint-actions {
   display: flex;
-  align-items: center;
-  justify-content: center;
-  flex-shrink: 0;
-  background: rgba(16, 185, 129, 0.15);
+  gap: var(--space-3);
+  flex-wrap: wrap;
 }
-
-.db-stats-header .db-header-icon {
-  background: rgba(201, 169, 78, 0.15);
-}
-
-.db-file-list {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-
-.db-file-item {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 12px 16px;
-  border-radius: 8px;
-  background: rgba(255, 255, 255, 0.03);
-  border: 1px solid rgba(255, 255, 255, 0.06);
-}
-
-.db-file-left {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-}
-
-.db-file-info {
-  display: flex;
-  flex-direction: column;
-}
-
-.db-file-name {
-  font-size: 0.875rem;
-  font-weight: 600;
-  color: var(--text-primary);
-  font-family: "SF Mono", "Fira Code", monospace;
-}
-
-.db-file-meta {
-  font-size: 0.75rem;
-  color: var(--text-tertiary);
-}
-
-.stat-box {
-  padding: 16px;
-  border-radius: var(--radius-lg);
-  border: 1px solid rgba(255, 255, 255, 0.06);
-  background: rgba(255, 255, 255, 0.02);
-}
-
-.stat-box-header {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  font-size: 0.8125rem;
-  font-weight: 600;
-  color: var(--text-secondary);
-  margin-bottom: 12px;
-}
-
-.stat-numbers {
-  display: flex;
-  gap: 24px;
-}
-
-.stat-item {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-}
-
-.stat-value {
-  font-size: 1.5rem;
-  font-weight: 700;
-  color: var(--text-primary);
-}
-
-.stat-value.stat-love {
-  color: #10b981;
-}
-
-.stat-value.stat-dislike {
-  color: #f97316;
-}
-
-.stat-label {
-  font-size: 0.6875rem;
-  color: var(--text-tertiary);
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
-}
-
 </style>

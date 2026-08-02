@@ -1,524 +1,529 @@
 <script setup lang="ts">
-import { ref, onMounted, onUnmounted } from "vue";
-import { invoke, convertFileSrc } from "@tauri-apps/api/core";
-import { listen } from "@tauri-apps/api/event";
-import { open } from "@tauri-apps/plugin-dialog";
-import { logger } from "../utils/logger";
+import { computed, onMounted, reactive, ref } from "vue";
+import type { AppConfig, WallhavenImageEntry, WallhavenSearchResult, WallhavenSelected } from "../types";
+import {
+  downloadWallhavenSelected,
+  saveSettings,
+  searchWallhaven,
+  startWallhavenDownload,
+} from "../utils/api";
+import { appState, clearNewImages, toast, toastError } from "../stores/app";
+import { positiveInt } from "../utils/rules";
+import ProgressCard from "../components/ProgressCard.vue";
+import NewImagesStrip from "../components/NewImagesStrip.vue";
+import EmptyState from "../components/EmptyState.vue";
 
-defineProps<{
-  downloading: boolean;
-}>();
-
-// ===== 类型 =====
-interface WallhavenImage {
-  id: string;
-  thumbnail_url: string;
-  path: string;
-  resolution: string;
-  short_url: string;
-  file_size: number;
-  file_type: string;
-}
-
-interface SearchResult {
-  images: WallhavenImage[];
-  page: number;
-  total_pages: number;
-  total: number;
-}
-
-interface DownloadedImage {
-  source: string;
-  name: string;
-  path: string;
-}
-
-interface AppConfig {
-  wallhaven_save_dir: string;
-  wallhaven_db_path: string;
-  wallhaven_api_key: string;
-  wallhaven_categories: string;
-  wallhaven_purity: string;
-  wallhaven_sorting: string;
-  wallhaven_order: string;
-  wallhaven_top_range: string;
-  wallhaven_atleast: string;
-  wallhaven_ratios: string;
-  wallhaven_q: string;
-  wallhaven_max_images: number;
-}
-
-// ===== 配置 =====
-const config = ref<AppConfig | null>(null);
-const showSettings = ref(false);
-const saving = ref(false);
-const saved = ref(false);
-
-// ===== 搜索 =====
-const results = ref<WallhavenImage[]>([]);
-const totalResults = ref(0);
-const totalPages = ref(1);
-const currentPage = ref(1);
-const searching = ref(false);
-const searched = ref(false);
-const error = ref("");
-
-// ===== 选中 =====
-const selectedIds = ref<Set<string>>(new Set());
-
-// ===== 下载中预览 =====
-const downloadedImages = ref<DownloadedImage[]>([]);
-let unlistenImageEvent: (() => void) | null = null;
-
-// ===== Snackbar =====
-const localSnackbar = ref(false);
-const localSnackbarText = ref("");
-
-// ===== 校验 =====
-const requiredRule = (v: string) => !!v || "此项不能为空";
-const positiveInt = (v: number) => {
-  if (v === undefined || v === null) return true;
-  if (typeof v !== "number" || isNaN(v)) return "请输入有效数字";
-  if (v < 0) return "不能为负数";
-  return true;
-};
-const resolutionRule = (v: string) => {
-  if (!v) return true;
-  return /^\d+x\d+$/.test(v) || "格式如 1920x1080";
-};
-
-async function loadConfig() {
-  try {
-    config.value = await invoke<AppConfig>("get_config");
-  } catch (e) {
-    logger.error("Wallhaven", "配置加载失败", e);
-  }
-}
-
-async function selectDirectory(field: "wallhaven_save_dir" | "wallhaven_db_path") {
-  try {
-    const isDir = field === "wallhaven_save_dir";
-    const selected = await open({
-      directory: isDir,
-      multiple: false,
-      title: isDir ? "选择保存目录" : "选择数据库文件",
-      filters: isDir ? undefined : [{ name: "SQLite 数据库", extensions: ["db"] }],
-    });
-    if (selected && config.value) {
-      config.value[field] = selected;
-    }
-  } catch (e) {
-    logger.error("Wallhaven", "路径选择失败", e);
-  }
-}
-
-async function saveConfig() {
-  if (!config.value) return;
-  saving.value = true;
-  saved.value = false;
-  try {
-    // 只修改 Wallhaven 相关字段，先获取完整配置再覆盖
-    const full = await invoke<AppConfig & Record<string, unknown>>("get_config");
-    Object.assign(full, config.value);
-    await invoke("save_settings", { config: full });
-    saved.value = true;
-    setTimeout(() => (saved.value = false), 2000);
-    logger.info("Wallhaven", "设置已保存");
-  } catch (e) {
-    localSnackbarText.value = `保存设置失败: ${e}`;
-    localSnackbar.value = true;
-  }
-  saving.value = false;
-}
-
-async function search(page: number = 1) {
-  searching.value = true;
-  error.value = "";
-  try {
-    const data = await invoke<SearchResult>("search_wallhaven", { page });
-    results.value = data.images;
-    totalResults.value = data.total;
-    totalPages.value = Math.max(1, data.total_pages);
-    currentPage.value = data.page;
-    searched.value = true;
-    selectedIds.value.clear();
-    logger.info("Wallhaven", "搜索完成", { page, total: data.total });
-  } catch (e) {
-    error.value = String(e);
-    logger.error("Wallhaven", "搜索失败", e);
-  }
-  searching.value = false;
-}
-
-function toggleSelect(img: WallhavenImage) {
-  const s = new Set(selectedIds.value);
-  if (s.has(img.id)) s.delete(img.id);
-  else s.add(img.id);
-  selectedIds.value = s;
-}
-
-function isSelected(img: WallhavenImage): boolean {
-  return selectedIds.value.has(img.id);
-}
-
-function selectAll() {
-  selectedIds.value = new Set(results.value.map(r => r.id));
-}
-
-function deselectAll() {
-  selectedIds.value = new Set();
-}
-
-async function downloadSelected() {
-  const selected = results.value.filter(r => selectedIds.value.has(r.id));
-  if (selected.length === 0) return;
-
-  downloadedImages.value = [];
-  if (!unlistenImageEvent) {
-    unlistenImageEvent = await listen<DownloadedImage>("image-downloaded", (e) => {
-      if (e.payload.source !== "wallhaven") return;
-      const img: DownloadedImage = {
-        source: e.payload.source,
-        name: e.payload.name,
-        path: convertFileSrc(e.payload.path),
-      };
-      if (!downloadedImages.value.some(i => i.name === img.name)) {
-        downloadedImages.value.unshift(img);
-        if (downloadedImages.value.length > 50) {
-          downloadedImages.value = downloadedImages.value.slice(0, 50);
-        }
-      }
-    });
-  }
-
-  logger.action("Wallhaven", "下载选中", { count: selected.length });
-  try {
-    await invoke("download_wallhaven_selected", {
-      images: selected.map(r => ({
-        id: r.id,
-        path: r.path,
-        resolution: r.resolution,
-        short_url: r.short_url,
-      })),
-    });
-  } catch (e) {
-    localSnackbarText.value = `下载失败: ${e}`;
-    localSnackbar.value = true;
-  }
-}
-
-function formatFileSize(bytes: number): string {
-  if (bytes < 1024) return bytes + " B";
-  if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + " KB";
-  return (bytes / (1024 * 1024)).toFixed(1) + " MB";
-}
-
-onMounted(loadConfig);
-onUnmounted(() => {
-  if (unlistenImageEvent) unlistenImageEvent();
+/* ── 搜索条件（= wallhaven_* 配置，需保存后生效） ── */
+const draft = reactive({
+  wallhaven_api_key: "",
+  wallhaven_q: "",
+  wallhaven_categories: "010",
+  wallhaven_purity: "100",
+  wallhaven_sorting: "toplist",
+  wallhaven_top_range: "1y",
+  wallhaven_atleast: "1920x1080",
+  wallhaven_ratios: "landscape",
+  wallhaven_order: "desc",
+  wallhaven_max_images: 100,
 });
+
+onMounted(() => {
+  const c = appState.config;
+  if (!c) return;
+  draft.wallhaven_api_key = c.wallhaven_api_key;
+  draft.wallhaven_q = c.wallhaven_q;
+  draft.wallhaven_categories = c.wallhaven_categories;
+  draft.wallhaven_purity = c.wallhaven_purity;
+  draft.wallhaven_sorting = c.wallhaven_sorting;
+  draft.wallhaven_top_range = c.wallhaven_top_range;
+  draft.wallhaven_atleast = c.wallhaven_atleast;
+  draft.wallhaven_ratios = c.wallhaven_ratios;
+  draft.wallhaven_order = c.wallhaven_order;
+  draft.wallhaven_max_images = c.wallhaven_max_images;
+});
+
+/* 三位开关辅助 */
+function flagGet(key: "wallhaven_categories" | "wallhaven_purity", i: number): boolean {
+  return draft[key][i] === "1";
+}
+function flagSet(key: "wallhaven_categories" | "wallhaven_purity", i: number, v: boolean) {
+  const arr = draft[key].split("");
+  arr[i] = v ? "1" : "0";
+  // 至少保留一位
+  if (!arr.includes("1")) return;
+  draft[key] = arr.join("");
+}
+
+const CATEGORY_FLAGS = [
+  { label: "General", i: 0 },
+  { label: "Anime", i: 1 },
+  { label: "People", i: 2 },
+];
+const PURITY_FLAGS = [
+  { label: "SFW", i: 0 },
+  { label: "Sketchy", i: 1 },
+  { label: "NSFW", i: 2 },
+];
+
+const SORTING_ITEMS = [
+  { title: "最新", value: "date_added" },
+  { title: "相关度", value: "relevance" },
+  { title: "随机", value: "random" },
+  { title: "浏览量", value: "views" },
+  { title: "收藏数", value: "favorites" },
+  { title: "排行榜", value: "toplist" },
+];
+const TOP_RANGE_ITEMS = [
+  { title: "1 天", value: "1d" },
+  { title: "3 天", value: "3d" },
+  { title: "1 周", value: "1w" },
+  { title: "1 月", value: "1M" },
+  { title: "3 月", value: "3M" },
+  { title: "6 月", value: "6M" },
+  { title: "1 年", value: "1y" },
+];
+const ORDER_ITEMS = [
+  { title: "降序", value: "desc" },
+  { title: "升序", value: "asc" },
+];
+const RATIO_ITEMS = [
+  { title: "不限制", value: "" },
+  { title: "横屏", value: "landscape" },
+  { title: "竖屏", value: "portrait" },
+  { title: "方形", value: "square" },
+  { title: "16:9", value: "16x9" },
+  { title: "16:10", value: "16x10" },
+  { title: "21:9", value: "21x9" },
+];
+const ATLEAST_ITEMS = ["", "1920x1080", "2560x1440", "2560x1600", "3440x1440", "3840x2160"];
+
+const orderDisabled = computed(
+  () => draft.wallhaven_sorting === "toplist" || draft.wallhaven_sorting === "random",
+);
+const showTopRange = computed(() => draft.wallhaven_sorting === "toplist");
+const nsfwWithoutKey = computed(
+  () => draft.wallhaven_purity[2] === "1" && !draft.wallhaven_api_key.trim(),
+);
+
+/* ── 保存 ── */
+const saving = ref(false);
+async function persist(): Promise<boolean> {
+  if (!appState.config) return false;
+  saving.value = true;
+  try {
+    const next: AppConfig = { ...appState.config, ...draft };
+    await saveSettings(next);
+    appState.config = next;
+    return true;
+  } catch (e) {
+    toastError(e);
+    return false;
+  } finally {
+    saving.value = false;
+  }
+}
+
+async function onSaveOnly() {
+  if (await persist()) toast("设置已保存", "success");
+}
+
+/* ── 搜索 ── */
+const searching = ref(false);
+const result = ref<WallhavenSearchResult | null>(null);
+const searchError = ref("");
+
+async function doSearch(page: number) {
+  searching.value = true;
+  searchError.value = "";
+  try {
+    result.value = await searchWallhaven(page);
+    selected.clear();
+  } catch (e) {
+    searchError.value = String(e);
+    result.value = null;
+  } finally {
+    searching.value = false;
+  }
+}
+
+async function onSaveAndSearch() {
+  if (await persist()) await doSearch(1);
+}
+
+async function onPage(delta: number) {
+  if (!result.value) return;
+  const next = result.value.page + delta;
+  if (next < 1 || next > result.value.total_pages) return;
+  await doSearch(next);
+}
+
+/* ── 勾选与下载 ── */
+const selected = reactive(new Set<string>());
+
+function toggleSelect(img: WallhavenImageEntry) {
+  if (selected.has(img.id)) selected.delete(img.id);
+  else selected.add(img.id);
+}
+
+const allPageSelected = computed(() => {
+  const imgs = result.value?.images ?? [];
+  return imgs.length > 0 && imgs.every((i) => selected.has(i.id));
+});
+
+function toggleSelectAll() {
+  const imgs = result.value?.images ?? [];
+  if (allPageSelected.value) {
+    imgs.forEach((i) => selected.delete(i.id));
+  } else {
+    imgs.forEach((i) => selected.add(i.id));
+  }
+}
+
+const startingSelected = ref(false);
+async function onDownloadSelected() {
+  if (selected.size === 0 || startingSelected.value) return;
+  startingSelected.value = true;
+  try {
+    if (!(await persist())) return;
+    const imgs = (result.value?.images ?? []).filter((i) => selected.has(i.id));
+    const payload: WallhavenSelected[] = imgs.map((i) => ({
+      id: i.id,
+      path: i.path,
+      resolution: i.resolution,
+      short_url: i.short_url,
+    }));
+    clearNewImages("wallhaven");
+    const msg = await downloadWallhavenSelected(payload);
+    toast(msg, "info");
+    selected.clear();
+  } catch (e) {
+    toastError(e);
+  } finally {
+    startingSelected.value = false;
+  }
+}
+
+const startingBatch = ref(false);
+async function onBatchDownload() {
+  if (startingBatch.value) return;
+  startingBatch.value = true;
+  try {
+    if (!(await persist())) return;
+    clearNewImages("wallhaven");
+    const msg = await startWallhavenDownload();
+    toast(msg, "info");
+  } catch (e) {
+    toastError(e);
+  } finally {
+    startingBatch.value = false;
+  }
+}
 </script>
 
 <template>
-  <div>
-    <!-- ===== 搜索栏 + 设置入口 ===== -->
-    <v-card class="glass-card source-card animate-in stagger-1">
-      <div class="source-card-header" style="background: linear-gradient(135deg, rgba(59,130,246,0.08) 0%, transparent 60%)">
-        <div class="source-header-icon" style="background: rgba(59,130,246,0.15)">
-          <v-icon color="#3b82f6">mdi-image-search</v-icon>
-        </div>
-        <div>
-          <div class="text-heading">Wallhaven 浏览</div>
-          <div class="text-caption">从 Wallhaven 搜索并下载壁纸</div>
-        </div>
+  <div class="view">
+    <div class="view-header">
+      <span class="view-header__title">Wallhaven</span>
+      <span class="view-header__sub">搜索条件即下载配置，保存后生效</span>
+    </div>
+
+    <!-- 搜索条件 -->
+    <div class="panel-card animate-in">
+      <div class="panel-card__title">
+        <v-icon icon="mdi-tune-variant" size="18" color="primary" />
+        搜索条件
       </div>
-      <v-card-text class="pa-4">
-        <div class="d-flex align-center ga-3 flex-wrap">
-          <v-btn
-            class="gradient-btn"
-            :loading="searching"
-            @click="search()"
-          >
-            <v-icon start>mdi-magnify</v-icon>
-            搜索壁纸
-          </v-btn>
 
-          <v-btn
-            variant="text"
-            color="grey"
-            @click="showSettings = !showSettings"
-          >
-            <v-icon start size="14">{{ showSettings ? 'mdi-chevron-up' : 'mdi-cog' }}</v-icon>
-            搜索参数
-          </v-btn>
+      <div class="wh-row">
+        <v-text-field
+          v-model="draft.wallhaven_q"
+          label="关键词"
+          placeholder="如 landscape、anime girl…"
+          clearable
+          hide-details
+          class="settings-field wh-row__q"
+        />
+        <v-select
+          v-model="draft.wallhaven_sorting"
+          :items="SORTING_ITEMS"
+          label="排序"
+          hide-details
+          class="settings-field"
+          style="max-width: 150px"
+        />
+        <v-select
+          v-if="showTopRange"
+          v-model="draft.wallhaven_top_range"
+          :items="TOP_RANGE_ITEMS"
+          label="排行范围"
+          hide-details
+          class="settings-field"
+          style="max-width: 130px"
+        />
+        <v-select
+          v-model="draft.wallhaven_order"
+          :items="ORDER_ITEMS"
+          label="顺序"
+          hide-details
+          :disabled="orderDisabled"
+          class="settings-field"
+          style="max-width: 110px"
+        />
+      </div>
 
-          <v-chip v-if="searched && !searching" variant="tonal" size="small" color="primary">
-            找到 {{ totalResults }} 张
+      <div class="wh-row wh-row--flags">
+        <div class="wh-flag-group">
+          <span class="stat-label">分类</span>
+          <v-chip
+            v-for="f in CATEGORY_FLAGS"
+            :key="f.label"
+            size="small"
+            :variant="flagGet('wallhaven_categories', f.i) ? 'flat' : 'outlined'"
+            :color="flagGet('wallhaven_categories', f.i) ? 'primary' : undefined"
+            @click="flagSet('wallhaven_categories', f.i, !flagGet('wallhaven_categories', f.i))"
+          >
+            {{ f.label }}
           </v-chip>
         </div>
-
-        <v-alert v-if="error" type="error" variant="tonal" density="compact" class="mt-3">
-          <div class="d-flex align-center justify-space-between">
-            <span>{{ error }}</span>
-            <v-btn size="x-small" variant="text" color="error" prepend-icon="mdi-refresh" @click="search(currentPage)">
-              重试
-            </v-btn>
-          </div>
-        </v-alert>
-      </v-card-text>
-    </v-card>
-
-    <!-- ===== 搜索参数（可折叠） ===== -->
-    <v-expand-transition>
-      <v-card v-if="showSettings && config" class="glass-card mt-3 pa-4 animate-in">
-        <div class="settings-grid">
-          <v-text-field
-            v-model="config.wallhaven_save_dir"
-            label="保存目录"
-            :rules="[requiredRule]"
-            density="compact"
-            hide-details="auto"
-            append-inner-icon="mdi-folder-open"
-            @click:append-inner="selectDirectory('wallhaven_save_dir')"
-          />
-          <v-text-field
-            v-model="config.wallhaven_db_path"
-            label="数据库路径"
-            :rules="[requiredRule]"
-            density="compact"
-            hide-details="auto"
-            append-inner-icon="mdi-file-find"
-            @click:append-inner="selectDirectory('wallhaven_db_path')"
-          />
-          <v-text-field
-            v-model="config.wallhaven_api_key"
-            label="API Key（可选）"
-            hint="提高速率限制"
-            type="password"
-            density="compact"
-            hide-details="auto"
-          />
-          <v-text-field
-            v-model="config.wallhaven_q"
-            label="搜索关键词 (q)"
-            hint="留空搜索全部，支持标签语法"
-            density="compact"
-            hide-details="auto"
-          />
-          <v-text-field
-            v-model="config.wallhaven_categories"
-            label="分类 (categories)"
-            hint="位掩码：1=General 2=Anime 4=People，如 010=仅动漫"
-            density="compact"
-            hide-details="auto"
-          />
-          <v-text-field
-            v-model="config.wallhaven_purity"
-            label="纯净度 (purity)"
-            hint="位掩码：1=SFW 2=Sketchy 4=NSFW，如 110=无NSFW"
-            density="compact"
-            hide-details="auto"
-          />
-          <v-select
-            v-model="config.wallhaven_sorting"
-            label="排序 (sorting)"
-            :items="['date_added', 'relevance', 'random', 'views', 'favorites', 'toplist']"
-            density="compact"
-            hide-details="auto"
-          />
-          <v-select
-            v-model="config.wallhaven_order"
-            label="排序方向 (order)"
-            :items="[
-              { title: '降序 (desc)', value: 'desc' },
-              { title: '升序 (asc)', value: 'asc' },
-            ]"
-            density="compact"
-            hide-details="auto"
-          />
-          <v-select
-            v-if="config.wallhaven_sorting === 'toplist'"
-            v-model="config.wallhaven_top_range"
-            label="时间范围 (topRange)"
-            :items="['1d', '3d', '1w', '1M', '3M', '6M', '1y']"
-            density="compact"
-            hide-details="auto"
-          />
-          <v-text-field
-            v-model="config.wallhaven_atleast"
-            label="最低分辨率"
-            hint="如 1920x1080"
-            :rules="[resolutionRule]"
-            density="compact"
-            hide-details="auto"
-          />
-          <v-text-field
-            v-model="config.wallhaven_ratios"
-            label="宽高比"
-            hint="如 landscape, 16x9"
-            density="compact"
-            hide-details="auto"
-          />
-          <v-text-field
-            v-model.number="config.wallhaven_max_images"
-            label="每次最多下载"
-            type="number"
-            min="0"
-            :rules="[positiveInt]"
-            density="compact"
-            hide-details="auto"
-          />
-        </div>
-        <div class="d-flex align-center mt-3">
-          <v-btn
-            color="primary"
-            variant="tonal"
+        <div class="wh-flag-group">
+          <span class="stat-label">纯度</span>
+          <v-chip
+            v-for="f in PURITY_FLAGS"
+            :key="f.label"
             size="small"
-            :loading="saving"
-            @click="saveConfig"
+            :variant="flagGet('wallhaven_purity', f.i) ? 'flat' : 'outlined'"
+            :color="flagGet('wallhaven_purity', f.i) ? 'primary' : undefined"
+            @click="flagSet('wallhaven_purity', f.i, !flagGet('wallhaven_purity', f.i))"
           >
-            <v-icon start size="14">mdi-content-save</v-icon>
-            保存设置
-          </v-btn>
-          <v-fade-transition>
-            <v-icon v-if="saved" color="success" class="ms-2" size="18">mdi-check-circle</v-icon>
-          </v-fade-transition>
+            {{ f.label }}
+          </v-chip>
         </div>
-      </v-card>
-    </v-expand-transition>
+        <span v-if="nsfwWithoutKey" class="text-caption" style="color: var(--accent-warning)">
+          NSFW 内容需要填写 API Key
+        </span>
+      </div>
 
-    <!-- ===== 搜索结果 ===== -->
-    <template v-if="searched">
-      <div class="d-flex align-center ga-2 mt-4 mb-2 animate-in stagger-2">
+      <div class="settings-grid">
+        <v-combobox
+          v-model="draft.wallhaven_atleast"
+          :items="ATLEAST_ITEMS"
+          label="最小分辨率"
+          hide-details
+          class="settings-field"
+        />
+        <v-select
+          v-model="draft.wallhaven_ratios"
+          :items="RATIO_ITEMS"
+          label="宽高比"
+          hide-details
+          class="settings-field"
+        />
+        <v-text-field
+          v-model.number="draft.wallhaven_max_images"
+          type="number"
+          label="批量下载目标张数"
+          hide-details
+          :rules="[(v: number) => positiveInt(v, { min: 1, max: 10000 })]"
+          class="settings-field"
+        />
+        <v-text-field
+          v-model="draft.wallhaven_api_key"
+          label="API Key（可选）"
+          type="password"
+          hide-details
+          class="settings-field"
+        />
+      </div>
+
+      <div class="wh-actions">
+        <v-btn variant="tonal" :loading="saving" @click="onSaveOnly">仅保存</v-btn>
         <v-btn
-          v-if="results.length > 0 && !downloading"
-          size="small"
-          variant="tonal"
           color="primary"
-          :disabled="selectedIds.size === 0"
-          :loading="downloading"
-          @click="downloadSelected"
+          variant="flat"
+          prepend-icon="mdi-magnify"
+          :loading="searching"
+          @click="onSaveAndSearch"
         >
-          <v-icon start size="14">mdi-download</v-icon>
-          下载选中 ({{ selectedIds.size }})
+          保存并搜索
         </v-btn>
+      </div>
+    </div>
 
+    <!-- 下载进度 -->
+    <ProgressCard source="wallhaven" title="Wallhaven 下载" />
+
+    <!-- 搜索结果 -->
+    <div v-if="searching && !result" class="wh-grid">
+      <div v-for="i in 12" :key="i" class="wh-cell shimmer" />
+    </div>
+
+    <EmptyState
+      v-else-if="searchError"
+      error
+      icon="mdi-cloud-alert-outline"
+      title="搜索失败"
+      :desc="searchError"
+    >
+      <v-btn variant="tonal" @click="onSaveAndSearch">重试</v-btn>
+    </EmptyState>
+
+    <template v-else-if="result">
+      <div class="wh-toolbar">
+        <span class="text-caption">
+          第 {{ result.page }} / {{ result.total_pages }} 页 · 共 {{ result.total }} 张
+          <template v-if="selected.size > 0"> · 已选 {{ selected.size }}</template>
+        </span>
         <v-spacer />
-
-        <v-btn size="x-small" variant="text" @click="selectAll">全选</v-btn>
-        <v-btn size="x-small" variant="text" @click="deselectAll">取消</v-btn>
-
+        <v-btn size="small" variant="text" @click="toggleSelectAll">
+          {{ allPageSelected ? "取消全选" : "全选本页" }}
+        </v-btn>
         <v-btn
-          size="x-small"
+          size="small"
           variant="text"
           icon="mdi-chevron-left"
-          :disabled="currentPage <= 1 || searching"
-          @click="search(currentPage - 1)"
+          :disabled="result.page <= 1 || searching"
+          @click="onPage(-1)"
         />
-        <v-chip size="x-small" variant="outlined" color="grey">
-          第 {{ currentPage }}/{{ totalPages }} 页
-        </v-chip>
         <v-btn
-          size="x-small"
+          size="small"
           variant="text"
           icon="mdi-chevron-right"
-          :disabled="currentPage >= totalPages || searching"
-          @click="search(currentPage + 1)"
+          :disabled="result.page >= result.total_pages || searching"
+          @click="onPage(1)"
         />
+        <v-btn
+          size="small"
+          variant="tonal"
+          :disabled="selected.size === 0"
+          :loading="startingSelected"
+          @click="onDownloadSelected"
+        >
+          下载选中（{{ selected.size }}）
+        </v-btn>
+        <v-btn
+          size="small"
+          color="primary"
+          variant="flat"
+          :loading="startingBatch"
+          @click="onBatchDownload"
+        >
+          按条件批量下载
+        </v-btn>
       </div>
 
-      <div v-if="results.length > 0" class="search-grid animate-in stagger-3">
+      <div class="wh-grid">
         <div
-          v-for="img in results"
+          v-for="img in result.images"
           :key="img.id"
-          class="search-item"
-          :class="{ 'search-item--selected': isSelected(img) }"
-          role="button"
-          tabindex="0"
-          :aria-label="isSelected(img) ? `取消选择 ${img.id}` : `选择 ${img.id}`"
-          :aria-pressed="isSelected(img)"
+          class="wh-cell wh-cell--clickable"
+          :class="{ 'wh-cell--selected': selected.has(img.id) }"
           @click="toggleSelect(img)"
-          @keydown.enter.space.prevent="toggleSelect(img)"
         >
-          <img :src="img.thumbnail_url" :alt="img.id" class="search-thumb" loading="lazy" referrerpolicy="no-referrer" />
-          <div class="search-overlay">
-            <span class="search-res">{{ img.resolution }}</span>
-            <span class="search-size">{{ formatFileSize(img.file_size) }}</span>
-          </div>
-          <div v-if="isSelected(img)" class="search-check">
-            <v-icon color="#3b82f6" size="18">mdi-check-circle</v-icon>
-          </div>
+          <img :src="img.thumbnail_url" :alt="img.id" loading="lazy" />
+          <span class="wh-cell__res">{{ img.resolution }}</span>
+          <span class="wh-cell__check">
+            <v-icon
+              :icon="selected.has(img.id) ? 'mdi-checkbox-marked-circle' : 'mdi-checkbox-blank-circle-outline'"
+              size="20"
+              :color="selected.has(img.id) ? 'primary' : 'white'"
+            />
+          </span>
         </div>
       </div>
 
-      <v-card v-else-if="!searching" class="glass-card mt-4 pa-6 text-center animate-in stagger-3">
-        <v-icon size="48" color="grey" class="mb-2">mdi-image-off-outline</v-icon>
-        <p class="text-body text-secondary">没有找到匹配的壁纸，请调整搜索参数。</p>
-      </v-card>
-
-      <!-- 下载中预览 -->
-      <v-card v-if="downloading && downloadedImages.length > 0" class="glass-card mt-4 animate-in">
-        <v-card-text class="pa-4">
-          <div class="d-flex align-center mb-3">
-            <v-progress-circular indeterminate size="18" width="2" color="#3b82f6" class="me-2" />
-            <span class="text-body font-weight-medium">已下载 {{ downloadedImages.length }} 张</span>
-          </div>
-          <div class="download-grid">
-            <div v-for="img in downloadedImages" :key="img.name" class="download-thumb">
-              <img :src="img.path" :alt="img.name" class="download-thumb-img" loading="lazy" />
-            </div>
-          </div>
-        </v-card-text>
-      </v-card>
+      <EmptyState
+        v-if="result.images.length === 0"
+        icon="mdi-image-search-outline"
+        title="没有符合条件的图片"
+        desc="试试放宽分辨率或调整关键词"
+      />
     </template>
 
-    <v-snackbar v-model="localSnackbar" :timeout="3000" location="bottom" variant="tonal">
-      {{ localSnackbarText }}
-    </v-snackbar>
+    <EmptyState
+      v-else
+      icon="mdi-image-search-outline"
+      title="设置条件后开始搜索"
+      desc="搜索结果可勾选下载，也可按条件批量下载到本地"
+    />
+
+    <NewImagesStrip source="wallhaven" />
   </div>
 </template>
 
 <style scoped>
-.search-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
-  gap: 10px;
+.wh-row {
+  display: flex;
+  gap: var(--space-3);
+  flex-wrap: wrap;
 }
-
-.search-item {
+.wh-row__q {
+  flex: 1;
+  min-width: 220px;
+}
+.wh-row--flags {
+  align-items: center;
+  gap: var(--space-5);
+}
+.wh-flag-group {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+.wh-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--space-3);
+}
+.wh-toolbar {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+}
+.wh-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+  gap: var(--space-2);
+}
+.wh-cell {
   position: relative;
+  aspect-ratio: 16 / 10;
   border-radius: var(--radius-md);
   overflow: hidden;
+  background: var(--surface-elevated);
+  border: 2px solid transparent;
+  min-height: 90px;
+}
+.wh-cell--clickable {
   cursor: pointer;
-  transition: transform 0.25s var(--ease-out), box-shadow 0.25s var(--ease-out);
-  box-shadow: 0 2px 8px rgba(0,0,0,0.2);
-  aspect-ratio: 16 / 9;
-  background: var(--surface-card);
+  transition: border-color 0.15s, transform 0.15s;
 }
-.search-item:hover {
-  transform: scale(1.03);
-  box-shadow: 0 8px 24px rgba(0,0,0,0.4);
+.wh-cell--clickable:hover {
+  transform: translateY(-1px);
 }
-.search-item--selected {
-  outline: 2px solid var(--accent-primary);
-  outline-offset: -2px;
+.wh-cell--selected {
+  border-color: var(--accent-primary);
 }
-.search-thumb {
-  width: 100%; height: 100%;
-  object-fit: cover; display: block;
+.wh-cell img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
 }
-.search-overlay {
-  position: absolute; bottom: 0; left: 0; right: 0;
-  padding: 8px;
-  background: linear-gradient(to top, rgba(0,0,0,0.7), transparent);
-  display: flex; gap: 8px; align-items: center;
-  opacity: 0; transition: opacity 0.2s;
+.wh-cell__res {
+  position: absolute;
+  left: 6px;
+  bottom: 6px;
+  padding: 1px 7px;
+  border-radius: var(--radius-full);
+  font-size: 0.625rem;
+  background: rgba(0, 0, 0, 0.6);
+  color: #fff;
 }
-.search-item:hover .search-overlay { opacity: 1; }
-.search-res, .search-size { font-size: 0.6875rem; color: rgba(255,255,255,0.85); }
-.search-check {
-  position: absolute; top: 6px; right: 6px;
-  filter: drop-shadow(0 1px 3px rgba(0,0,0,0.5));
+.wh-cell__check {
+  position: absolute;
+  right: 6px;
+  top: 6px;
+  filter: drop-shadow(0 1px 2px rgba(0, 0, 0, 0.6));
 }
-
 </style>
