@@ -432,6 +432,10 @@ mod tests {
             while std::time::Instant::now() < deadline {
                 match listener.accept() {
                     Ok((mut stream, _)) => {
+                        // 先读取客户端请求，避免"服务器先关闭连接、客户端随后写入被 RST(10054)"的时序竞争
+                        use std::io::Read;
+                        let mut req_buf = [0u8; 4096];
+                        let _ = stream.read(&mut req_buf);
                         use std::io::Write;
                         let response = format!(
                             "HTTP/1.1 200 OK\r\nContent-Type: image/jpeg\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
@@ -452,7 +456,8 @@ mod tests {
         // 给子线程一点时间进入 accept 轮询，减少 CI 上首次连接失败的概率。
         std::thread::sleep(std::time::Duration::from_millis(100));
 
-        let client = reqwest::Client::new();
+        // no_proxy：本测试访问本地 mock server，系统代理开启时必须绕过，否则请求被代理转发而失败
+        let client = reqwest::Client::builder().no_proxy().build().unwrap();
         let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         let url = format!("http://127.0.0.1:{}/test.jpg", port);
         let results = download_urls_concurrent(&client, &[url], cancel, 1, 3).await;

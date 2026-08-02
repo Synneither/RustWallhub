@@ -261,7 +261,11 @@ pub fn setup_cancel_flag(state: &AppState) -> Arc<AtomicBool> {
     flag
 }
 
-pub fn rebuild_http_client(state: &AppState, timeout_secs: u64, proxy_url: &str) -> Result<(), String> {
+pub fn rebuild_http_client(
+    state: &AppState,
+    timeout_secs: u64,
+    proxy_url: &str,
+) -> Result<(), String> {
     let mut builder = reqwest::Client::builder()
         .user_agent("RustWallhub/1.0")
         .timeout(Duration::from_secs(timeout_secs));

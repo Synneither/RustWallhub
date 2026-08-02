@@ -220,21 +220,23 @@ fn apply_sort(entries: &mut [FileEntry], sort_by: &str) {
 
 fn file_entry_to_image(e: &FileEntry) -> LocalImageEntry {
     let modified_date = e.modified.and_then(|t| {
-        t.duration_since(std::time::UNIX_EPOCH)
-            .ok()
-            .map(|d| {
-                let secs = d.as_secs();
-                let days = secs / 86400;
-                let remainder = secs % 86400;
-                let h = remainder / 3600;
-                let m = (remainder % 3600) / 60;
-                let s = remainder % 60;
-                format!("{:04}-{:02}-{:02} {:02}:{:02}:{:02}",
-                    1970 + (days / 365),
-                    1 + ((days % 365) / 30),
-                    1 + (days % 30),
-                    h, m, s)
-            })
+        t.duration_since(std::time::UNIX_EPOCH).ok().map(|d| {
+            let secs = d.as_secs();
+            let days = secs / 86400;
+            let remainder = secs % 86400;
+            let h = remainder / 3600;
+            let m = (remainder % 3600) / 60;
+            let s = remainder % 60;
+            format!(
+                "{:04}-{:02}-{:02} {:02}:{:02}:{:02}",
+                1970 + (days / 365),
+                1 + ((days % 365) / 30),
+                1 + (days % 30),
+                h,
+                m,
+                s
+            )
+        })
     });
     LocalImageEntry {
         name: e.name.clone(),
@@ -497,8 +499,7 @@ pub async fn get_image_info(
     // Try reading image dimensions/format via the `image` crate
     let (width, height, format) = match std::fs::read(&file_path) {
         Ok(bytes) => {
-            let reader = image::ImageReader::new(std::io::Cursor::new(bytes))
-                .with_guessed_format();
+            let reader = image::ImageReader::new(std::io::Cursor::new(bytes)).with_guessed_format();
             match reader {
                 Ok(reader) => {
                     let fmt = reader.format().map(|f| format!("{:?}", f));
@@ -529,8 +530,11 @@ pub async fn get_image_info(
         Source::Reddit => db::get_reddit_image_by_name(db_path, &name)?,
         Source::All => {
             // Try wallhaven first, then reddit
-            db::get_wallhaven_image_by_name(db_path, &name)?
-                .or_else(|| db::get_reddit_image_by_name(&config.reddit_db_path, &name).ok().flatten())
+            db::get_wallhaven_image_by_name(db_path, &name)?.or_else(|| {
+                db::get_reddit_image_by_name(&config.reddit_db_path, &name)
+                    .ok()
+                    .flatten()
+            })
         }
     };
 
@@ -546,11 +550,19 @@ pub async fn get_image_info(
                 Some(rec.resolution)
             };
             (
-                if rec.source_url.is_empty() { None } else { Some(rec.source_url) },
+                if rec.source_url.is_empty() {
+                    None
+                } else {
+                    Some(rec.source_url)
+                },
                 Some(rec.url),
                 rec.title,
                 rec.permalink,
-                if rec.created_at.is_empty() { None } else { Some(rec.created_at) },
+                if rec.created_at.is_empty() {
+                    None
+                } else {
+                    Some(rec.created_at)
+                },
                 res,
             )
         }

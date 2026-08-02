@@ -1,7 +1,31 @@
 use crate::downloader;
-use rusqlite::{Connection, Result as SqlResult};
+use rusqlite::{Connection, OpenFlags, Result as SqlResult};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
+
+/// 只读打开已存在的数据库（不创建文件）。
+/// 文件不存在时返回错误，避免任何查询路径静默创建空库。
+fn open(db_path: &str) -> SqlResult<Connection> {
+    Connection::open_with_flags(
+        db_path,
+        OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    )
+}
+
+/// 显式创建/打开数据库（仅初始化命令使用）。
+fn open_create(db_path: &str) -> SqlResult<Connection> {
+    Connection::open_with_flags(
+        db_path,
+        OpenFlags::SQLITE_OPEN_READ_WRITE
+            | OpenFlags::SQLITE_OPEN_CREATE
+            | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    )
+}
+
+/// 数据库文件是否存在
+pub fn db_exists(db_path: &str) -> bool {
+    Path::new(db_path).exists()
+}
 
 #[derive(Clone, Serialize, Deserialize, Debug)]
 pub struct ImageRecord {
@@ -20,13 +44,12 @@ pub struct ImageRecord {
 
 #[derive(Clone, Serialize, Debug)]
 pub struct DbStats {
+    /// 数据库记录总数
     pub total: i64,
+    /// love=1（正常状态）的记录数
     pub love: i64,
+    /// 缺失数：love=1 但保存目录中文件不存在的记录数
     pub dislike: i64,
-}
-
-fn open(db_path: &str) -> SqlResult<Connection> {
-    Connection::open(db_path)
 }
 
 fn ensure_love_column(conn: &Connection) -> SqlResult<()> {
@@ -68,7 +91,7 @@ fn optimize_db(conn: &Connection) -> SqlResult<()> {
 
 pub fn init_wallhaven_db(db_path: &str) -> SqlResult<()> {
     log::info!("[DB] init_wallhaven_db: path={}", db_path);
-    let conn = open(db_path)?;
+    let conn = open_create(db_path)?;
     optimize_db(&conn)?;
     conn.execute_batch(
         "CREATE TABLE IF NOT EXISTS images (
@@ -91,7 +114,7 @@ pub fn init_wallhaven_db(db_path: &str) -> SqlResult<()> {
 
 pub fn init_reddit_db(db_path: &str) -> SqlResult<()> {
     log::info!("[DB] init_reddit_db: path={}", db_path);
-    let conn = open(db_path)?;
+    let conn = open_create(db_path)?;
     optimize_db(&conn)?;
     conn.execute_batch(
         "CREATE TABLE IF NOT EXISTS images (
@@ -288,19 +311,24 @@ pub fn clean_stale_thumbnails(thumbnail_dir: &str, save_dir: &str) -> u64 {
     cleaned
 }
 
-pub fn get_db_stats(db_path: &str) -> SqlResult<DbStats> {
+pub fn get_db_stats(db_path: &str, save_dir: &str) -> SqlResult<DbStats> {
     let conn = open(db_path)?;
     let (total, love): (i64, i64) = conn.query_row(
         "SELECT COUNT(*), COALESCE(SUM(CASE WHEN love=1 THEN 1 ELSE 0 END), 0) FROM images",
         [],
         |row| Ok((row.get(0)?, row.get(1)?)),
     )?;
+    let missing = count_missing_conn(&conn, save_dir)? as i64;
     let stats = DbStats {
         total,
         love,
-        dislike: total - love,
+        dislike: missing,
     };
-    log::info!("[DB] get_db_stats({}): {:?}", db_path, stats);
+    log::info!(
+        "[DB] get_db_stats({}): {:?} (missing by file existence)",
+        db_path,
+        stats
+    );
     Ok(stats)
 }
 
@@ -329,8 +357,7 @@ fn mark_missing_dislike(db_path: &str, save_dir: &str) -> SqlResult<u64> {
     Ok(updated)
 }
 
-fn count_missing(db_path: &str, save_dir: &str) -> SqlResult<u64> {
-    let conn = open(db_path)?;
+fn count_missing_conn(conn: &Connection, save_dir: &str) -> SqlResult<u64> {
     let mut stmt = conn.prepare("SELECT name FROM images WHERE love = 1")?;
     let names: Vec<String> = stmt
         .query_map([], |row| row.get(0))?
@@ -345,6 +372,11 @@ fn count_missing(db_path: &str, save_dir: &str) -> SqlResult<u64> {
     }
     log::info!("[DB] count_missing: {} missing in {}", missing, save_dir);
     Ok(missing)
+}
+
+fn count_missing(db_path: &str, save_dir: &str) -> SqlResult<u64> {
+    let conn = open(db_path)?;
+    count_missing_conn(&conn, save_dir)
 }
 
 pub fn count_missing_wallhaven(db_path: &str, save_dir: &str) -> SqlResult<u64> {
@@ -786,9 +818,28 @@ mod tests {
         let db = TestDb::wallhaven();
         insert_wallhaven_image(db.path(), "id1", "a.jpg", "h1", "u1", "s1", "1920x1080").unwrap();
         insert_wallhaven_image(db.path(), "id2", "b.jpg", "h2", "u2", "s2", "3840x2160").unwrap();
-        let stats = get_db_stats(db.path()).unwrap();
+        // 文件不存在 → love=1 但缺失 = 2
+        let img_dir = TempDir::new().unwrap();
+        let stats = get_db_stats(db.path(), &img_dir.path().to_string_lossy()).unwrap();
         assert_eq!(stats.total, 2);
         assert_eq!(stats.love, 2);
+        assert_eq!(stats.dislike, 2);
+        // 创建其中一个文件 → 缺失 = 1
+        std::fs::write(img_dir.path().join("a.jpg"), b"fake").unwrap();
+        let stats = get_db_stats(db.path(), &img_dir.path().to_string_lossy()).unwrap();
+        assert_eq!(stats.dislike, 1);
+    }
+
+    #[test]
+    fn test_query_does_not_create_db() {
+        // 核心语义：数据库不存在时，任何查询都必须报错且不得创建文件
+        let dir = TempDir::new().unwrap();
+        let db_path = dir.path().join("missing.db");
+        let dir_str = dir.path().to_string_lossy().to_string();
+        let db_str = db_path.to_string_lossy().to_string();
+        assert!(get_db_stats(&db_str, &dir_str).is_err());
+        assert!(!db_path.exists(), "查询不应创建数据库文件");
+        assert!(!db_exists(&db_str));
     }
 
     #[test]
@@ -806,9 +857,19 @@ mod tests {
             1
         );
 
-        assert_eq!(get_db_stats(db.path()).unwrap().love, 1);
+        assert_eq!(
+            get_db_stats(db.path(), &img_dir.path().to_string_lossy())
+                .unwrap()
+                .love,
+            1
+        );
         assert_eq!(restore_love_db(db.path()).unwrap(), 1);
-        assert_eq!(get_db_stats(db.path()).unwrap().love, 2);
+        assert_eq!(
+            get_db_stats(db.path(), &img_dir.path().to_string_lossy())
+                .unwrap()
+                .love,
+            2
+        );
     }
 
     #[test]
@@ -866,9 +927,11 @@ mod tests {
         let db = TestDb::wallhaven();
         insert_wallhaven_image(db.path(), "id1", "a.jpg", "h1", "u1", "s1", "1920x1080").unwrap();
         assert!(mark_dislike_by_name(db.path(), "a.jpg").unwrap());
-        let stats = get_db_stats(db.path()).unwrap();
+        let img_dir = TempDir::new().unwrap();
+        let stats = get_db_stats(db.path(), &img_dir.path().to_string_lossy()).unwrap();
         assert_eq!(stats.love, 0);
-        assert_eq!(stats.dislike, 1);
+        // 手动不喜欢 → love=0，不计入缺失（缺失只看 love=1 且文件不存在）
+        assert_eq!(stats.dislike, 0);
     }
 
     #[test]
@@ -1020,9 +1083,12 @@ mod tests {
         assert_eq!(added, 3);
         assert_eq!(skipped, 0);
 
-        let stats = get_db_stats(db.path()).unwrap();
+        // 文件均不存在 → 缺失 = 3
+        let img_dir = TempDir::new().unwrap();
+        let stats = get_db_stats(db.path(), &img_dir.path().to_string_lossy()).unwrap();
         assert_eq!(stats.total, 3);
         assert_eq!(stats.love, 3);
+        assert_eq!(stats.dislike, 3);
     }
 
     #[test]
@@ -1091,7 +1157,8 @@ mod tests {
         assert_eq!(added, 1);
         assert_eq!(skipped, 1);
 
-        let stats = get_db_stats(db.path()).unwrap();
+        let img_dir = TempDir::new().unwrap();
+        let stats = get_db_stats(db.path(), &img_dir.path().to_string_lossy()).unwrap();
         assert_eq!(stats.total, 1);
     }
 
@@ -1103,7 +1170,8 @@ mod tests {
         assert_eq!(added, 0);
         assert_eq!(skipped, 0);
 
-        let stats = get_db_stats(db.path()).unwrap();
+        let img_dir = TempDir::new().unwrap();
+        let stats = get_db_stats(db.path(), &img_dir.path().to_string_lossy()).unwrap();
         assert_eq!(stats.total, 0);
     }
 }

@@ -228,14 +228,21 @@ mod com_wallpaper {
 
     #[repr(C)]
     struct ComVtbl {
-        query_interface: unsafe extern "system" fn(*mut std::ffi::c_void, *const Guid, *mut *mut std::ffi::c_void) -> HRESULT,
+        query_interface: unsafe extern "system" fn(
+            *mut std::ffi::c_void,
+            *const Guid,
+            *mut *mut std::ffi::c_void,
+        ) -> HRESULT,
         add_ref: unsafe extern "system" fn(*mut std::ffi::c_void) -> u32,
         release: unsafe extern "system" fn(*mut std::ffi::c_void) -> u32,
         // IDesktopWallpaper methods
         set_wallpaper: unsafe extern "system" fn(*mut std::ffi::c_void, PCWSTR, PCWSTR) -> HRESULT,
-        get_wallpaper: unsafe extern "system" fn(*mut std::ffi::c_void, PCWSTR, *mut *mut u16) -> HRESULT,
-        get_monitor_device_path_count: unsafe extern "system" fn(*mut std::ffi::c_void, *mut u32) -> HRESULT,
-        get_monitor_device_path_at: unsafe extern "system" fn(*mut std::ffi::c_void, u32, *mut *mut u16) -> HRESULT,
+        get_wallpaper:
+            unsafe extern "system" fn(*mut std::ffi::c_void, PCWSTR, *mut *mut u16) -> HRESULT,
+        get_monitor_device_path_count:
+            unsafe extern "system" fn(*mut std::ffi::c_void, *mut u32) -> HRESULT,
+        get_monitor_device_path_at:
+            unsafe extern "system" fn(*mut std::ffi::c_void, u32, *mut *mut u16) -> HRESULT,
         // ... remaining methods not needed
     }
 
@@ -307,11 +314,7 @@ mod com_wallpaper {
                 .map(|v| v.as_ptr())
                 .unwrap_or(ptr::null());
 
-            let hr = (vtbl.set_wallpaper)(
-                p_wallpaper,
-                monitor_ptr,
-                path_wide.as_ptr(),
-            );
+            let hr = (vtbl.set_wallpaper)(p_wallpaper, monitor_ptr, path_wide.as_ptr());
 
             (vtbl.release)(p_wallpaper);
             CoUninitialize();
@@ -733,9 +736,7 @@ fn do_set_wallpaper(path_str: &str) -> Result<String, AppError> {
         .or_else(|| set_hyprland_wallpaper(&abs_str))
         .or_else(|| set_swww_wallpaper(&abs_str))
         .or_else(|| set_feh_wallpaper(&abs_str))
-        .ok_or_else(|| AppError::Other(
-            "未检测到支持的桌面环境".to_string(),
-        ))
+        .ok_or_else(|| AppError::Other("未检测到支持的桌面环境".to_string()))
 }
 
 #[derive(Clone, serde::Serialize)]
@@ -777,7 +778,11 @@ pub(crate) async fn start_slideshow(
 
     tauri::async_runtime::spawn(async move {
         let mut index = 0usize;
-        log::info!("[slideshow] 启动轮播: {} 张图片, 间隔 {}s", total, interval_secs);
+        log::info!(
+            "[slideshow] 启动轮播: {} 张图片, 间隔 {}s",
+            total,
+            interval_secs
+        );
         loop {
             if cancel_flag.load(std::sync::atomic::Ordering::SeqCst) {
                 log::info!("[slideshow] 已停止");
@@ -791,12 +796,15 @@ pub(crate) async fn start_slideshow(
                         .file_name()
                         .map(|n| n.to_string_lossy().to_string())
                         .unwrap_or_default();
-                    let _ = app_handle.emit("slideshow-tick", SlideshowTick {
-                        index,
-                        total,
-                        name,
-                        path: path.clone(),
-                    });
+                    let _ = app_handle.emit(
+                        "slideshow-tick",
+                        SlideshowTick {
+                            index,
+                            total,
+                            name,
+                            path: path.clone(),
+                        },
+                    );
                     log::info!("[slideshow] 切换壁纸 {}/{}: {}", index + 1, total, path);
                 }
                 Err(e) => {
@@ -822,9 +830,7 @@ pub(crate) async fn start_slideshow(
 }
 
 #[tauri::command]
-pub(crate) async fn stop_slideshow(
-    state: tauri::State<'_, AppState>,
-) -> Result<bool, AppError> {
+pub(crate) async fn stop_slideshow(state: tauri::State<'_, AppState>) -> Result<bool, AppError> {
     let stopped = if let Ok(cancel) = state.slideshow_cancel.lock() {
         if let Some(ref flag) = *cancel {
             flag.store(true, std::sync::atomic::Ordering::SeqCst);

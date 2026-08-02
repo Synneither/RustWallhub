@@ -15,7 +15,9 @@ use std::path::PathBuf;
 use std::sync::Mutex;
 use std::time::Duration;
 use tauri::Manager;
-use wallpaper::{set_wallpaper, start_slideshow, stop_slideshow, is_slideshow_running, list_monitors};
+use wallpaper::{
+    is_slideshow_running, list_monitors, set_wallpaper, start_slideshow, stop_slideshow,
+};
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -70,12 +72,9 @@ pub fn run() {
                 }
             }
 
-            if let Err(e) = db::init_wallhaven_db(&wh_db) {
-                log::error!("[startup] 初始化 wallhaven DB 失败: {e}");
-            }
-            if let Err(e) = db::init_reddit_db(&rd_db) {
-                log::error!("[startup] 初始化 reddit DB 失败: {e}");
-            }
+            // 只创建目录，不初始化数据库。
+            // 数据库文件由前端启动时通过 check_databases / init_databases
+            // 询问用户确认后显式创建，避免静默新建。
 
             let mut client_builder = reqwest::Client::builder()
                 .user_agent("RustWallhub/1.0")
@@ -88,9 +87,7 @@ pub fn run() {
                     log::warn!("[startup] 代理设置失败: {}", config.proxy_url);
                 }
             }
-            let client = client_builder
-                .build()
-                .expect("创建 HTTP client 失败");
+            let client = client_builder.build().expect("创建 HTTP client 失败");
 
             let auto_update = config.auto_update;
 
@@ -118,6 +115,8 @@ pub fn run() {
             get_config,
             save_settings,
             get_stats,
+            check_databases,
+            init_databases,
             check_update,
             install_update,
             // wallhaven

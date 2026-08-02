@@ -28,6 +28,49 @@ pub struct UpdateProgress {
     pub total: Option<u64>,
 }
 
+#[derive(Serialize)]
+pub struct DatabaseStatus {
+    pub wallhaven_exists: bool,
+    pub reddit_exists: bool,
+    pub wallhaven_path: String,
+    pub reddit_path: String,
+}
+
+/// 检查数据库文件是否存在（不创建任何文件）
+#[tauri::command]
+pub async fn check_databases(
+    state: tauri::State<'_, AppState>,
+) -> Result<DatabaseStatus, AppError> {
+    let config = crate::state::load_config(&state)?;
+    let wh = config.wallhaven_db_path.clone();
+    let rd = config.reddit_db_path.clone();
+    let status = DatabaseStatus {
+        wallhaven_exists: db::db_exists(&wh),
+        reddit_exists: db::db_exists(&rd),
+        wallhaven_path: wh,
+        reddit_path: rd,
+    };
+    log::info!("[CMD] check_databases: {:?}", status.wallhaven_exists);
+    Ok(status)
+}
+
+/// 显式创建缺失的数据库（用户确认后调用）
+#[tauri::command]
+pub async fn init_databases(state: tauri::State<'_, AppState>) -> Result<Vec<String>, AppError> {
+    let config = crate::state::load_config(&state)?;
+    let mut created = Vec::new();
+    if !db::db_exists(&config.wallhaven_db_path) {
+        db::init_wallhaven_db(&config.wallhaven_db_path)?;
+        created.push("wallhaven".into());
+    }
+    if !db::db_exists(&config.reddit_db_path) {
+        db::init_reddit_db(&config.reddit_db_path)?;
+        created.push("reddit".into());
+    }
+    log::info!("[CMD] init_databases created: {:?}", created);
+    Ok(created)
+}
+
 #[tauri::command]
 pub async fn get_config(state: tauri::State<'_, AppState>) -> Result<AppConfig, AppError> {
     log::info!("[CMD] get_config called");
@@ -66,8 +109,7 @@ pub async fn save_settings(
         *cache = None;
     }
     std::fs::create_dir_all(std::path::Path::new(&config.db_dir)).ok();
-    db::init_wallhaven_db(&config.wallhaven_db_path).ok();
-    db::init_reddit_db(&config.reddit_db_path).ok();
+    // 注意：这里不初始化数据库，由前端确认后调用 init_databases 显式创建
     let _ = rebuild_http_client(&state, config.request_timeout, &config.proxy_url);
     let _ = app.emit("settings-changed", ());
     log::info!("[CMD] save_settings done");
@@ -85,8 +127,8 @@ pub async fn get_stats(state: tauri::State<'_, AppState>) -> Result<StatsRespons
         wh_db_path,
         rd_db_path
     );
-    let wh_stats = db::get_db_stats(&wh_db_path)?;
-    let rd_stats = db::get_db_stats(&rd_db_path)?;
+    let wh_stats = db::get_db_stats(&wh_db_path, &config.wallhaven_save_dir)?;
+    let rd_stats = db::get_db_stats(&rd_db_path, &config.reddit_save_dir)?;
     log::info!("[CMD] get_stats: wh={:?}, rd={:?}", wh_stats, rd_stats);
     Ok(StatsResponse {
         wallhaven: wh_stats,
