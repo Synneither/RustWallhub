@@ -7,6 +7,7 @@ import {
   anyDownloadActive,
   askConfirm,
   bootstrap,
+  dismissToast,
   ensureDatabases,
   registerGlobalListeners,
   toast,
@@ -151,7 +152,10 @@ onMounted(async () => {
         {{ appState.bootError }}
       </div>
       <transition v-else name="view-fade" mode="out-in">
-        <component :is="viewComponent" :key="currentView" />
+        <!-- KeepAlive：切页不销毁组件，保留搜索结果/图库页码等状态 -->
+        <KeepAlive>
+          <component :is="viewComponent" :key="currentView" />
+        </KeepAlive>
       </transition>
     </v-main>
 
@@ -164,7 +168,10 @@ onMounted(async () => {
           class="toast"
           :class="`toast--${t.color}`"
         >
-          {{ t.text }}
+          <span class="toast__text">{{ t.text }}</span>
+          <button class="toast__close" aria-label="关闭" @click="dismissToast(t.id)">
+            <v-icon icon="mdi-close" size="14" />
+          </button>
         </div>
       </transition-group>
     </div>
@@ -235,13 +242,38 @@ onMounted(async () => {
   pointer-events: none;
 }
 .toast {
-  padding: 8px 18px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px 8px 18px;
   border-radius: var(--radius-full);
   font-size: 0.8125rem;
   background: var(--surface-elevated);
   color: var(--text-primary);
   border: var(--border-card);
   box-shadow: var(--shadow-lg);
+  pointer-events: auto;
+  max-width: min(560px, 80vw);
+}
+.toast__text {
+  overflow-wrap: anywhere;
+}
+.toast__close {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  flex: none;
+  border: none;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--text-tertiary);
+  cursor: pointer;
+}
+.toast__close:hover {
+  background: var(--surface-hover);
+  color: var(--text-primary);
 }
 .toast--success {
   border-color: color-mix(in srgb, var(--accent-success) 45%, transparent);

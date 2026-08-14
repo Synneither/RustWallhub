@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, inject, onMounted, ref } from "vue";
 import { appState, dbReady, refreshStats, toast, toastError } from "../stores/app";
-import { startWallhavenDownload, startRedditDownload, stopSlideshow } from "../utils/api";
+import { assetUrl, getActiveWallpaper, startWallhavenDownload, startRedditDownload, stopSlideshow } from "../utils/api";
 import StatPanel from "../components/StatPanel.vue";
 import ProgressCard from "../components/ProgressCard.vue";
 import EmptyState from "../components/EmptyState.vue";
@@ -54,7 +54,28 @@ async function onStopSlideshow() {
 
 onMounted(() => {
   if (dbReady.value) refreshStats();
+  loadActiveWallpaper();
 });
+
+/* ── 当前壁纸 ── */
+const wallpaperPath = ref<string | null>(null);
+const wallpaperImgError = ref(false);
+
+const wallpaperName = computed(() => {
+  const p = wallpaperPath.value;
+  if (!p) return "";
+  return p.split(/[\\/]/).pop() ?? p;
+});
+
+async function loadActiveWallpaper() {
+  try {
+    const res = await getActiveWallpaper();
+    wallpaperPath.value = res.path;
+    wallpaperImgError.value = false;
+  } catch {
+    wallpaperPath.value = null;
+  }
+}
 </script>
 
 <template>
@@ -94,6 +115,28 @@ onMounted(() => {
       <div class="dash-stats">
         <StatPanel source="wallhaven" :stats="appState.stats?.wallhaven ?? null" :loading="!appState.stats" class="animate-in stagger-1" />
         <StatPanel source="reddit" :stats="appState.stats?.reddit ?? null" :loading="!appState.stats" class="animate-in stagger-2" />
+      </div>
+
+      <!-- 当前壁纸 -->
+      <div v-if="wallpaperPath" class="panel-card wallpaper-card animate-in stagger-3">
+        <div class="wallpaper-card__thumb">
+          <img
+            v-if="!wallpaperImgError"
+            :src="assetUrl(wallpaperPath)"
+            :alt="wallpaperName"
+            @error="wallpaperImgError = true"
+          />
+          <v-icon v-else icon="mdi-image-off-outline" size="28" class="wallpaper-card__thumb-fallback" />
+        </div>
+        <div class="wallpaper-card__meta">
+          <span class="text-label">当前壁纸</span>
+          <span class="text-body wallpaper-card__name">{{ wallpaperName }}</span>
+          <span class="text-caption wallpaper-card__path">{{ wallpaperPath }}</span>
+        </div>
+        <v-spacer />
+        <v-btn variant="text" size="small" prepend-icon="mdi-image-album" @click="navigate('gallery')">
+          去图库换一张
+        </v-btn>
       </div>
 
       <!-- 活动任务 -->
@@ -182,6 +225,46 @@ onMounted(() => {
   display: flex;
   flex-direction: column;
   gap: 2px;
+}
+.wallpaper-card {
+  flex-direction: row;
+  align-items: center;
+  gap: var(--space-4);
+}
+.wallpaper-card__thumb {
+  width: 128px;
+  aspect-ratio: 16 / 10;
+  flex: none;
+  border-radius: var(--radius-md);
+  overflow: hidden;
+  background: var(--preview-bg);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.wallpaper-card__thumb img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+.wallpaper-card__thumb-fallback {
+  color: var(--text-tertiary);
+}
+.wallpaper-card__meta {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.wallpaper-card__name,
+.wallpaper-card__path {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.wallpaper-card__path {
+  color: var(--text-tertiary);
 }
 .slideshow-card {
   border-radius: var(--radius-lg);

@@ -160,6 +160,15 @@ async function onPage(delta: number) {
 /* ── 勾选与下载 ── */
 const selected = reactive(new Set<string>());
 
+/** 从 "2560x1440" 解析宽高比，供网格单元格按需定高（竖屏图不再被 16:10 裁切） */
+function ratioOf(resolution: string): string {
+  const m = /^(\d+)x(\d+)$/.exec(resolution);
+  if (!m) return "16 / 10";
+  const w = Number(m[1]);
+  const h = Number(m[2]);
+  return w > 0 && h > 0 ? `${w} / ${h}` : "16 / 10";
+}
+
 function toggleSelect(img: WallhavenImageEntry) {
   if (selected.has(img.id)) selected.delete(img.id);
   else selected.add(img.id);
@@ -417,6 +426,7 @@ async function onBatchDownload() {
           :key="img.id"
           class="wh-cell wh-cell--clickable"
           :class="{ 'wh-cell--selected': selected.has(img.id) }"
+          :style="{ aspectRatio: ratioOf(img.resolution) }"
           @click="toggleSelect(img)"
         >
           <img :src="img.thumbnail_url" :alt="img.id" loading="lazy" />
@@ -484,10 +494,11 @@ async function onBatchDownload() {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
   gap: var(--space-2);
+  align-items: start;
 }
 .wh-cell {
   position: relative;
-  aspect-ratio: 16 / 10;
+  aspect-ratio: 16 / 10; /* 默认值，实际由内联 style 按真实分辨率覆盖 */
   border-radius: var(--radius-md);
   overflow: hidden;
   background: var(--surface-elevated);

@@ -124,10 +124,15 @@ let toastSeq = 0;
 export function toast(text: string, color: ToastItem["color"] = "info") {
   const id = ++toastSeq;
   appState.toasts.push({ id, text, color });
-  window.setTimeout(() => {
-    const i = appState.toasts.findIndex((t) => t.id === id);
-    if (i >= 0) appState.toasts.splice(i, 1);
-  }, color === "error" ? 5000 : 3000);
+  // 错误提示不自动消失，需手动关闭，避免长文案读不完
+  if (color !== "error") {
+    window.setTimeout(() => dismissToast(id), 3000);
+  }
+}
+
+export function dismissToast(id: number) {
+  const i = appState.toasts.findIndex((t) => t.id === id);
+  if (i >= 0) appState.toasts.splice(i, 1);
 }
 
 export function toastError(e: unknown) {

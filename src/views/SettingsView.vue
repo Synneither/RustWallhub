@@ -8,8 +8,11 @@ import { positiveInt, requiredRule } from "../utils/rules";
 import { useTheme, type Theme } from "../stores/theme";
 import { formatBytes } from "../utils/format";
 
-const { theme, set: setTheme, resetToSystem } = useTheme();
-const themeChoice = ref<"system" | Theme>("system");
+const { theme, userOverride, set: setTheme, resetToSystem } = useTheme();
+// 与 store 实际状态派生：手动指定过则高亮对应主题，否则高亮"跟随系统"
+const themeChoice = computed<"system" | Theme>(() =>
+  userOverride.value ? theme.value : "system",
+);
 
 const draft = reactive({
   wallhaven_save_dir: "",
@@ -116,7 +119,6 @@ async function onInstall() {
 }
 
 function onThemeChange(v: "system" | Theme) {
-  themeChoice.value = v;
   if (v === "system") resetToSystem();
   else setTheme(v);
 }

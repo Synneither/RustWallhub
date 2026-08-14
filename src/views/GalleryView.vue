@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref, watch } from "vue";
 import { openUrl } from "@tauri-apps/plugin-opener";
+import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import type { ImageInfo, LocalImageEntry, MonitorInfo, OrphanFile } from "../types";
 import {
   adoptOrphanFiles,
@@ -30,6 +31,25 @@ const sortBy = ref("default");
 const page = ref(1);
 const pageSize = ref(48);
 const orphanOnly = ref(false);
+
+/* ════ 自定义目录模式 ════
+ * 后端 browse_image_files 支持 custom_dir；此模式下缩略图/删除/详情/孤儿
+ * 等依赖源目录与数据库的能力不可用，仅保留浏览、设为壁纸与轮播。 */
+const customDir = ref<string | null>(null);
+const customDirName = computed(() => customDir.value?.split(/[\\/]/).pop() ?? "");
+
+async function pickCustomDir() {
+  try {
+    const dir = await openDialog({ directory: true, defaultPath: customDir.value ?? undefined });
+    if (typeof dir === "string") customDir.value = dir;
+  } catch (e) {
+    toastError(e);
+  }
+}
+
+function exitCustomDir() {
+  customDir.value = null;
+}
 
 const SORT_ITEMS = [
   { title: "默认（孤儿优先）", value: "default" },
@@ -66,27 +86,34 @@ function toEntry(o: OrphanFile): LocalImageEntry {
 }
 
 async function load() {
-  if (!dbReady.value) return;
+  if (!dbReady.value && !customDir.value) return;
   loading.value = true;
   loadError.value = "";
   try {
-    if (orphanOnly.value) {
+    if (orphanOnly.value && !customDir.value) {
       const all = (await listOrphanFiles(source.value)).map(toEntry);
       orphanAll.value = all;
       total.value = all.length;
       const start = (page.value - 1) * pageSize.value;
       images.value = all.slice(start, start + pageSize.value);
+      await loadThumbs();
     } else {
       const res = await browseImageFiles(source.value, {
         offset: (page.value - 1) * pageSize.value,
         limit: pageSize.value,
+        customDir: customDir.value ?? undefined,
         search: searchDebounced.value || undefined,
         sortBy: sortBy.value,
       });
       total.value = res.total;
       images.value = res.images;
+      if (customDir.value) {
+        // 自定义目录无缩略图管线，直接用原图；同时避免同名文件命中旧缩略图缓存
+        for (const img of res.images) thumbUrls[img.name] = assetUrl(img.path);
+      } else {
+        await loadThumbs();
+      }
     }
-    await loadThumbs();
   } catch (e) {
     loadError.value = String(e);
     images.value = [];
@@ -119,6 +146,13 @@ function thumbOf(img: LocalImageEntry): string {
 
 /* 触发重载 */
 watch([source, searchDebounced, sortBy, orphanOnly], () => {
+  page.value = 1;
+  load();
+});
+watch(customDir, () => {
+  // 进入/退出自定义目录时重置易冲突的状态
+  orphanOnly.value = false;
+  clearSelection();
   page.value = 1;
   load();
 });
@@ -315,12 +349,13 @@ async function onStartSlideshow() {
   try {
     // 取当前筛选（含搜索词）的全量图片
     let paths: string[];
-    if (orphanOnly.value) {
+    if (orphanOnly.value && !customDir.value) {
       paths = orphanAll.value.map((i) => i.path);
     } else {
       const res = await browseImageFiles(source.value, {
         offset: 0,
         limit: Math.max(total.value, 1),
+        customDir: customDir.value ?? undefined,
         search: searchDebounced.value || undefined,
         sortBy: sortBy.value,
       });
@@ -356,10 +391,30 @@ async function onStopSlideshow() {
   <div class="view gallery-view">
     <div class="view-header">
       <span class="view-header__title">图库</span>
-      <v-btn-toggle v-model="source" mandatory density="compact" color="primary" class="ml-2">
+      <v-chip
+        v-if="customDir"
+        size="small"
+        color="primary"
+        variant="tonal"
+        closable
+        class="ml-2"
+        :title="customDir"
+        @click:close="exitCustomDir"
+      >
+        <v-icon icon="mdi-folder-open-outline" size="14" start />
+        {{ customDirName }}
+      </v-chip>
+      <v-btn-toggle v-else v-model="source" mandatory density="compact" color="primary" class="ml-2">
         <v-btn value="wallhaven" size="small">Wallhaven</v-btn>
         <v-btn value="reddit" size="small">Reddit</v-btn>
       </v-btn-toggle>
+      <v-btn
+        icon="mdi-folder-open-outline"
+        variant="text"
+        size="small"
+        title="浏览自定义目录"
+        @click="pickCustomDir"
+      />
       <v-spacer />
       <v-text-field
         v-model="search"
@@ -415,22 +470,25 @@ async function onStopSlideshow() {
     <div class="gallery-meta">
       <span class="text-caption">
         共 {{ total }} 张 · 第 {{ page }} / {{ totalPages }} 页
-        <template v-if="!orphanOnly && orphanCountOnPage > 0"> · 本页含 {{ orphanCountOnPage }} 个孤儿文件</template>
+        <template v-if="!customDir && !orphanOnly && orphanCountOnPage > 0"> · 本页含 {{ orphanCountOnPage }} 个孤儿文件</template>
       </span>
-      <v-chip
-        v-if="!orphanOnly"
-        size="x-small"
-        variant="outlined"
-        class="gallery-meta__orphan-chip"
-        @click="orphanOnly = true"
-      >
-        仅看孤儿文件
-      </v-chip>
-      <v-chip v-else size="x-small" color="warning" variant="tonal" closable @click:close="orphanOnly = false">
-        孤儿文件模式
-      </v-chip>
+      <template v-if="!customDir">
+        <v-chip
+          v-if="!orphanOnly"
+          size="x-small"
+          variant="outlined"
+          class="gallery-meta__orphan-chip"
+          @click="orphanOnly = true"
+        >
+          仅看孤儿文件
+        </v-chip>
+        <v-chip v-else size="x-small" color="warning" variant="tonal" closable @click:close="orphanOnly = false">
+          孤儿文件模式
+        </v-chip>
+      </template>
       <v-spacer />
       <v-btn
+        v-if="!customDir"
         size="x-small"
         :variant="selectionMode ? 'flat' : 'text'"
         :color="selectionMode ? 'primary' : undefined"
@@ -468,10 +526,10 @@ async function onStopSlideshow() {
 
     <!-- 内容区 -->
     <EmptyState
-      v-if="!dbReady"
+      v-if="!dbReady && !customDir"
       icon="mdi-database-alert-outline"
       title="数据库未初始化"
-      desc="请先在启动弹窗或「数据库」页面创建数据库"
+      desc="请先在启动弹窗或「数据库」页面创建数据库；或点击右上角文件夹图标浏览任意目录"
     />
     <EmptyState
       v-else-if="loadError"
@@ -493,9 +551,9 @@ async function onStopSlideshow() {
     />
     <EmptyState
       v-else-if="images.length === 0"
-      :icon="orphanOnly ? 'mdi-folder-check-outline' : 'mdi-image-off-outline'"
-      :title="orphanOnly ? '没有孤儿文件' : '图库为空'"
-      :desc="orphanOnly ? '保存目录中的文件都已在数据库中登记' : '前往 Wallhaven 或 Reddit 页面下载图片'"
+      :icon="customDir ? 'mdi-folder-open-outline' : orphanOnly ? 'mdi-folder-check-outline' : 'mdi-image-off-outline'"
+      :title="customDir ? '目录中没有图片' : orphanOnly ? '没有孤儿文件' : '图库为空'"
+      :desc="customDir ? '该目录下没有可识别的图片文件' : orphanOnly ? '保存目录中的文件都已在数据库中登记' : '前往 Wallhaven 或 Reddit 页面下载图片'"
     />
 
     <div v-else class="gallery-grid">
@@ -507,10 +565,10 @@ async function onStopSlideshow() {
         @click="onCardClick(img)"
       >
         <img :src="thumbOf(img)" :alt="img.name" loading="lazy" />
-        <span v-if="img.is_orphan" class="gallery-card__orphan">孤儿</span>
+        <span v-if="img.is_orphan && !customDir" class="gallery-card__orphan">孤儿</span>
 
         <!-- 选择态角标 -->
-        <span v-if="selectionMode" class="gallery-card__check">
+        <span v-if="selectionMode && !customDir" class="gallery-card__check">
           <v-icon
             :icon="selected.has(img.name) ? 'mdi-checkbox-marked-circle' : 'mdi-checkbox-blank-circle-outline'"
             size="20"
@@ -521,17 +579,23 @@ async function onStopSlideshow() {
         <!-- hover 操作 -->
         <div v-if="!selectionMode" class="gallery-card__overlay" @click.stop>
           <v-btn icon="mdi-monitor" size="x-small" variant="flat" class="overlay-btn" title="设为壁纸" @click="onSetWallpaper(img.path)" />
-          <v-btn icon="mdi-information-outline" size="x-small" variant="flat" class="overlay-btn" title="详情" @click="openDetail(img)" />
-          <v-btn icon="mdi-delete-outline" size="x-small" variant="flat" class="overlay-btn overlay-btn--danger" title="删除" @click="onDeleteSingle(img)" />
+          <template v-if="!customDir">
+            <v-btn icon="mdi-information-outline" size="x-small" variant="flat" class="overlay-btn" title="详情" @click="openDetail(img)" />
+            <v-btn icon="mdi-delete-outline" size="x-small" variant="flat" class="overlay-btn overlay-btn--danger" title="删除" @click="onDeleteSingle(img)" />
+          </template>
         </div>
       </div>
     </div>
 
-    <!-- 分页 -->
+    <!-- 分页（支持跳页） -->
     <div v-if="totalPages > 1" class="gallery-pager">
-      <v-btn icon="mdi-chevron-left" variant="text" size="small" :disabled="page <= 1 || loading" @click="page--" />
-      <span class="text-caption">{{ page }} / {{ totalPages }}</span>
-      <v-btn icon="mdi-chevron-right" variant="text" size="small" :disabled="page >= totalPages || loading" @click="page++" />
+      <v-pagination
+        v-model="page"
+        :length="totalPages"
+        :total-visible="7"
+        density="compact"
+        :disabled="loading"
+      />
     </div>
 
     <!-- 详情抽屉 -->
