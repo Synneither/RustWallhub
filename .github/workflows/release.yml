@@ -4,6 +4,7 @@ on:
   push:
     tags:
       - 'v*'
+  workflow_dispatch:
 
 jobs:
   build:
@@ -14,7 +15,7 @@ jobs:
       matrix:
         include:
           - platform: ubuntu-24.04
-            args: ''
+            args: '--bundles deb,appimage'
           - platform: windows-latest
             args: ''
           # - platform: macos-latest
@@ -22,7 +23,7 @@ jobs:
 
     runs-on: ${{ matrix.platform }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -55,11 +56,12 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          APPIMAGE_EXTRACT_AND_RUN: '1'
         with:
-          tagName: ${{ github.ref_name }}
-          releaseName: 'RustWallhub ${{ github.ref_name }}'
+          tagName: ${{ github.event_name == 'push' && github.ref_name || format('ci-test-{0}', github.run_id) }}
+          releaseName: 'RustWallhub ${{ github.event_name == 'push' && github.ref_name || github.run_id }}'
           releaseBody: |
-            ## RustWallhub ${{ github.ref_name }}
+            ## RustWallhub ${{ github.event_name == 'push' && github.ref_name || 'CI 测试构建' }}
 
             从 Wallhaven 和 Reddit 下载动漫壁纸的桌面管理器。
 
@@ -69,9 +71,6 @@ jobs:
 
             ### 自动更新
             开启「设置 → 高级设置 → 启动时自动检查更新」后，应用会自动检测新版本。
-
-            ### 更新日志
-            详见 [CHANGELOG](./CHANGELOG.md)
           releaseDraft: false
           prerelease: false
           args: ${{ matrix.args }}
