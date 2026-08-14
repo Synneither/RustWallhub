@@ -58,8 +58,8 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
           APPIMAGE_EXTRACT_AND_RUN: '1'
         with:
-          tagName: ${{ github.event_name == 'push' && github.ref_name || format('ci-test-{0}', github.run_id) }}
-          releaseName: 'RustWallhub ${{ github.event_name == 'push' && github.ref_name || github.run_id }}'
+          tagName: "${{ github.event_name == 'push' && github.ref_name || format('ci-test-{0}', github.run_id) }}"
+          releaseName: "RustWallhub ${{ github.event_name == 'push' && github.ref_name || github.run_id }}"
           releaseBody: |
             ## RustWallhub ${{ github.event_name == 'push' && github.ref_name || 'CI 测试构建' }}
 
