@@ -1,0 +1,37 @@
+<svg width="1024" height="1024" viewBox="0 0 1024 1024" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <rect x="0" y="0" width="1024" height="1024" rx="224" fill="#182238"/>
+  <g shape-rendering="crispEdges">
+
+    <!-- 白色档案卡（整体放大） -->
+    <rect x="272" y="192" width="480" height="640" fill="#E8EEF8"/>
+
+    <!-- 蓝橘内边框 -->
+    <rect x="288" y="208" width="448" height="16" fill="#3B82F6"/>
+    <rect x="288" y="208" width="16" height="432" fill="#3B82F6"/>
+    <rect x="720" y="208" width="16" height="432" fill="#F97316"/>
+    <rect x="288" y="624" width="448" height="16" fill="#F97316"/>
+
+    <!-- 壁纸画面 -->
+    <rect x="304" y="224" width="416" height="400" fill="#122A45"/>
+    <rect x="448" y="248" width="96" height="96" fill="#60A5FA"/>
+    <rect x="304" y="448" width="112" height="128" fill="#2B6DB8"/>
+    <rect x="416" y="416" width="96" height="160" fill="#2B6DB8"/>
+    <rect x="512" y="448" width="96" height="128" fill="#2B6DB8"/>
+    <rect x="304" y="576" width="416" height="32" fill="#1D4ED8"/>
+
+    <!-- syn 像素签名（白色留白区） -->
+    <g fill="#0F1B2E">
+      <rect x="432" y="656" width="48" height="8"/><rect x="432" y="656" width="8" height="24"/><rect x="432" y="672" width="48" height="8"/><rect x="472" y="680" width="8" height="24"/><rect x="432" y="704" width="48" height="8"/>
+      <rect x="496" y="656" width="8" height="24"/><rect x="536" y="656" width="8" height="24"/><rect x="504" y="672" width="24" height="8"/><rect x="544" y="680" width="8" height="24"/><rect x="496" y="704" width="40" height="8"/>
+      <rect x="576" y="672" width="32" height="8"/><rect x="576" y="672" width="8" height="32"/><rect x="600" y="672" width="8" height="32"/>
+    </g>
+    <rect x="432" y="712" width="176" height="8" fill="#0F1B2E"/>
+
+    <!-- 管理条 -->
+    <rect x="288" y="736" width="448" height="48" fill="#1B2B47"/>
+    <rect x="288" y="736" width="448" height="8" fill="#3B82F6"/>
+    <rect x="304" y="752" width="16" height="16" fill="#3B82F6"/>
+    <rect x="496" y="752" width="16" height="16" fill="#10B981"/>
+    <rect x="704" y="752" width="16" height="16" fill="#F97316"/>
+  </g>
+</svg>
