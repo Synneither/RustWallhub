@@ -2,7 +2,7 @@
   "nodeModulesDir": "auto",
   "tasks": {
     "dev": "vite",
-    "build": "vite build",
+    "build": "vue-tsc --noEmit && vite build",
     "tauri": "tauri"
   }
 }

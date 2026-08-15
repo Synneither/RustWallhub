@@ -41,24 +41,6 @@ pub fn thumb_path(thumb_dir: &Path, filename: &str, dpr: u32) -> PathBuf {
     thumb_dir.join(thumb_filename(filename, dpr))
 }
 
-/// 获取缩略图路径：新路径 → 旧 240px 兼容 → 生成
-pub fn resolve_thumb_path(
-    thumb_dir: &Path,
-    source_dir: &Path,
-    filename: &str,
-    dpr: u32,
-) -> Result<PathBuf, String> {
-    let new_path = thumb_path(thumb_dir, filename, dpr);
-    if new_path.exists() {
-        return Ok(new_path);
-    }
-    let old_path = thumb_dir.join(filename);
-    if old_path.exists() {
-        return Ok(old_path);
-    }
-    ensure_thumbnail(thumb_dir, source_dir, filename, dpr)
-}
-
 fn resize_and_save(
     img: image::DynamicImage,
     dst: &Path,
@@ -107,6 +89,7 @@ pub fn ensure_thumbnail(
     Ok(dst)
 }
 
+#[cfg_attr(not(test), allow(dead_code))]
 pub fn save_thumbnail_from_bytes(
     thumb_dir: &Path,
     filename: &str,
@@ -276,7 +259,7 @@ mod tests {
         let src_path = src_dir.path().join("img.jpg");
         std::fs::write(&src_path, &bytes).unwrap();
 
-        let result = resolve_thumb_path(thumb_dir.path(), src_dir.path(), "img.jpg", 2);
+        let result = ensure_thumbnail(thumb_dir.path(), src_dir.path(), "img.jpg", 2);
         assert!(result.is_ok());
         assert!(result.unwrap().to_string_lossy().contains("__w480"));
     }

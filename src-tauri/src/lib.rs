@@ -131,11 +131,12 @@ pub fn run() {
             cancel_downloads,
             // gallery
             browse_image_files,
-            resolve_thumbnail,
+            list_filtered_image_paths,
             resolve_thumbnails,
-            delete_image,
             dislike_file,
+            dislike_files,
             delete_orphan_file,
+            delete_orphan_files,
             adopt_orphan_files,
             clean_thumbnails,
             get_image_info,
@@ -143,12 +144,10 @@ pub fn run() {
             list_database_images,
             list_orphan_files,
             mark_disliked_files,
-            count_missing_images,
             restore_all_files,
             list_missing_images,
             // system
             get_active_wallpaper,
-            scan_directory,
             // wallpaper (from wallpaper module)
             set_wallpaper,
             start_slideshow,
@@ -174,36 +173,25 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_save_image_writes_file_and_thumbnail() {
+    async fn test_save_image_writes_file_only() {
         let dir = TempDir::new().unwrap();
-        let thumb_dir = TempDir::new().unwrap();
         let save_path = dir.path().join("test.jpg");
         let data = tiny_jpeg();
 
-        let handle = state::save_image(&save_path, &data, thumb_dir.path(), "test.jpg", 2).await;
-        assert!(handle.is_some(), "save_image should succeed");
+        let result = state::save_image(&save_path, &data).await;
+        assert!(result.is_ok(), "save_image should succeed");
         assert!(save_path.exists(), "file should be written");
-
-        let _ = handle.unwrap().await;
-        let thumb = thumbnail::thumb_path(thumb_dir.path(), "test.jpg", 2);
-        assert!(
-            thumb.exists(),
-            "thumbnail should be generated at {}",
-            thumb.display()
-        );
+        // 缩略图已改为惰性生成，下载阶段不应创建缩略图文件。
+        assert!(!thumbnail::thumb_path(dir.path(), "test.jpg", 2).exists());
     }
 
     #[tokio::test]
     async fn test_save_image_fails_on_invalid_path() {
-        let thumb_dir = TempDir::new().unwrap();
         let save_path = std::path::Path::new("/nonexistent/dir/test.jpg");
         let data = b"data";
 
-        let handle = state::save_image(save_path, data, thumb_dir.path(), "test.jpg", 2).await;
-        assert!(
-            handle.is_none(),
-            "save_image should fail on unwritable path"
-        );
+        let result = state::save_image(save_path, data).await;
+        assert!(result.is_err(), "save_image should fail on unwritable path");
     }
 
     #[test]

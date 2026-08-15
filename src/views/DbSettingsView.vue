@@ -6,8 +6,7 @@ import {
   adoptOrphanFiles,
   checkDatabases,
   cleanThumbnails,
-  countMissingImages,
-  deleteOrphanFile,
+  deleteOrphanFiles,
   downloadMissingImages,
   listDatabaseImages,
   listMissingImages,
@@ -88,12 +87,9 @@ async function reloadAll() {
   if (!dbReady.value) return;
   loading.value = true;
   try {
-    const [c, m, o] = await Promise.all([
-      countMissingImages("all"),
-      listMissingImages("all"),
-      listOrphanFiles("all"),
-    ]);
-    missingCount.value = c;
+    // 缺失列表与缺失计数来自同一次扫描，直接用列表长度，省掉一次重复 IPC + 磁盘扫描。
+    const [m, o] = await Promise.all([listMissingImages("all"), listOrphanFiles("all")]);
+    missingCount.value = m.length;
     missing.value = m;
     orphans.value = o;
     await refreshStats();
@@ -193,10 +189,14 @@ async function onDeleteOrphans() {
     { danger: true, confirmText: "删除" },
   );
   if (!ok) return;
-  let removed = 0;
   try {
-    for (const f of orphanSelected.value) {
-      if (await deleteOrphanFile(f.source as "wallhaven" | "reddit", f.name)) removed++;
+    const bySource = groupBySource(orphanSelected.value);
+    let removed = 0;
+    for (const [src, files] of Object.entries(bySource)) {
+      removed += await deleteOrphanFiles(
+        src as "wallhaven" | "reddit",
+        files.map((f) => f.name),
+      );
     }
     toast(`已删除 ${removed} 个文件`, "success");
     orphanSelected.value = [];
@@ -433,7 +433,7 @@ const tab = ref<"missing" | "orphan" | "records">("missing");
               :items="orphans"
               :loading="loading"
               show-select
-              item-value="name"
+              item-value="path"
               density="compact"
               class="db-table"
               :headers="[

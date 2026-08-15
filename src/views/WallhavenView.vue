@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref } from "vue";
+import { openUrl } from "@tauri-apps/plugin-opener";
 import type { AppConfig, WallhavenImageEntry, WallhavenSearchResult, WallhavenSelected } from "../types";
 import {
   downloadWallhavenSelected,
@@ -106,9 +107,29 @@ const nsfwWithoutKey = computed(
 );
 
 /* ── 保存 ── */
+const WALLHAVEN_DRAFT_KEYS = [
+  "wallhaven_api_key",
+  "wallhaven_q",
+  "wallhaven_categories",
+  "wallhaven_purity",
+  "wallhaven_sorting",
+  "wallhaven_top_range",
+  "wallhaven_atleast",
+  "wallhaven_ratios",
+  "wallhaven_order",
+  "wallhaven_max_images",
+] as const;
+
+function isDirty(): boolean {
+  const c = appState.config;
+  if (!c) return false;
+  return WALLHAVEN_DRAFT_KEYS.some((key) => draft[key] !== c[key]);
+}
+
 const saving = ref(false);
 async function persist(): Promise<boolean> {
   if (!appState.config) return false;
+  if (!isDirty()) return true;
   saving.value = true;
   try {
     const next: AppConfig = { ...appState.config, ...draft };
@@ -131,18 +152,23 @@ async function onSaveOnly() {
 const searching = ref(false);
 const result = ref<WallhavenSearchResult | null>(null);
 const searchError = ref("");
+let searchSeq = 0;
 
 async function doSearch(page: number) {
+  const seq = ++searchSeq;
   searching.value = true;
   searchError.value = "";
   try {
-    result.value = await searchWallhaven(page);
+    const next = await searchWallhaven(page);
+    if (seq !== searchSeq) return;
+    result.value = next;
     selected.clear();
   } catch (e) {
+    if (seq !== searchSeq) return;
     searchError.value = String(e);
     result.value = null;
   } finally {
-    searching.value = false;
+    if (seq === searchSeq) searching.value = false;
   }
 }
 
@@ -225,6 +251,59 @@ async function onBatchDownload() {
     toastError(e);
   } finally {
     startingBatch.value = false;
+  }
+}
+
+/* ── 大图预览 ── */
+const previewOpen = ref(false);
+const previewImage = ref<WallhavenImageEntry | null>(null);
+const previewLoading = ref(false);
+const previewError = ref("");
+const previewDownloading = ref(false);
+
+function openPreview(img: WallhavenImageEntry) {
+  previewImage.value = img;
+  previewLoading.value = true;
+  previewError.value = "";
+  previewOpen.value = true;
+}
+
+function closePreview() {
+  if (previewDownloading.value) return;
+  previewOpen.value = false;
+}
+
+async function onOpenSource() {
+  if (!previewImage.value) return;
+  try {
+    await openUrl(previewImage.value.short_url);
+  } catch (e) {
+    toastError(e);
+  }
+}
+
+async function onDownloadPreview() {
+  if (!previewImage.value || previewDownloading.value) return;
+  previewDownloading.value = true;
+  try {
+    if (!(await persist())) return;
+    const img = previewImage.value;
+    const payload: WallhavenSelected[] = [
+      {
+        id: img.id,
+        path: img.path,
+        resolution: img.resolution,
+        short_url: img.short_url,
+      },
+    ];
+    clearNewImages("wallhaven");
+    const msg = await downloadWallhavenSelected(payload);
+    toast(msg, "info");
+    previewOpen.value = false;
+  } catch (e) {
+    toastError(e);
+  } finally {
+    previewDownloading.value = false;
   }
 }
 </script>
@@ -427,9 +506,14 @@ async function onBatchDownload() {
           class="wh-cell wh-cell--clickable"
           :class="{ 'wh-cell--selected': selected.has(img.id) }"
           :style="{ aspectRatio: ratioOf(img.resolution) }"
+          title="单击选择，双击预览大图"
           @click="toggleSelect(img)"
+          @dblclick.stop="openPreview(img)"
         >
           <img :src="img.thumbnail_url" :alt="img.id" loading="lazy" />
+          <button class="wh-cell__preview" title="预览大图" @click.stop="openPreview(img)">
+            <v-icon icon="mdi-eye-outline" size="18" />
+          </button>
           <span class="wh-cell__res">{{ img.resolution }}</span>
           <span class="wh-cell__check">
             <v-icon
@@ -457,6 +541,57 @@ async function onBatchDownload() {
     />
 
     <NewImagesStrip source="wallhaven" />
+
+    <!-- 大图预览 -->
+    <v-dialog v-model="previewOpen" max-width="1100">
+      <v-card v-if="previewImage" class="wh-preview">
+        <div class="wh-preview__bar">
+          <span class="text-heading wh-preview__name">{{ previewImage.id }}</span>
+          <span class="text-caption">{{ previewImage.resolution }}</span>
+          <v-spacer />
+          <v-btn size="small" variant="text" prepend-icon="mdi-open-in-new" @click="onOpenSource">来源</v-btn>
+          <v-btn size="small" variant="text" icon="mdi-close" @click="closePreview" />
+        </div>
+
+        <div class="wh-preview__stage">
+          <v-progress-circular
+            v-if="previewLoading"
+            indeterminate
+            color="primary"
+            size="40"
+          />
+          <img
+            v-show="!previewLoading && !previewError"
+            :src="previewImage.path"
+            :alt="previewImage.id"
+            referrerpolicy="no-referrer"
+            @load="previewLoading = false"
+            @error="
+              previewLoading = false;
+              previewError = '大图加载失败，可能被服务器拒绝或图片已失效'
+            "
+          />
+          <div v-if="previewError" class="wh-preview__error">
+            <v-icon icon="mdi-image-off-outline" size="32" />
+            <span class="text-caption">{{ previewError }}</span>
+          </div>
+        </div>
+
+        <div class="wh-preview__actions">
+          <span class="text-caption">双击卡片可快速预览，单击选择用于批量下载</span>
+          <v-spacer />
+          <v-btn
+            color="primary"
+            variant="flat"
+            prepend-icon="mdi-download-outline"
+            :loading="previewDownloading"
+            @click="onDownloadPreview"
+          >
+            下载大图
+          </v-btn>
+        </div>
+      </v-card>
+    </v-dialog>
   </div>
 </template>
 
@@ -536,5 +671,75 @@ async function onBatchDownload() {
   right: 6px;
   top: 6px;
   filter: drop-shadow(0 1px 2px rgba(0, 0, 0, 0.6));
+}
+.wh-cell__preview {
+  position: absolute;
+  right: 6px;
+  bottom: 6px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  border: none;
+  border-radius: var(--radius-full);
+  background: rgba(0, 0, 0, 0.58);
+  color: #fff;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.15s, background 0.15s;
+}
+.wh-cell:hover .wh-cell__preview,
+.wh-cell__preview:focus-visible {
+  opacity: 1;
+}
+.wh-cell__preview:hover {
+  background: var(--accent-primary);
+}
+.wh-preview {
+  background: var(--surface-elevated) !important;
+  border: var(--border-card);
+  border-radius: var(--radius-xl);
+  overflow: hidden;
+}
+.wh-preview__bar {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-3) var(--space-4);
+  border-bottom: 1px solid var(--border-subtle);
+}
+.wh-preview__name {
+  font-size: 0.9375rem;
+}
+.wh-preview__stage {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 320px;
+  max-height: 76vh;
+  overflow: hidden;
+  background: var(--preview-bg);
+}
+.wh-preview__stage img {
+  display: block;
+  max-width: 100%;
+  max-height: 76vh;
+  object-fit: contain;
+}
+.wh-preview__error {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-8);
+  color: var(--text-tertiary);
+}
+.wh-preview__actions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-3) var(--space-4);
+  border-top: 1px solid var(--border-subtle);
 }
 </style>

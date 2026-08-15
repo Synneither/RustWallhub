@@ -36,15 +36,44 @@ pub struct ImageDownloaded {
     pub path: String,
 }
 
+/// 下载进度事件节流器：大任务按时间间隔发事件，避免每张图都跨 IPC 更新前端。
+pub struct ProgressThrottle {
+    last_emit: Option<Instant>,
+}
+
+impl ProgressThrottle {
+    pub fn new() -> Self {
+        Self { last_emit: None }
+    }
+
+    /// `force=true` 时必定发送（用于最后一张/完成前），否则至少间隔 150ms。
+    pub fn should_emit(&mut self, force: bool) -> bool {
+        if force {
+            self.last_emit = Some(Instant::now());
+            return true;
+        }
+        let now = Instant::now();
+        let ready = self
+            .last_emit
+            .is_none_or(|last| now.duration_since(last) >= Duration::from_millis(150));
+        if ready {
+            self.last_emit = Some(now);
+        }
+        ready
+    }
+}
+
 // ---------------------------------------------------------------------------
 // File-list cache (used by browse_image_files)
 // ---------------------------------------------------------------------------
 
 pub struct FileListCache {
-    pub items: Vec<FileEntry>,
+    pub items: std::sync::Arc<[FileEntry]>,
     pub source: String,
     pub dir_path: String,
     pub cached_at: Instant,
+    /// 缓存创建时目录的 mtime。目录有增删时 mtime 会变化，可用于快速失效。
+    pub dir_modified: Option<std::time::SystemTime>,
 }
 
 #[derive(Clone)]
@@ -91,14 +120,28 @@ impl serde::Serialize for AppError {
     }
 }
 
+/// 校验一个字符串是“纯文件名”而不是路径（拒绝 `/`、`\`、绝对路径与 `..` 组件）。
+/// 所有从 IPC 接收、随后要拼接到目录后面的 filename 参数都应先经过此校验。
+pub fn ensure_plain_filename(name: &str) -> Result<(), AppError> {
+    use std::path::Component;
+
+    let path = std::path::Path::new(name);
+    let mut components = path.components();
+    let valid = match (components.next(), components.next()) {
+        (Some(Component::Normal(_)), None) => !name.contains('\\'),
+        _ => false,
+    };
+    if !valid {
+        return Err(AppError::Other("非法的文件路径".into()));
+    }
+    Ok(())
+}
+
 /// Safely join `name` onto `base`, rejecting path-traversal attempts like `../`.
 /// Returns the canonicalized path if it lies within `base`, otherwise an error.
 pub fn safe_join(base: &std::path::Path, name: &str) -> Result<PathBuf, AppError> {
+    ensure_plain_filename(name)?;
     let candidate = base.join(name);
-    // Reject obvious traversal patterns early
-    if name.contains("..") {
-        return Err(AppError::Other("非法的文件路径".into()));
-    }
     // If the file doesn't exist yet, canonicalize the parent and join the filename
     let resolved = if candidate.exists() {
         candidate.canonicalize()
@@ -283,23 +326,30 @@ pub fn rebuild_http_client(
     Ok(())
 }
 
-/// Save image bytes to disk and spawn thumbnail generation.
-/// Returns a `JoinHandle` for the thumbnail task so callers can await it
-/// concurrently with other work (e.g., DB insertion).
+/// Save image bytes to disk. 缩略图不再随下载即时生成，而是由图库/新图预览条
+/// 通过 `resolve_thumbnails` 惰性生成，避免下载链路同时持有原图副本和解码位图。
 pub async fn save_image(
     save_path: impl AsRef<std::path::Path>,
     bytes: &[u8],
-    thumb_dir: impl AsRef<std::path::Path>,
-    filename: &str,
-    dpr: u32,
-) -> Option<tokio::task::JoinHandle<()>> {
-    if tokio::fs::write(save_path.as_ref(), bytes).await.is_err() {
-        return None;
+) -> Result<(), String> {
+    let save_path = save_path.as_ref();
+    tokio::fs::write(save_path, bytes)
+        .await
+        .map_err(|e| format!("写入文件失败 {}: {e}", save_path.display()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_ensure_plain_filename() {
+        assert!(ensure_plain_filename("a.jpg").is_ok());
+        assert!(ensure_plain_filename("a..b.jpg").is_ok());
+        assert!(ensure_plain_filename("..").is_err());
+        assert!(ensure_plain_filename("../a.jpg").is_err());
+        assert!(ensure_plain_filename("sub/a.jpg").is_err());
+        assert!(ensure_plain_filename("sub\\a.jpg").is_err());
+        assert!(ensure_plain_filename("").is_err());
     }
-    let thumb_dir = thumb_dir.as_ref().to_path_buf();
-    let filename = filename.to_string();
-    let bytes = bytes.to_vec();
-    Some(tokio::task::spawn_blocking(move || {
-        let _ = crate::thumbnail::save_thumbnail_from_bytes(&thumb_dir, &filename, &bytes, dpr);
-    }))
 }

@@ -3,16 +3,80 @@ import App from "./App.vue";
 import { createVuetify } from 'vuetify';
 import "./assets/style.css";
 
-// Vuetify styles + icons
-import 'vuetify/styles';
-import '@mdi/font/css/materialdesignicons.css';
+// Vuetify core + 项目内 MDI 图标子集。组件改为按需导入，Vite 只打包用到的组件样式。
+import 'vuetify/styles/core';
+import './assets/mdi-subset.css';
 
-import * as components from 'vuetify/components';
-import * as directives from 'vuetify/directives';
+import {
+  VApp,
+  VBtn,
+  VBtnToggle,
+  VCard,
+  VCardActions,
+  VCardText,
+  VCardTitle,
+  VChip,
+  VCombobox,
+  VDataTable,
+  VDialog,
+  VForm,
+  VIcon,
+  VList,
+  VListItem,
+  VListItemTitle,
+  VMain,
+  VNavigationDrawer,
+  VOverlay,
+  VPagination,
+  VProgressCircular,
+  VProgressLinear,
+  VSelect,
+  VSpacer,
+  VSwitch,
+  VTab,
+  VTabs,
+  VTextField,
+  VWindow,
+  VWindowItem,
+} from 'vuetify/components';
+import { Ripple } from 'vuetify/directives';
+
+const components = {
+  VApp,
+  VBtn,
+  VBtnToggle,
+  VCard,
+  VCardActions,
+  VCardText,
+  VCardTitle,
+  VChip,
+  VCombobox,
+  VDataTable,
+  VDialog,
+  VForm,
+  VIcon,
+  VList,
+  VListItem,
+  VListItemTitle,
+  VMain,
+  VNavigationDrawer,
+  VOverlay,
+  VPagination,
+  VProgressCircular,
+  VProgressLinear,
+  VSelect,
+  VSpacer,
+  VSwitch,
+  VTab,
+  VTabs,
+  VTextField,
+  VWindow,
+  VWindowItem,
+};
 
 const vuetify = createVuetify({
   components,
-  directives,
+  directives: { Ripple },
   theme: {
     defaultTheme: 'arknights',
     themes: {

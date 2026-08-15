@@ -14,6 +14,18 @@ const draft = reactive<Pick<AppConfig, "reddit_url" | "reddit_max_posts" | "redd
   reddit_max_images: 100,
 });
 
+const REDDIT_DRAFT_KEYS = [
+  "reddit_url",
+  "reddit_max_posts",
+  "reddit_max_images",
+] as const;
+
+function isDirty(): boolean {
+  const c = appState.config;
+  if (!c) return false;
+  return REDDIT_DRAFT_KEYS.some((key) => draft[key] !== c[key]);
+}
+
 const saving = ref(false);
 const starting = ref(false);
 const formValid = ref(false);
@@ -29,6 +41,7 @@ onMounted(() => {
 
 async function persist(): Promise<boolean> {
   if (!appState.config) return false;
+  if (!isDirty()) return true;
   saving.value = true;
   try {
     const next: AppConfig = { ...appState.config, ...draft };

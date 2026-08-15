@@ -22,11 +22,3 @@ export function formatDateTime(raw: string | null | undefined): string {
   const pad = (n: number) => String(n).padStart(2, "0");
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
 }
-
-/** 秒数 → 友好时长（用于轮播间隔展示等） */
-export function formatSeconds(secs: number): string {
-  if (secs < 60) return `${secs} 秒`;
-  const m = Math.floor(secs / 60);
-  const s = secs % 60;
-  return s === 0 ? `${m} 分钟` : `${m} 分 ${s} 秒`;
-}

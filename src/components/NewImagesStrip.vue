@@ -1,10 +1,11 @@
 <script setup lang="ts">
-import { computed } from "vue";
+import { computed, reactive, watch } from "vue";
 import { appState } from "../stores/app";
-import { assetUrl } from "../utils/api";
+import type { Source } from "../types";
+import { assetUrl, resolveThumbnails } from "../utils/api";
 
 /** "本次新图"横向预览条：消费全局 newImages（Wallhaven / Reddit 页使用） */
-const props = defineProps<{ source: string }>();
+const props = defineProps<{ source: Source }>();
 
 const MAX_SHOW = 12;
 
@@ -13,6 +14,32 @@ const images = computed(() =>
 );
 const shown = computed(() => images.value.slice(-MAX_SHOW));
 const extra = computed(() => Math.max(0, images.value.length - MAX_SHOW));
+
+/* 96px 的小格子没必要加载 4K 原图，优先取后端已生成好的缩略图。 */
+const thumbUrls = reactive<Record<string, string>>({});
+let thumbSeq = 0;
+
+watch(
+  () => shown.value.map((i) => i.name).join("\n"),
+  async () => {
+    const seq = ++thumbSeq;
+    const names = shown.value.map((i) => i.name);
+    if (names.length === 0) return;
+    try {
+      const dpr = appState.config?.thumbnail_dpr ?? 2;
+      const batch = await resolveThumbnails(props.source, names, dpr);
+      if (seq !== thumbSeq) return;
+      for (const it of batch.items) thumbUrls[it.name] = assetUrl(it.thumb_path);
+    } catch {
+      // 失败时退回到原图，保证预览条可用
+    }
+  },
+  { immediate: true },
+);
+
+function thumbOf(name: string, path: string): string {
+  return thumbUrls[name] ?? assetUrl(path);
+}
 </script>
 
 <template>
@@ -22,7 +49,7 @@ const extra = computed(() => Math.max(0, images.value.length - MAX_SHOW));
     </div>
     <div class="new-strip__row">
       <div v-for="img in shown" :key="img.name" class="new-strip__thumb">
-        <img :src="assetUrl(img.path)" :alt="img.name" loading="lazy" />
+        <img :src="thumbOf(img.name, img.path)" :alt="img.name" loading="lazy" />
       </div>
       <div v-if="extra > 0" class="new-strip__more text-caption">+{{ extra }}</div>
     </div>

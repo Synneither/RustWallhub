@@ -1,6 +1,6 @@
 [package]
 name = "rustwallhub"
-version = "2.2.0"
+version = "2.3.0"
 description = "A Tauri App"
 authors = ["you"]
 edition = "2021"
@@ -39,3 +39,9 @@ tauri-plugin-updater = "2"
 [dev-dependencies]
 tempfile = "3"
 
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = true
+opt-level = 3

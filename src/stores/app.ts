@@ -218,6 +218,17 @@ export async function refreshStats() {
 /* ── 全局事件 ── */
 let listenersRegistered = false;
 
+/** 多个下载任务可能几乎同时完成；统计刷新与图库重载合并到 400ms 后执行一次。 */
+let postDownloadTimer: ReturnType<typeof setTimeout> | null = null;
+function schedulePostDownloadRefresh() {
+  if (postDownloadTimer) clearTimeout(postDownloadTimer);
+  postDownloadTimer = setTimeout(() => {
+    postDownloadTimer = null;
+    refreshStats();
+    appState.galleryEpoch++;
+  }, 400);
+}
+
 export async function registerGlobalListeners() {
   if (listenersRegistered) return;
   listenersRegistered = true;
@@ -238,12 +249,16 @@ export async function registerGlobalListeners() {
     t.message = p.message;
     t.lastComplete = { success: p.success, total: p.total, message: p.message };
     toast(p.message || `下载完成：成功 ${p.success}/${p.total}`, "success");
-    refreshStats();
-    appState.galleryEpoch++;
+    schedulePostDownloadRefresh();
   });
 
   await onImageDownloaded((p: ImageDownloadedPayload) => {
     appState.newImages.push({ source: p.source, name: p.name, path: p.path });
+    // 预览条最多展示 12 张，这里限制会话内累积数量，避免长任务让数组无限增长。
+    const MAX_NEW_IMAGES = 120;
+    if (appState.newImages.length > MAX_NEW_IMAGES) {
+      appState.newImages.splice(0, appState.newImages.length - MAX_NEW_IMAGES);
+    }
   });
 
   await onSettingsChanged(() => {

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, reactive, ref, watch } from "vue";
+import { computed, onActivated, onBeforeUnmount, onDeactivated, onMounted, reactive, ref, watch } from "vue";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import type { ImageInfo, LocalImageEntry, MonitorInfo, OrphanFile } from "../types";
@@ -8,8 +8,11 @@ import {
   assetUrl,
   browseImageFiles,
   deleteOrphanFile,
+  deleteOrphanFiles,
   dislikeFile,
+  dislikeFiles,
   getImageInfo,
+  listFilteredImagePaths,
   listMonitors,
   listOrphanFiles,
   resolveThumbnails,
@@ -69,6 +72,18 @@ const total = ref(0);
 /** 孤儿模式：全量孤儿列表，前端分页 */
 const orphanAll = ref<LocalImageEntry[]>([]);
 const thumbUrls = reactive<Record<string, string>>({});
+const THUMB_CACHE_MAX = 600;
+
+/** 限制缩略图 URL 缓存大小，避免长时间浏览后无限增长。 */
+function cacheThumb(name: string, url: string) {
+  if (!(name in thumbUrls)) {
+    const keys = Object.keys(thumbUrls);
+    if (keys.length >= THUMB_CACHE_MAX) {
+      delete thumbUrls[keys[0]];
+    }
+  }
+  thumbUrls[name] = url;
+}
 
 let searchTimer: ReturnType<typeof setTimeout> | null = null;
 watch(search, (v) => {
@@ -76,6 +91,26 @@ watch(search, (v) => {
   searchTimer = setTimeout(() => {
     searchDebounced.value = v.trim();
   }, 300);
+});
+
+/* ════ 加载竞态控制 ════
+ * 多个 watcher 可能在同一个 tick 同时触发 load()；用 loadSeq 保证只有最后一次
+ * 请求的结果会被采用，再用 0ms timer 合并同一轮的重复触发。 */
+let loadSeq = 0;
+let reloadTimer: ReturnType<typeof setTimeout> | null = null;
+let viewActive = false;
+
+function scheduleLoad() {
+  if (reloadTimer) clearTimeout(reloadTimer);
+  reloadTimer = setTimeout(() => {
+    reloadTimer = null;
+    if (viewActive) void load();
+  }, 0);
+}
+
+watch(source, () => {
+  // 切换来源后旧缩略图 URL 不能跨源复用
+  for (const key of Object.keys(thumbUrls)) delete thumbUrls[key];
 });
 
 const totalPages = computed(() => Math.max(1, Math.ceil(total.value / pageSize.value)));
@@ -87,16 +122,18 @@ function toEntry(o: OrphanFile): LocalImageEntry {
 
 async function load() {
   if (!dbReady.value && !customDir.value) return;
+  const seq = ++loadSeq;
   loading.value = true;
   loadError.value = "";
   try {
     if (orphanOnly.value && !customDir.value) {
       const all = (await listOrphanFiles(source.value)).map(toEntry);
+      if (seq !== loadSeq) return;
       orphanAll.value = all;
       total.value = all.length;
       const start = (page.value - 1) * pageSize.value;
       images.value = all.slice(start, start + pageSize.value);
-      await loadThumbs();
+      await loadThumbs(seq);
     } else {
       const res = await browseImageFiles(source.value, {
         offset: (page.value - 1) * pageSize.value,
@@ -105,37 +142,42 @@ async function load() {
         search: searchDebounced.value || undefined,
         sortBy: sortBy.value,
       });
+      if (seq !== loadSeq) return;
       total.value = res.total;
       images.value = res.images;
       if (customDir.value) {
         // 自定义目录无缩略图管线，直接用原图；同时避免同名文件命中旧缩略图缓存
-        for (const img of res.images) thumbUrls[img.name] = assetUrl(img.path);
+        for (const img of res.images) cacheThumb(img.name, assetUrl(img.path));
       } else {
-        await loadThumbs();
+        await loadThumbs(seq);
       }
     }
   } catch (e) {
-    loadError.value = String(e);
-    images.value = [];
-    total.value = 0;
+    if (seq === loadSeq) {
+      loadError.value = String(e);
+      images.value = [];
+      total.value = 0;
+    }
   } finally {
-    loading.value = false;
+    if (seq === loadSeq) loading.value = false;
   }
 }
 
-async function loadThumbs() {
+async function loadThumbs(seq = loadSeq) {
   const names = images.value.map((i) => i.name);
   if (names.length === 0) return;
   try {
     const dpr = appState.config?.thumbnail_dpr ?? 2;
     const batch = await resolveThumbnails(source.value, names, dpr);
+    if (seq !== loadSeq) return;
     for (const it of batch.items) {
-      thumbUrls[it.name] = assetUrl(it.thumb_path);
+      cacheThumb(it.name, assetUrl(it.thumb_path));
     }
   } catch (e) {
+    if (seq !== loadSeq) return;
     // 缩略图失败不致命，回退原图
     for (const img of images.value) {
-      if (!thumbUrls[img.name]) thumbUrls[img.name] = assetUrl(img.path);
+      if (!thumbUrls[img.name]) cacheThumb(img.name, assetUrl(img.path));
     }
   }
 }
@@ -147,24 +189,41 @@ function thumbOf(img: LocalImageEntry): string {
 /* 触发重载 */
 watch([source, searchDebounced, sortBy, orphanOnly], () => {
   page.value = 1;
-  load();
+  scheduleLoad();
 });
 watch(customDir, () => {
   // 进入/退出自定义目录时重置易冲突的状态
   orphanOnly.value = false;
   clearSelection();
   page.value = 1;
-  load();
+  scheduleLoad();
 });
-watch([page, pageSize], () => load());
+watch([page, pageSize], () => scheduleLoad());
 watch(
   () => appState.galleryEpoch,
-  () => load(),
+  () => {
+    if (viewActive) scheduleLoad();
+  },
 );
 
 onMounted(() => {
-  load();
+  viewActive = true;
   loadMonitors();
+});
+onActivated(() => {
+  viewActive = true;
+  scheduleLoad();
+});
+onDeactivated(() => {
+  viewActive = false;
+  if (reloadTimer) {
+    clearTimeout(reloadTimer);
+    reloadTimer = null;
+  }
+});
+onBeforeUnmount(() => {
+  if (searchTimer) clearTimeout(searchTimer);
+  if (reloadTimer) clearTimeout(reloadTimer);
 });
 
 /* ════ 多选与批量 ════ */
@@ -202,20 +261,15 @@ async function onBatchDelete() {
   );
   if (!ok) return;
   batchRunning.value = true;
-  let done = 0;
   try {
-    for (const name of names) {
-      try {
-        if (isOrphanMode) await deleteOrphanFile(source.value, name);
-        else await dislikeFile(source.value, name);
-        done++;
-      } catch (e) {
-        toastError(e);
-      }
-    }
+    const done = isOrphanMode
+      ? await deleteOrphanFiles(source.value, names)
+      : await dislikeFiles(source.value, names);
     toast(`已处理 ${done} / ${names.length} 张`, done === names.length ? "success" : "info");
     clearSelection();
     await load();
+  } catch (e) {
+    toastError(e);
   } finally {
     batchRunning.value = false;
   }
@@ -351,15 +405,23 @@ async function onStartSlideshow() {
     let paths: string[];
     if (orphanOnly.value && !customDir.value) {
       paths = orphanAll.value.map((i) => i.path);
-    } else {
+    } else if (customDir.value) {
+      // 自定义目录没有后端数据库管线，仍走 browse 全量扫描。
       const res = await browseImageFiles(source.value, {
         offset: 0,
         limit: Math.max(total.value, 1),
-        customDir: customDir.value ?? undefined,
+        customDir: customDir.value,
         search: searchDebounced.value || undefined,
         sortBy: sortBy.value,
       });
       paths = res.images.map((i) => i.path);
+    } else {
+      // 正常目录使用轻量路径列表命令，避免序列化整页元数据。
+      paths = await listFilteredImagePaths(
+        source.value,
+        searchDebounced.value || undefined,
+        sortBy.value,
+      );
     }
     if (paths.length === 0) {
       toast("当前筛选没有图片", "info");

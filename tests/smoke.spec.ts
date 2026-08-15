@@ -1,5 +1,5 @@
 import { test, expect } from "@playwright/test";
-import { execSync, spawn } from "child_process";
+import { spawn } from "child_process";
 
 let devServer: ReturnType<typeof spawn>;
 
@@ -48,12 +48,12 @@ test.describe("App smoke tests", () => {
     await page.waitForLoadState("networkidle");
 
     // Click Gallery nav item
-    const galleryBtn = page.locator(".v-list-item").filter({ hasText: "画廊" });
+    const galleryBtn = page.locator(".v-list-item").filter({ hasText: "图库" });
     if (await galleryBtn.count() > 0) {
       await galleryBtn.first().click();
       await page.waitForTimeout(500);
       // Gallery view should be visible
-      await expect(page.locator(".gallery-root")).toBeVisible({ timeout: 5000 });
+      await expect(page.locator(".gallery-view")).toBeVisible({ timeout: 5000 });
     }
 
     // Click Settings nav item

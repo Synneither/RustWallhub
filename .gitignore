@@ -36,3 +36,6 @@ DESIGN.md
 *.db-journal
 *.db-wal
 
+
+# SQLite shared-memory files
+*.db-shm

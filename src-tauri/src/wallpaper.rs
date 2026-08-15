@@ -612,6 +612,85 @@ fn set_windows_wallpaper(path_str: &str) -> Option<String> {
     (result != 0).then(|| "\u{58c1}\u{7eb8}\u{5df2}\u{8bbe}\u{7f6e} (Windows)".to_string())
 }
 
+/// 缓存首次探测成功的 Linux 桌面环境，轮播/连续设壁纸时不再逐项执行外部命令探测。
+static LINUX_BACKEND: std::sync::OnceLock<Option<&'static str>> = std::sync::OnceLock::new();
+
+type LinuxSetter = fn(&str) -> Option<String>;
+
+fn set_with_backend(path: &str, backend: &str) -> Option<String> {
+    match backend {
+        "gnome" => set_gnome_wallpaper(path),
+        "xfce" => set_xfce_wallpaper(path),
+        "kde" => set_kde_wallpaper(path),
+        "sway" => set_sway_wallpaper(path),
+        "hyprland" => set_hyprland_wallpaper(path),
+        "swww" => set_swww_wallpaper(path),
+        "feh" => set_feh_wallpaper(path),
+        _ => None,
+    }
+}
+
+fn set_linux_wallpaper(path: &str) -> Result<(String, &'static str), AppError> {
+    if let Some(Some(backend)) = LINUX_BACKEND.get() {
+        return set_with_backend(path, backend)
+            .map(|message| (message, *backend))
+            .ok_or_else(|| AppError::Other(format!("设置壁纸失败 ({backend})")));
+    }
+
+    let backends: [(&'static str, LinuxSetter); 7] = [
+        ("gnome", set_gnome_wallpaper),
+        ("xfce", set_xfce_wallpaper),
+        ("kde", set_kde_wallpaper),
+        ("sway", set_sway_wallpaper),
+        ("hyprland", set_hyprland_wallpaper),
+        ("swww", set_swww_wallpaper),
+        ("feh", set_feh_wallpaper),
+    ];
+
+    for (name, setter) in backends {
+        if let Some(message) = setter(path) {
+            let _ = LINUX_BACKEND.set(Some(name));
+            return Ok((message, name));
+        }
+    }
+
+    Err(AppError::Other(
+        "未检测到支持的桌面环境。支持: Windows, GNOME, KDE, XFCE, sway, Hyprland, niri(swww), swww, feh"
+            .to_string(),
+    ))
+}
+
+/// 实际的壁纸设置逻辑（同步，会探测/调用桌面环境命令，调用方应放入 spawn_blocking）。
+fn set_wallpaper_sync(path_str: &str, monitor: Option<&str>) -> Result<String, AppError> {
+    // Linux/macOS 的链式探测不使用 monitor 参数（Windows 分支在下方）。
+    #[cfg(not(target_os = "windows"))]
+    let _ = monitor;
+
+    // If a specific monitor is requested, use IDesktopWallpaper on Windows
+    #[cfg(target_os = "windows")]
+    if let Some(mon) = monitor {
+        if !mon.is_empty() && mon != "all" {
+            match com_wallpaper::set_wallpaper_for_monitor(path_str, mon) {
+                Ok(_) => return Ok("壁纸已设置 (指定显示器)".to_string()),
+                Err(e) => {
+                    log::warn!(
+                        "[set_wallpaper] IDesktopWallpaper 失败，回退到 SystemParametersInfoW: {}",
+                        e
+                    );
+                    // Fall through to default method
+                }
+            }
+        }
+    }
+
+    #[cfg(target_os = "windows")]
+    if let Some(result) = set_windows_wallpaper(path_str) {
+        return Ok(result);
+    }
+
+    set_linux_wallpaper(path_str).map(|(message, _)| message)
+}
+
 #[tauri::command]
 pub(crate) async fn set_wallpaper(
     file_path: String,
@@ -631,38 +710,11 @@ pub(crate) async fn set_wallpaper(
         .map_err(|e| AppError::Other(format!("获取绝对路径失败: {e}")))?;
     let path_str = absolute_path.to_string_lossy().to_string();
 
-    // If a specific monitor is requested, use IDesktopWallpaper on Windows
-    #[cfg(target_os = "windows")]
-    if let Some(ref mon) = monitor {
-        if !mon.is_empty() && mon != "all" {
-            match com_wallpaper::set_wallpaper_for_monitor(&path_str, mon) {
-                Ok(_) => return Ok("壁纸已设置 (指定显示器)".to_string()),
-                Err(e) => {
-                    log::warn!(
-                        "[set_wallpaper] IDesktopWallpaper 失败，回退到 SystemParametersInfoW: {}",
-                        e
-                    );
-                    // Fall through to default method
-                }
-            }
-        }
-    }
-
-    #[cfg(target_os = "windows")]
-    if let Some(result) = set_windows_wallpaper(&path_str) {
-        return Ok(result);
-    }
-
-    set_gnome_wallpaper(&path_str)
-        .or_else(|| set_xfce_wallpaper(&path_str))
-        .or_else(|| set_kde_wallpaper(&path_str))
-        .or_else(|| set_sway_wallpaper(&path_str))
-        .or_else(|| set_hyprland_wallpaper(&path_str))
-        .or_else(|| set_swww_wallpaper(&path_str))
-        .or_else(|| set_feh_wallpaper(&path_str))
-        .ok_or_else(|| AppError::Other(
-            "未检测到支持的桌面环境。支持: Windows, GNOME, KDE, XFCE, sway, Hyprland, niri(swww), swww, feh".to_string(),
-        ))
+    // 桌面环境探测会启动多个外部命令，放入阻塞线程池执行。
+    let monitor = monitor.clone();
+    tokio::task::spawn_blocking(move || set_wallpaper_sync(&path_str, monitor.as_deref()))
+        .await
+        .map_err(|e| AppError::Other(format!("设置壁纸任务异常: {e}")))?
 }
 
 #[tauri::command]
@@ -671,7 +723,9 @@ pub(crate) async fn list_monitors() -> Result<Vec<MonitorInfo>, AppError> {
 
     #[cfg(target_os = "windows")]
     {
-        let mut monitors = win_monitors::list_monitors();
+        let mut monitors = tokio::task::spawn_blocking(win_monitors::list_monitors)
+            .await
+            .map_err(|e| AppError::Other(format!("获取显示器列表失败: {e}")))?;
         // Try to get device paths from IDesktopWallpaper and merge
         let device_paths = com_wallpaper::get_monitor_device_paths();
         if !device_paths.is_empty() && device_paths.len() == monitors.len() {
@@ -705,7 +759,9 @@ pub(crate) async fn list_monitors() -> Result<Vec<MonitorInfo>, AppError> {
 
     #[cfg(not(target_os = "windows"))]
     {
-        let monitors = win_monitors::list_monitors();
+        let monitors = tokio::task::spawn_blocking(win_monitors::list_monitors)
+            .await
+            .map_err(|e| AppError::Other(format!("获取显示器列表失败: {e}")))?;
         log::info!("[list_monitors] found {} monitors", monitors.len());
         Ok(monitors)
     }
@@ -726,20 +782,7 @@ fn do_set_wallpaper(path_str: &str) -> Result<String, AppError> {
         .canonicalize()
         .map_err(|e| AppError::Other(format!("获取绝对路径失败: {e}")))?;
     let abs_str = absolute_path.to_string_lossy().to_string();
-
-    #[cfg(target_os = "windows")]
-    if let Some(result) = set_windows_wallpaper(&abs_str) {
-        return Ok(result);
-    }
-
-    set_gnome_wallpaper(&abs_str)
-        .or_else(|| set_xfce_wallpaper(&abs_str))
-        .or_else(|| set_kde_wallpaper(&abs_str))
-        .or_else(|| set_sway_wallpaper(&abs_str))
-        .or_else(|| set_hyprland_wallpaper(&abs_str))
-        .or_else(|| set_swww_wallpaper(&abs_str))
-        .or_else(|| set_feh_wallpaper(&abs_str))
-        .ok_or_else(|| AppError::Other("未检测到支持的桌面环境".to_string()))
+    set_wallpaper_sync(&abs_str, None)
 }
 
 #[derive(Clone, serde::Serialize)]
@@ -793,8 +836,9 @@ pub(crate) async fn start_slideshow(
             }
 
             let path = &file_paths[index];
-            match do_set_wallpaper(path) {
-                Ok(_) => {
+            let path_owned = path.clone();
+            match tokio::task::spawn_blocking(move || do_set_wallpaper(&path_owned)).await {
+                Ok(Ok(_)) => {
                     let name = std::path::Path::new(path)
                         .file_name()
                         .map(|n| n.to_string_lossy().to_string())
@@ -810,8 +854,11 @@ pub(crate) async fn start_slideshow(
                     );
                     log::info!("[slideshow] 切换壁纸 {}/{}: {}", index + 1, total, path);
                 }
-                Err(e) => {
+                Ok(Err(e)) => {
                     log::warn!("[slideshow] 设置壁纸失败: {}", e);
+                }
+                Err(e) => {
+                    log::warn!("[slideshow] 设置壁纸任务异常: {}", e);
                 }
             }
 

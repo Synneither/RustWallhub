@@ -1,6 +1,6 @@
 use std::path::Path;
 
-const IMAGE_EXTENSIONS: &[&str] = &["jpg", "jpeg", "png", "gif", "webp"];
+pub const IMAGE_EXTENSIONS: &[&str] = &["jpg", "jpeg", "png", "gif", "webp"];
 
 /// JPEG magic bytes: FF D8 FF
 const JPEG_HEADER: [u8; 3] = [0xFF, 0xD8, 0xFF];
@@ -79,6 +79,9 @@ pub fn file_is_image(path: &Path) -> bool {
         .is_some_and(|ext| IMAGE_EXTENSIONS.contains(&ext.to_lowercase().as_str()))
 }
 
+/// 单张图片下载的硬上限，防止异常源或错误 Content-Type 把内存撑爆。
+pub const MAX_IMAGE_BYTES: usize = 256 * 1024 * 1024;
+
 pub fn compute_md5(data: &[u8]) -> String {
     format!("{:x}", md5::compute(data))
 }
@@ -87,7 +90,7 @@ pub async fn download_image_bytes(
     url: &str,
 ) -> Result<(Vec<u8>, String), String> {
     log::info!("[downloader] download_image_bytes: url={}", url);
-    let resp = client
+    let mut resp = client
         .get(url)
         .send()
         .await
@@ -98,6 +101,13 @@ pub async fn download_image_bytes(
         return Err(format!("下载返回状态码: {}", resp.status()));
     }
 
+    if resp
+        .content_length()
+        .is_some_and(|len| len as usize > MAX_IMAGE_BYTES)
+    {
+        return Err(format!("图片超过大小限制 ({MAX_IMAGE_BYTES} bytes)"));
+    }
+
     let content_type = resp
         .headers()
         .get("content-type")
@@ -105,10 +115,18 @@ pub async fn download_image_bytes(
         .unwrap_or("")
         .to_string();
 
-    let bytes = resp
-        .bytes()
+    // 流式读取并在未知 Content-Length 时也强制限制最大体积。
+    let mut bytes = Vec::new();
+    while let Some(chunk) = resp
+        .chunk()
         .await
-        .map_err(|e| format!("读取下载数据失败: {e}"))?;
+        .map_err(|e| format!("读取下载数据失败: {e}"))?
+    {
+        if bytes.len().saturating_add(chunk.len()) > MAX_IMAGE_BYTES {
+            return Err(format!("图片超过大小限制 ({MAX_IMAGE_BYTES} bytes)"));
+        }
+        bytes.extend_from_slice(&chunk);
+    }
 
     if !is_valid_image(&bytes, &content_type) {
         log::warn!(
@@ -124,7 +142,7 @@ pub async fn download_image_bytes(
         bytes.len(),
         content_type
     );
-    Ok((bytes.to_vec(), content_type))
+    Ok((bytes, content_type))
 }
 
 pub async fn download_urls_concurrent(
@@ -189,7 +207,7 @@ pub async fn download_urls_concurrent(
         };
         results.push((idx, result));
     }
-    results.sort_by_key(|(idx, _)| *idx);
+    // handles 是按原始顺序 await 的，且每个 task 返回自身 idx，因此 results 已经有序。
     results.into_iter().map(|(_, r)| r).collect()
 }
 

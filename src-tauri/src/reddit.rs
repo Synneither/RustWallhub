@@ -1,4 +1,5 @@
 use serde::Deserialize;
+use std::collections::HashMap;
 
 #[derive(Deserialize, Debug)]
 struct RedditListing {
@@ -26,6 +27,14 @@ struct RedditPostData {
     is_gallery: bool,
     #[serde(default)]
     gallery_data: Option<GalleryData>,
+    #[serde(default)]
+    media_metadata: HashMap<String, MediaMetadata>,
+}
+
+#[derive(Deserialize, Debug)]
+struct MediaMetadata {
+    #[serde(default)]
+    m: Option<String>,
 }
 
 #[derive(Deserialize, Debug)]
@@ -45,6 +54,26 @@ pub struct RedditImage {
     pub title: String,
     pub image_url: String,
     pub permalink: String,
+}
+
+/// 严格校验 https 主机，防止 Reddit 返回的 URL 被用于 SSRF。
+/// `allow_subdomains=true` 时允许 `x.example.com`，否则只允许 `example.com` 本身。
+fn is_https_host(url: &str, host: &str, allow_subdomains: bool) -> bool {
+    let lower = url.to_lowercase();
+    if !lower.starts_with("https://") {
+        return false;
+    }
+    let host_part = lower
+        .strip_prefix("https://")
+        .unwrap_or("")
+        .split('/')
+        .next()
+        .unwrap_or("");
+    host_part == host
+        || (allow_subdomains
+            && host_part
+                .strip_suffix(host)
+                .is_some_and(|prefix| prefix.ends_with('.') && !prefix.is_empty()))
 }
 
 pub struct RedditClient {
@@ -135,10 +164,17 @@ impl RedditClient {
         if data.is_gallery {
             if let Some(gallery) = &data.gallery_data {
                 if let Some(item) = gallery.items.first() {
+                    // gallery 图片未必是 jpg，优先用 Reddit media_metadata 中的真实 MIME。
+                    let ext = data
+                        .media_metadata
+                        .get(&item.media_id)
+                        .and_then(|meta| meta.m.as_deref())
+                        .map(|mime| crate::downloader::get_file_extension(mime, ""))
+                        .unwrap_or_else(|| "jpg".to_string());
                     return Some(RedditImage {
                         post_id: data.id.clone(),
                         title: data.title.clone(),
-                        image_url: format!("https://i.redd.it/{}.jpg", item.media_id),
+                        image_url: format!("https://i.redd.it/{}.{}", item.media_id, ext),
                         permalink: data.permalink.clone(),
                     });
                 }
@@ -147,7 +183,7 @@ impl RedditClient {
 
         let url = &data.url;
         let url_no_query = url.split('?').next().unwrap_or(url);
-        if url.contains("i.redd.it")
+        if is_https_host(url, "i.redd.it", false)
             && (url_no_query.ends_with(".jpg")
                 || url_no_query.ends_with(".jpeg")
                 || url_no_query.ends_with(".png")
@@ -161,7 +197,9 @@ impl RedditClient {
             });
         }
 
-        if url.contains("imgur.com/a/") || url.contains("imgur.com/gallery/") {
+        if is_https_host(url, "imgur.com", true)
+            && (url.contains("/a/") || url.contains("/gallery/"))
+        {
             if let Some(img_url) = self.get_imgur_album(url).await {
                 return Some(RedditImage {
                     post_id: data.id.clone(),
@@ -172,7 +210,7 @@ impl RedditClient {
             }
         }
 
-        if url.contains("i.imgur.com")
+        if is_https_host(url, "i.imgur.com", false)
             && (url_no_query.ends_with(".jpg")
                 || url_no_query.ends_with(".png")
                 || url_no_query.ends_with(".webp"))
@@ -191,15 +229,8 @@ impl RedditClient {
     async fn get_imgur_album(&self, url: &str) -> Option<String> {
         log::info!("[reddit] get_imgur_album: url={}", url);
 
-        // SSRF 保护：只允许 https 协议且 host 以 imgur.com 结尾
-        let lower = url.to_lowercase();
-        if !lower.starts_with("https://") {
-            log::warn!("[reddit] blocked non-https imgur URL: {}", url);
-            return None;
-        }
-        let host_part = lower.strip_prefix("https://").unwrap_or("");
-        let host = host_part.split('/').next().unwrap_or("");
-        if !host.ends_with("imgur.com") {
+        // SSRF 保护：只允许 https 协议且 host 严格属于 imgur.com 或其子域
+        if !is_https_host(url, "imgur.com", true) {
             log::warn!("[reddit] blocked non-imgur URL: {}", url);
             return None;
         }
@@ -218,5 +249,37 @@ impl RedditClient {
             }
         }
         None
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_is_https_host_strict() {
+        assert!(is_https_host("https://imgur.com/a/x", "imgur.com", true));
+        assert!(is_https_host(
+            "https://www.imgur.com/a/x",
+            "imgur.com",
+            true
+        ));
+        assert!(!is_https_host(
+            "https://evilimgur.com/a/x",
+            "imgur.com",
+            true
+        ));
+        assert!(!is_https_host("http://imgur.com/a/x", "imgur.com", true));
+        assert!(is_https_host(
+            "https://i.imgur.com/x.jpg",
+            "i.imgur.com",
+            false
+        ));
+        assert!(!is_https_host(
+            "https://evil.com/i.imgur.com/x.jpg",
+            "i.imgur.com",
+            false
+        ));
+        assert!(!is_https_host("https://i.redd.it/x.jpg", "evil.com", true));
     }
 }

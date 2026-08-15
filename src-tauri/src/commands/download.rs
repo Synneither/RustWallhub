@@ -5,6 +5,7 @@ use crate::db;
 use crate::downloader;
 use crate::state::{
     save_image, setup_cancel_flag, AppError, AppState, DownloadComplete, DownloadProgress,
+    ProgressThrottle,
 };
 use std::path::Path;
 use std::sync::atomic::Ordering;
@@ -17,6 +18,11 @@ pub async fn recover_database_files(
     source: Source,
 ) -> Result<String, AppError> {
     log::info!("[CMD] recover_database_files: source={:?}", source);
+    if matches!(source, Source::All) {
+        return Err(AppError::Other(
+            "全量恢复请分别调用 wallhaven / reddit".into(),
+        ));
+    }
     let config = crate::state::load_config(&state)?;
     let cancel = setup_cancel_flag(&state);
     let client = state
@@ -27,7 +33,6 @@ pub async fn recover_database_files(
 
     let save_dir = config.save_dir_for(source).to_string();
     let db_path = config.db_path_for(source).to_string();
-    let thumb_dir = config.thumb_dir_for(source);
     let is_wallhaven = Source::is_wallhaven(source);
     let source_str = source.to_string();
     let src_inner = source_str.clone();
@@ -35,96 +40,105 @@ pub async fn recover_database_files(
     tokio::spawn(async move {
         let _ = tokio::fs::create_dir_all(&save_dir).await;
 
-        let images = if is_wallhaven {
-            match db::get_wallhaven_missing_love(&db_path) {
-                Ok(imgs) => imgs,
-                Err(e) => {
-                    log::error!("[recover] 获取wallhaven缺失图片失败: {e}");
-                    return;
-                }
+        // 查库 + 文件存在性过滤都是阻塞操作，放入 spawn_blocking。
+        let filter_save_dir = save_dir.clone();
+        let filter_db_path = db_path.clone();
+        let images = match tokio::task::spawn_blocking(move || {
+            let images = if is_wallhaven {
+                db::get_wallhaven_missing_love(&filter_db_path)?
+            } else {
+                db::get_reddit_missing_love(&filter_db_path)?
+            };
+            Ok::<Vec<db::ImageRecord>, rusqlite::Error>(
+                images
+                    .into_iter()
+                    .filter(|img| !Path::new(&filter_save_dir).join(&img.name).exists())
+                    .collect(),
+            )
+        })
+        .await
+        {
+            Ok(Ok(images)) => images,
+            Ok(Err(e)) => {
+                log::error!("[recover] 获取缺失图片失败: {e}");
+                return;
             }
-        } else {
-            match db::get_reddit_missing_love(&db_path) {
-                Ok(imgs) => imgs,
-                Err(e) => {
-                    log::error!("[recover] 获取reddit缺失图片失败: {e}");
-                    return;
-                }
+            Err(e) => {
+                log::error!("[recover] 获取缺失图片任务异常: {e}");
+                return;
             }
         };
 
-        let total = images.len() as u32;
+        let to_download: Vec<&db::ImageRecord> = images.iter().collect();
+        let total = to_download.len() as u32;
         let mut success = 0u32;
 
-        let to_download: Vec<&db::ImageRecord> = images
-            .iter()
-            .filter(|img| !Path::new(&save_dir).join(&img.name).exists())
-            .collect();
-        let total_pending = to_download.len() as u32;
+        // 分批下载 + 分批落盘：避免把所有原图 bytes 同时囤在内存里。
+        let chunk_size = (config.download_concurrency.max(1) as usize)
+            .saturating_mul(2)
+            .max(1);
+        let mut progress_throttle = ProgressThrottle::new();
+        let mut processed = 0usize;
+        for chunk in to_download.chunks(chunk_size) {
+            let urls: Vec<String> = chunk.iter().map(|img| img.url.clone()).collect();
+            let download_results = downloader::download_urls_concurrent(
+                &client,
+                &urls,
+                cancel.clone(),
+                config.download_concurrency,
+                3,
+            )
+            .await;
 
-        let urls: Vec<String> = to_download.iter().map(|img| img.url.clone()).collect();
-        let download_results = downloader::download_urls_concurrent(
-            &client,
-            &urls,
-            cancel.clone(),
-            config.download_concurrency,
-            3,
-        )
-        .await;
+            for (local_i, img) in chunk.iter().enumerate() {
+                let i = processed + local_i;
+                let file_path = Path::new(&save_dir).join(&img.name);
 
-        for (i, img) in to_download.iter().enumerate() {
-            let file_path = Path::new(&save_dir).join(&img.name);
+                if progress_throttle.should_emit(i + 1 == total as usize) {
+                    let _ = app.emit(
+                        "download-progress",
+                        DownloadProgress {
+                            source: src_inner.clone(),
+                            done: i as u32,
+                            total,
+                            message: format!("正在下载 {} ({}/{})", img.name, i + 1, total),
+                        },
+                    );
+                }
 
-            let _ = app.emit(
-                "download-progress",
-                DownloadProgress {
-                    source: src_inner.clone(),
-                    done: i as u32,
-                    total: total_pending,
-                    message: format!("正在下载 {} ({}/{})", img.name, i + 1, total_pending),
-                },
-            );
-
-            if cancel.load(Ordering::Relaxed) {
-                log::info!(
-                    "[recover] cancelled: source={} (success={}/{})",
-                    src_inner,
-                    success,
-                    total_pending
-                );
-                let _ = app.emit(
-                    "download-complete",
-                    DownloadComplete {
-                        source: src_inner.clone(),
+                if cancel.load(Ordering::Relaxed) {
+                    log::info!(
+                        "[recover] cancelled: source={} (success={}/{})",
+                        src_inner,
                         success,
-                        total,
-                        message: "下载已取消".to_string(),
-                    },
-                );
-                return;
-            }
+                        total
+                    );
+                    let _ = app.emit(
+                        "download-complete",
+                        DownloadComplete {
+                            source: src_inner.clone(),
+                            success,
+                            total,
+                            message: "下载已取消".to_string(),
+                        },
+                    );
+                    return;
+                }
 
-            match &download_results[i] {
-                Ok((bytes, _content_type)) => {
-                    if let Some(thumb_handle) = save_image(
-                        &file_path,
-                        bytes,
-                        &thumb_dir,
-                        &img.name,
-                        config.thumbnail_dpr,
-                    )
-                    .await
-                    {
-                        let _ = thumb_handle.await;
-                        success += 1;
-                    } else {
-                        log::error!("[recover] write failed {}", file_path.display());
+                match &download_results[local_i] {
+                    Ok((bytes, _content_type)) => match save_image(&file_path, bytes).await {
+                        Ok(()) => {
+                            success += 1;
+                            db::invalidate_stats(&db_path);
+                        }
+                        Err(e) => log::error!("[recover] {}", e),
+                    },
+                    Err(e) => {
+                        log::error!("[recover] download failed {}: {}", img.name, e);
                     }
                 }
-                Err(e) => {
-                    log::error!("[recover] download failed {}: {}", img.name, e);
-                }
             }
+            processed += chunk.len();
         }
 
         log::info!("[recover] complete: success={}/{}", success, total);
@@ -154,6 +168,14 @@ pub async fn download_missing_images(
         source,
         images.len()
     );
+    if matches!(source, Source::All) {
+        return Err(AppError::Other(
+            "补下载请分别按 wallhaven / reddit 调用".into(),
+        ));
+    }
+    for img in &images {
+        crate::state::ensure_plain_filename(&img.name)?;
+    }
     let config = crate::state::load_config(&state)?;
     let cancel = setup_cancel_flag(&state);
     let client = state
@@ -163,9 +185,8 @@ pub async fn download_missing_images(
         .clone();
 
     let save_dir = config.save_dir_for(source).to_string();
-    let thumb_dir = config.thumb_dir_for(source);
+    let db_path = config.db_path_for(source).to_string();
     let download_concurrency = config.download_concurrency;
-    let thumbnail_dpr = config.thumbnail_dpr;
     let source_str = source.to_string();
     let total_images = images.len();
 
@@ -175,62 +196,71 @@ pub async fn download_missing_images(
         let total = images.len() as u32;
         let mut success = 0u32;
 
-        let urls: Vec<String> = images.iter().map(|img| img.url.clone()).collect();
-        let download_results = downloader::download_urls_concurrent(
-            &client,
-            &urls,
-            cancel.clone(),
-            download_concurrency,
-            3,
-        )
-        .await;
+        // 分批下载，防止大任务把所有图片同时放在内存里。
+        let chunk_size = (download_concurrency.max(1) as usize)
+            .saturating_mul(2)
+            .max(1);
+        let mut progress_throttle = ProgressThrottle::new();
+        let mut processed = 0usize;
+        for chunk in images.chunks(chunk_size) {
+            let urls: Vec<String> = chunk.iter().map(|img| img.url.clone()).collect();
+            let download_results = downloader::download_urls_concurrent(
+                &client,
+                &urls,
+                cancel.clone(),
+                download_concurrency,
+                3,
+            )
+            .await;
 
-        for (i, img) in images.iter().enumerate() {
-            let file_path = Path::new(&save_dir).join(&img.name);
+            for (local_i, img) in chunk.iter().enumerate() {
+                let i = processed + local_i;
+                let file_path = Path::new(&save_dir).join(&img.name);
 
-            let _ = app.emit(
-                "download-progress",
-                DownloadProgress {
-                    source: source_str.clone(),
-                    done: i as u32,
-                    total,
-                    message: format!("正在下载 {} ({}/{})", img.name, i + 1, total),
-                },
-            );
+                if progress_throttle.should_emit(i + 1 == total as usize) {
+                    let _ = app.emit(
+                        "download-progress",
+                        DownloadProgress {
+                            source: source_str.clone(),
+                            done: i as u32,
+                            total,
+                            message: format!("正在下载 {} ({}/{})", img.name, i + 1, total),
+                        },
+                    );
+                }
 
-            if cancel.load(Ordering::Relaxed) {
-                log::info!(
-                    "[download_missing] cancelled (success={}/{})",
-                    success,
-                    total
-                );
-                let _ = app.emit(
-                    "download-complete",
-                    DownloadComplete {
-                        source: source_str.clone(),
+                if cancel.load(Ordering::Relaxed) {
+                    log::info!(
+                        "[download_missing] cancelled (success={}/{})",
                         success,
-                        total,
-                        message: "下载已取消".to_string(),
-                    },
-                );
-                return;
-            }
+                        total
+                    );
+                    let _ = app.emit(
+                        "download-complete",
+                        DownloadComplete {
+                            source: source_str.clone(),
+                            success,
+                            total,
+                            message: "下载已取消".to_string(),
+                        },
+                    );
+                    return;
+                }
 
-            match &download_results[i] {
-                Ok((bytes, _content_type)) => {
-                    if let Some(thumb_handle) =
-                        save_image(&file_path, bytes, &thumb_dir, &img.name, thumbnail_dpr).await
-                    {
-                        let _ = thumb_handle.await;
-                        success += 1;
-                    } else {
-                        log::error!("[download_missing] write failed {}", file_path.display());
+                match &download_results[local_i] {
+                    Ok((bytes, _content_type)) => match save_image(&file_path, bytes).await {
+                        Ok(()) => {
+                            success += 1;
+                            db::invalidate_stats(&db_path);
+                        }
+                        Err(e) => log::error!("[download_missing] {}", e),
+                    },
+                    Err(e) => {
+                        log::error!("[download_missing] download failed {}: {}", img.name, e);
                     }
                 }
-                Err(e) => {
-                    log::error!("[download_missing] download failed {}: {}", img.name, e);
-                }
             }
+            processed += chunk.len();
         }
 
         log::info!("[download_missing] complete: success={}/{}", success, total);

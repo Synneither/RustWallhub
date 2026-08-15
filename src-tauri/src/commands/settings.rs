@@ -104,13 +104,26 @@ pub async fn save_settings(
     if config.thumbnail_dpr < 1 || config.thumbnail_dpr > 3 {
         return Err(AppError::Config("缩略图 DPR 超出范围 (1-3)".into()));
     }
+    let old_config = crate::state::load_config(&state)?;
     crate::state::save_config(&state, &config)?;
     if let Ok(mut cache) = state.file_cache.lock() {
         *cache = None;
     }
+    // 数据库目录变化时，丢弃旧路径的缓存连接，避免连接指向旧文件。
+    if old_config.wallhaven_db_path != config.wallhaven_db_path {
+        crate::db::invalidate_stats(&old_config.wallhaven_db_path);
+        crate::db::invalidate_connection(&old_config.wallhaven_db_path);
+        crate::db::invalidate_connection(&config.wallhaven_db_path);
+    }
+    if old_config.reddit_db_path != config.reddit_db_path {
+        crate::db::invalidate_stats(&old_config.reddit_db_path);
+        crate::db::invalidate_connection(&old_config.reddit_db_path);
+        crate::db::invalidate_connection(&config.reddit_db_path);
+    }
     std::fs::create_dir_all(std::path::Path::new(&config.db_dir)).ok();
     // 注意：这里不初始化数据库，由前端确认后调用 init_databases 显式创建
-    let _ = rebuild_http_client(&state, config.request_timeout, &config.proxy_url);
+    rebuild_http_client(&state, config.request_timeout, &config.proxy_url)
+        .map_err(AppError::Config)?;
     let _ = app.emit("settings-changed", ());
     log::info!("[CMD] save_settings done");
     Ok(())
@@ -122,13 +135,24 @@ pub async fn get_stats(state: tauri::State<'_, AppState>) -> Result<StatsRespons
     let config = crate::state::load_config(&state)?;
     let wh_db_path = config.wallhaven_db_path.clone();
     let rd_db_path = config.reddit_db_path.clone();
+    let wh_save_dir = config.wallhaven_save_dir.clone();
+    let rd_save_dir = config.reddit_save_dir.clone();
     log::info!(
         "[CMD] get_stats: resolving db paths wh={}, rd={}",
         wh_db_path,
         rd_db_path
     );
-    let wh_stats = db::get_db_stats(&wh_db_path, &config.wallhaven_save_dir)?;
-    let rd_stats = db::get_db_stats(&rd_db_path, &config.reddit_save_dir)?;
+    // 缺失统计会扫描保存目录，属于阻塞 IO；两个库并发执行且放在 spawn_blocking 中。
+    let wh_handle =
+        tokio::task::spawn_blocking(move || db::get_db_stats(&wh_db_path, &wh_save_dir));
+    let rd_handle =
+        tokio::task::spawn_blocking(move || db::get_db_stats(&rd_db_path, &rd_save_dir));
+    let wh_stats = wh_handle
+        .await
+        .map_err(|e| AppError::Other(format!("统计任务异常: {e}")))??;
+    let rd_stats = rd_handle
+        .await
+        .map_err(|e| AppError::Other(format!("统计任务异常: {e}")))??;
     log::info!("[CMD] get_stats: wh={:?}, rd={:?}", wh_stats, rd_stats);
     Ok(StatsResponse {
         wallhaven: wh_stats,

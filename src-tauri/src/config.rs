@@ -90,8 +90,9 @@ fn default_thumbnails_dir() -> String {
 }
 
 fn default_db_dir() -> String {
-    std::env::current_dir()
-        .unwrap_or_else(|_| PathBuf::from("."))
+    dirs::data_dir()
+        .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")))
+        .join("rustwallhub")
         .to_string_lossy()
         .to_string()
 }
@@ -206,10 +207,7 @@ impl Default for AppConfig {
             .unwrap_or_else(|| PathBuf::from("."))
             .join("rustwallhub")
             .join("thumbnails");
-        let db_dir = std::env::current_dir()
-            .unwrap_or_else(|_| PathBuf::from("."))
-            .to_string_lossy()
-            .to_string();
+        let db_dir = default_db_dir();
 
         Self {
             wallhaven_save_dir: format!("{home}/Pictures/背景/wallhaven"),

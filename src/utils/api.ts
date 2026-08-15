@@ -12,7 +12,6 @@ import type {
   DatabaseStatus,
   DownloadCompletePayload,
   DownloadProgressPayload,
-  FileInfo,
   ImageDownloadedPayload,
   ImageInfo,
   ImageRecord,
@@ -91,8 +90,16 @@ export const browseImageFiles = (source: Source, opts: BrowseOptions) =>
     sortBy: opts.sortBy ?? null,
   });
 
-export const resolveThumbnail = (source: Source, filename: string, dpr = 1) =>
-  invoke<string>("resolve_thumbnail", { source, filename, dpr });
+export const listFilteredImagePaths = (
+  source: Source,
+  search?: string,
+  sortBy?: string,
+) =>
+  invoke<string[]>("list_filtered_image_paths", {
+    source,
+    search: search ?? null,
+    sortBy: sortBy ?? null,
+  });
 
 export const resolveThumbnails = (
   source: Source,
@@ -100,14 +107,17 @@ export const resolveThumbnails = (
   dpr = 1,
 ) => invoke<ThumbnailBatch>("resolve_thumbnails", { source, filenames, dpr });
 
-export const deleteImage = (source: Source, name: string) =>
-  invoke<boolean>("delete_image", { source, name });
-
 export const dislikeFile = (source: Source, name: string) =>
   invoke<boolean>("dislike_file", { source, name });
 
+export const dislikeFiles = (source: Source, names: string[]) =>
+  invoke<number>("dislike_files", { source, names });
+
 export const deleteOrphanFile = (source: Source, name: string) =>
   invoke<boolean>("delete_orphan_file", { source, name });
+
+export const deleteOrphanFiles = (source: Source, names: string[]) =>
+  invoke<number>("delete_orphan_files", { source, names });
 
 export const adoptOrphanFiles = (source: Source, names: string[]) =>
   invoke<number>("adopt_orphan_files", { source, names });
@@ -129,9 +139,6 @@ export const listOrphanFiles = (source: Source) =>
 export const markDislikedFiles = (source: Source) =>
   invoke<number>("mark_disliked_files", { source });
 
-export const countMissingImages = (source: Source) =>
-  invoke<number>("count_missing_images", { source });
-
 export const restoreAllFiles = (source: Source) =>
   invoke<number>("restore_all_files", { source });
 
@@ -142,9 +149,6 @@ export const listMissingImages = (source: Source) =>
 
 export const getActiveWallpaper = () =>
   invoke<ActiveWallpaper>("get_active_wallpaper");
-
-export const scanDirectory = (dir: string) =>
-  invoke<FileInfo[]>("scan_directory", { dir });
 
 /* ════════════ wallpaper ════════════ */
 

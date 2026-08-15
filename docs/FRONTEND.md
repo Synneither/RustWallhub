@@ -98,7 +98,7 @@ confirm: { visible: boolean; title: string; text: string; danger: boolean; resol
 
 1. **搜索即配置**：`search_wallhaven` 只收 `page`，搜索条件来自已保存的配置。Wallhaven 页改条件后必须先 `save_settings` 再搜索。UI 策略：条件区与保存按钮一体，"搜索"按钮在条件有未保存改动时先保存再搜索。
 2. **图库两阶段加载**：`browse_image_files` 返回 `thumb_path: null` → 对当前页文件名批量 `resolve_thumbnails` → `assetUrl` 显示。切页/搜索/排序时重置。
-3. **`Source = all` 的不一致**：`recover_database_files("all")` 实际只处理 Reddit。前端"全量恢复"入口必须**串行调用 wallhaven + reddit 两次**并合并提示。
+3. **`Source = all` 用于恢复/补下载会直接报错**：`recover_database_files("all")` 与 `download_missing_images("all")` 现在会明确拒绝。前端"全量恢复"入口必须**串行调用 wallhaven + reddit 两次**并合并提示。
 4. **`save_settings` 副作用**：清空图库文件缓存、重建 HTTP client、emit `settings-changed`。保存成功后图库页应失效重载。
 5. **显示器设置**：`set_wallpaper(file_path, monitor)`，`monitor` 省略或 `"all"` = 全部显示器；Windows 传 `list_monitors` 返回的 `id`（设备路径）。
 
@@ -135,7 +135,7 @@ confirm: { visible: boolean; title: string; text: string; danger: boolean; resol
 上下两区（可滚动单列）：
 1. **搜索条件卡**：关键词 `q`、分类三位开关（general/anime/people）、纯度三位开关（sfw/sketchy/nsfw，NSFW 需 API Key 提示）、排序（date/favorites/toplist/random，toplist 时展开 topRange 选择且禁用 order；random 时禁用 order）、最小分辨率 `atleast`、比例 `ratios`、单次下载目标 `wallhaven_max_images`、API Key（password 输入）。
    - 底部操作条：`保存并搜索`（主按钮，先 `save_settings` 再 `search_wallhaven(1)`）、`仅保存`。
-2. **结果区**：在线缩略图网格（`thumbnail_url` 直链，CSP 已允许 `th.wallhaven.cc`），卡片显示分辨率角标 + 勾选框；顶栏：`第 x / y 页 · 共 z 张`、分页前后按钮、`全选本页`、`下载选中`（`download_wallhaven_selected`）、`按条件批量下载`（`start_wallhaven_download`，说明文案"最多 100 页直到凑满 N 张"）。
+2. **结果区**：在线缩略图网格（`thumbnail_url` 直链，CSP 已允许 `th.wallhaven.cc` / `w.wallhaven.cc`），卡片显示分辨率角标 + 勾选框；单击选择，双击或悬停按钮打开大图预览（原图 URL 直载，可打开来源页 / 直接下载当前大图）；顶栏：`第 x / y 页 · 共 z 张`、分页前后按钮、`全选本页`、`下载选中`（`download_wallhaven_selected`）、`按条件批量下载`（`start_wallhaven_download`，说明文案"最多 100 页直到凑满 N 张"）。
 3. 下载中：结果区顶部进度条；`image-downloaded` 累积"本次新图"横向预览条。
 
 ### 7.3 Reddit 页
@@ -211,7 +211,7 @@ confirm: { visible: boolean; title: string; text: string; danger: boolean; resol
 |----------|----------|
 | `DbStats.dislike` 实为缺失数 | 文案统一为"缺失" |
 | `browse_image_files.modified_date` 为近似换算 | 仅作展示，排序依赖后端 `sort_by`，不做二次精确化 |
-| `recover_database_files("all")` 只处理 Reddit | 全量恢复 = 两源串行调用，结果合并提示 |
+| `recover_database_files("all")` 返回错误 | 全量恢复 = 两源串行调用，结果合并提示 |
 | `download-progress` 与 `download-complete` 的 total 口径不同（恢复流程） | 进度条按 progress 事件渲染，完成提示用 complete 事件数字，互不混用 |
 | `is_slideshow_running` 可能假阳性 | 启动时查询仅用于恢复指示；收到 tick 才视为活跃运行 |
 | `save_settings` 不建库 | 保存后若库缺失，主动弹初始化确认 |

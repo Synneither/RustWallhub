@@ -4,7 +4,7 @@ use crate::db;
 use crate::downloader;
 use crate::state::{
     save_image, setup_cancel_flag, AppError, AppState, DownloadComplete, DownloadProgress,
-    ImageDownloaded,
+    ImageDownloaded, ProgressThrottle,
 };
 use crate::wallhaven;
 use serde::{Deserialize, Serialize};
@@ -38,6 +38,19 @@ pub struct WallhavenSelected {
     path: String,
     resolution: String,
     short_url: String,
+}
+
+/// 选中下载的 URL 来自前端 IPC，必须校验为 Wallhaven 域名，避免被当作通用下载代理。
+fn is_wallhaven_image_url(url: &str) -> bool {
+    let lower = url.to_lowercase();
+    let host = lower
+        .strip_prefix("https://")
+        .or_else(|| lower.strip_prefix("http://"))
+        .unwrap_or("")
+        .split('/')
+        .next()
+        .unwrap_or("");
+    host == "wallhaven.cc" || host.ends_with(".wallhaven.cc")
 }
 
 #[tauri::command]
@@ -124,11 +137,20 @@ pub async fn start_wallhaven_download(
 
         let _ = tokio::fs::create_dir_all(&config.wallhaven_save_dir).await;
 
-        let existing_ids = match db::get_existing_wallhaven_ids(&config.wallhaven_db_path) {
-            Ok(ids) => ids,
-            Err(e) => {
-                log::error!("[wallhaven] 获取已有ID失败: {e}");
-                return;
+        let existing_ids = {
+            let db_path = config.wallhaven_db_path.clone();
+            match tokio::task::spawn_blocking(move || db::get_existing_wallhaven_ids(&db_path))
+                .await
+            {
+                Ok(Ok(ids)) => ids,
+                Ok(Err(e)) => {
+                    log::error!("[wallhaven] 获取已有ID失败: {e}");
+                    return;
+                }
+                Err(e) => {
+                    log::error!("[wallhaven] 获取已有ID任务异常: {e}");
+                    return;
+                }
             }
         };
         let existing_set: HashSet<String> = existing_ids.into_iter().collect();
@@ -195,114 +217,141 @@ pub async fn start_wallhaven_download(
                 }
             }
             page += 1;
-            tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+            // 只有还需要继续翻页时才做节流等待，避免最后一批白等 2 秒。
+            if (collected.len() as u32) < target && page <= max_pages {
+                tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+            }
         }
 
         let total = collected.len() as u32;
         let mut success = 0u32;
 
-        let urls: Vec<String> = collected.iter().map(|img| img.path.clone()).collect();
-        let download_results = downloader::download_urls_concurrent(
-            &client,
-            &urls,
-            cancel.clone(),
-            config.download_concurrency,
-            3,
-        )
-        .await;
+        // 分批下载，限制同时驻留内存的原图数量；每批落盘后统一事务入库。
+        let chunk_size = (config.download_concurrency.max(1) as usize)
+            .saturating_mul(2)
+            .max(1);
+        let mut progress_throttle = ProgressThrottle::new();
+        let mut processed = 0usize;
+        for chunk in collected.chunks(chunk_size) {
+            let urls: Vec<String> = chunk.iter().map(|img| img.path.clone()).collect();
+            let download_results = downloader::download_urls_concurrent(
+                &client,
+                &urls,
+                cancel.clone(),
+                config.download_concurrency,
+                3,
+            )
+            .await;
 
-        for (i, img) in collected.iter().enumerate() {
-            if cancel.load(Ordering::Relaxed) {
-                log::info!(
-                    "[wallhaven] download cancelled (success={}/{})",
-                    success,
-                    total
-                );
-                let _ = app_clone.emit(
-                    "download-complete",
-                    DownloadComplete {
-                        source: "wallhaven".into(),
+            let mut db_batch: Vec<(String, String, String, String, String, String)> = Vec::new();
+            let mut saved_files: Vec<(String, String)> = Vec::new();
+
+            for (local_i, img) in chunk.iter().enumerate() {
+                let i = processed + local_i;
+                if cancel.load(Ordering::Relaxed) {
+                    log::info!(
+                        "[wallhaven] download cancelled (success={}/{})",
                         success,
-                        total,
-                        message: "下载已取消".to_string(),
-                    },
-                );
-                return;
-            }
+                        total
+                    );
+                    let _ = app_clone.emit(
+                        "download-complete",
+                        DownloadComplete {
+                            source: "wallhaven".into(),
+                            success,
+                            total,
+                            message: "下载已取消".to_string(),
+                        },
+                    );
+                    return;
+                }
 
-            let _ = app_clone.emit(
-                "download-progress",
-                DownloadProgress {
-                    source: "wallhaven".into(),
-                    done: i as u32,
-                    total,
-                    message: format!("正在处理 {} ({}/{})", img.id, i + 1, total),
-                },
-            );
+                if progress_throttle.should_emit(i + 1 == total as usize) {
+                    let _ = app_clone.emit(
+                        "download-progress",
+                        DownloadProgress {
+                            source: "wallhaven".into(),
+                            done: i as u32,
+                            total,
+                            message: format!("正在处理 {} ({}/{})", img.id, i + 1, total),
+                        },
+                    );
+                }
 
-            match &download_results[i] {
-                Ok((bytes, content_type)) => {
-                    let ext = downloader::get_file_extension(content_type, &img.path);
-                    let safe_id = img
-                        .id
-                        .chars()
-                        .filter(|c| c.is_alphanumeric())
-                        .collect::<String>();
-                    let filename = format!("wallhaven_{safe_id}.{ext}");
-                    let save_path = Path::new(&config.wallhaven_save_dir).join(&filename);
-                    let hash = downloader::compute_md5(bytes);
+                match &download_results[local_i] {
+                    Ok((bytes, content_type)) => {
+                        let ext = downloader::get_file_extension(content_type, &img.path);
+                        let safe_id = img
+                            .id
+                            .chars()
+                            .filter(|c| c.is_alphanumeric())
+                            .collect::<String>();
+                        let filename = format!("wallhaven_{safe_id}.{ext}");
+                        let save_path = Path::new(&config.wallhaven_save_dir).join(&filename);
+                        let hash = downloader::compute_md5(bytes);
 
-                    let thumb_dir = config.wallhaven_thumb_dir();
-                    if let Some(thumb_handle) = save_image(
-                        &save_path,
-                        bytes,
-                        &thumb_dir,
-                        &filename,
-                        config.thumbnail_dpr,
-                    )
-                    .await
-                    {
-                        let db_path = config.wallhaven_db_path.clone();
-                        let img_id = img.id.clone();
-                        let filename_for_db = filename.clone();
-                        let hash_for_db = hash.clone();
-                        let img_path = img.path.clone();
-                        let img_url = img.short_url.clone();
-                        let img_res = img.resolution.clone();
-
-                        let db_handle = tokio::task::spawn_blocking(move || {
-                            db::insert_wallhaven_image(
-                                &db_path,
-                                &img_id,
-                                &filename_for_db,
-                                &hash_for_db,
-                                &img_path,
-                                &img_url,
-                                &img_res,
-                            )
-                            .unwrap_or(false)
-                        });
-
-                        let (_, inserted) = tokio::join!(thumb_handle, db_handle);
-                        let inserted = inserted.unwrap_or(false);
-
-                        if inserted {
-                            success += 1;
-                            let _ = app_clone.emit(
-                                "image-downloaded",
-                                ImageDownloaded {
-                                    source: "wallhaven".into(),
-                                    name: filename.clone(),
-                                    path: save_path.to_string_lossy().to_string(),
-                                },
-                            );
+                        match save_image(&save_path, bytes).await {
+                            Ok(()) => {
+                                db_batch.push((
+                                    img.id.clone(),
+                                    filename.clone(),
+                                    hash,
+                                    img.path.clone(),
+                                    img.short_url.clone(),
+                                    img.resolution.clone(),
+                                ));
+                                saved_files.push((
+                                    filename.clone(),
+                                    save_path.to_string_lossy().to_string(),
+                                ));
+                            }
+                            Err(e) => log::error!("[wallhaven] {}", e),
                         }
                     }
-                }
-                Err(e) => {
-                    log::error!("[wallhaven] download failed {}: {}", img.id, e);
+                    Err(e) => {
+                        log::error!("[wallhaven] download failed {}: {}", img.id, e);
+                    }
                 }
             }
+
+            if !db_batch.is_empty() {
+                let db_path = config.wallhaven_db_path.clone();
+                let batch_len = db_batch.len() as u64;
+                let (added, skipped, added_names) = match tokio::task::spawn_blocking(move || {
+                    db::insert_wallhaven_images_batch_detailed(&db_path, &db_batch)
+                })
+                .await
+                {
+                    Ok(Ok(res)) => res,
+                    Ok(Err(e)) => {
+                        log::error!("[wallhaven] 批量写入数据库失败: {e}");
+                        (0, batch_len, Vec::new())
+                    }
+                    Err(e) => {
+                        log::error!("[wallhaven] 批量写入数据库任务异常: {e}");
+                        (0, batch_len, Vec::new())
+                    }
+                };
+                success += added as u32;
+                if skipped > 0 {
+                    log::warn!("[wallhaven] 本批跳过重复记录 {} 条", skipped);
+                }
+                let added_names: HashSet<String> = added_names.into_iter().collect();
+                for (name, path) in saved_files {
+                    if added_names.contains(&name) {
+                        let _ = app_clone.emit(
+                            "image-downloaded",
+                            ImageDownloaded {
+                                source: "wallhaven".into(),
+                                name,
+                                path,
+                            },
+                        );
+                    }
+                }
+            }
+
+            processed += chunk.len();
         }
 
         log::info!(
@@ -331,6 +380,12 @@ pub async fn download_wallhaven_selected(
     images: Vec<WallhavenSelected>,
 ) -> Result<String, AppError> {
     log::info!("[CMD] download_wallhaven_selected: count={}", images.len());
+    if let Some(img) = images.iter().find(|img| !is_wallhaven_image_url(&img.path)) {
+        return Err(AppError::Other(format!(
+            "拒绝下载非 Wallhaven 域名: {}",
+            img.path
+        )));
+    }
     let config = crate::state::load_config(&state)?;
     let cancel = setup_cancel_flag(&state);
     let app_clone = app.clone();
@@ -345,113 +400,145 @@ pub async fn download_wallhaven_selected(
     tokio::spawn(async move {
         let _ = tokio::fs::create_dir_all(&config.wallhaven_save_dir).await;
 
-        let existing_ids = match db::get_existing_wallhaven_ids(&config.wallhaven_db_path) {
-            Ok(ids) => ids,
-            Err(e) => {
-                log::error!("[wallhaven] 获取已有ID失败: {e}");
-                return;
+        let existing_ids = {
+            let db_path = config.wallhaven_db_path.clone();
+            match tokio::task::spawn_blocking(move || db::get_existing_wallhaven_ids(&db_path))
+                .await
+            {
+                Ok(Ok(ids)) => ids,
+                Ok(Err(e)) => {
+                    log::error!("[wallhaven] 获取已有ID失败: {e}");
+                    return;
+                }
+                Err(e) => {
+                    log::error!("[wallhaven] 获取已有ID任务异常: {e}");
+                    return;
+                }
             }
         };
         let existing_set: HashSet<String> = existing_ids.into_iter().collect();
+        // 先把已存在的 ID 过滤掉，避免下载完成后再丢弃。
+        let pending: Vec<&WallhavenSelected> = images
+            .iter()
+            .filter(|img| !existing_set.contains(&img.id))
+            .collect();
+        let total = pending.len() as u32;
         let mut success = 0u32;
 
-        let urls: Vec<String> = images.iter().map(|img| img.path.clone()).collect();
-        let download_results = downloader::download_urls_concurrent(
-            &client,
-            &urls,
-            cancel.clone(),
-            config.download_concurrency,
-            3,
-        )
-        .await;
+        let chunk_size = (config.download_concurrency.max(1) as usize)
+            .saturating_mul(2)
+            .max(1);
+        let mut progress_throttle = ProgressThrottle::new();
+        let mut processed = 0usize;
+        for chunk in pending.chunks(chunk_size) {
+            let urls: Vec<String> = chunk.iter().map(|img| img.path.clone()).collect();
+            let download_results = downloader::download_urls_concurrent(
+                &client,
+                &urls,
+                cancel.clone(),
+                config.download_concurrency,
+                3,
+            )
+            .await;
 
-        for (i, img) in images.iter().enumerate() {
-            if cancel.load(Ordering::Relaxed) {
-                log::info!(
-                    "[wallhaven] download cancelled (success={}/{})",
-                    success,
-                    total
-                );
-                let _ = app_clone.emit(
-                    "download-complete",
-                    DownloadComplete {
-                        source: "wallhaven".into(),
+            let mut db_batch: Vec<(String, String, String, String, String, String)> = Vec::new();
+            let mut saved_files: Vec<(String, String)> = Vec::new();
+
+            for (local_i, img) in chunk.iter().enumerate() {
+                let i = processed + local_i;
+                if cancel.load(Ordering::Relaxed) {
+                    log::info!(
+                        "[wallhaven] download cancelled (success={}/{})",
                         success,
-                        total,
-                        message: "下载已取消".to_string(),
-                    },
-                );
-                return;
+                        total
+                    );
+                    let _ = app_clone.emit(
+                        "download-complete",
+                        DownloadComplete {
+                            source: "wallhaven".into(),
+                            success,
+                            total,
+                            message: "下载已取消".to_string(),
+                        },
+                    );
+                    return;
+                }
+
+                if progress_throttle.should_emit(i + 1 == total as usize) {
+                    let _ = app_clone.emit(
+                        "download-progress",
+                        DownloadProgress {
+                            source: "wallhaven".into(),
+                            done: i as u32,
+                            total,
+                            message: format!("正在下载 {} ({}/{})", img.id, i + 1, total),
+                        },
+                    );
+                }
+
+                if let Ok((bytes, content_type)) = &download_results[local_i] {
+                    let ext = downloader::get_file_extension(content_type, &img.path);
+                    let safe_id: String = img.id.chars().filter(|c| c.is_alphanumeric()).collect();
+                    let filename = format!("wallhaven_{safe_id}.{ext}");
+                    let save_path = Path::new(&config.wallhaven_save_dir).join(&filename);
+                    let hash = downloader::compute_md5(bytes);
+
+                    match save_image(&save_path, bytes).await {
+                        Ok(()) => {
+                            db_batch.push((
+                                img.id.clone(),
+                                filename.clone(),
+                                hash,
+                                img.path.clone(),
+                                img.short_url.clone(),
+                                img.resolution.clone(),
+                            ));
+                            saved_files
+                                .push((filename.clone(), save_path.to_string_lossy().to_string()));
+                        }
+                        Err(e) => log::error!("[wallhaven] {}", e),
+                    }
+                }
             }
 
-            if existing_set.contains(&img.id) {
-                continue;
-            }
-
-            let _ = app_clone.emit(
-                "download-progress",
-                DownloadProgress {
-                    source: "wallhaven".into(),
-                    done: i as u32,
-                    total,
-                    message: format!("正在下载 {} ({}/{})", img.id, i + 1, total),
-                },
-            );
-
-            if let Ok((bytes, content_type)) = &download_results[i] {
-                let ext = downloader::get_file_extension(content_type, &img.path);
-                let safe_id: String = img.id.chars().filter(|c| c.is_alphanumeric()).collect();
-                let filename = format!("wallhaven_{safe_id}.{ext}");
-                let save_path = Path::new(&config.wallhaven_save_dir).join(&filename);
-                let hash = downloader::compute_md5(bytes);
-
-                let thumb_dir = config.wallhaven_thumb_dir();
-                if let Some(thumb_handle) = save_image(
-                    &save_path,
-                    bytes,
-                    &thumb_dir,
-                    &filename,
-                    config.thumbnail_dpr,
-                )
+            if !db_batch.is_empty() {
+                let db_path = config.wallhaven_db_path.clone();
+                let batch_len = db_batch.len() as u64;
+                let (added, skipped, added_names) = match tokio::task::spawn_blocking(move || {
+                    db::insert_wallhaven_images_batch_detailed(&db_path, &db_batch)
+                })
                 .await
                 {
-                    let db_path = config.wallhaven_db_path.clone();
-                    let img_id = img.id.clone();
-                    let filename_for_db = filename.clone();
-                    let hash_for_db = hash.clone();
-                    let img_path = img.path.clone();
-                    let img_short_url = img.short_url.clone();
-                    let img_resolution = img.resolution.clone();
-
-                    let db_handle = tokio::task::spawn_blocking(move || {
-                        db::insert_wallhaven_image(
-                            &db_path,
-                            &img_id,
-                            &filename_for_db,
-                            &hash_for_db,
-                            &img_path,
-                            &img_short_url,
-                            &img_resolution,
-                        )
-                        .unwrap_or(false)
-                    });
-
-                    let (_, inserted) = tokio::join!(thumb_handle, db_handle);
-                    let inserted = inserted.unwrap_or(false);
-
-                    if inserted {
-                        success += 1;
+                    Ok(Ok(res)) => res,
+                    Ok(Err(e)) => {
+                        log::error!("[wallhaven] 批量写入数据库失败: {e}");
+                        (0, batch_len, Vec::new())
+                    }
+                    Err(e) => {
+                        log::error!("[wallhaven] 批量写入数据库任务异常: {e}");
+                        (0, batch_len, Vec::new())
+                    }
+                };
+                success += added as u32;
+                if skipped > 0 {
+                    log::warn!("[wallhaven] 本批跳过重复记录 {} 条", skipped);
+                }
+                let added_names: HashSet<String> = added_names.into_iter().collect();
+                for (name, path) in saved_files {
+                    if added_names.contains(&name) {
                         let _ = app_clone.emit(
                             "image-downloaded",
                             ImageDownloaded {
                                 source: "wallhaven".into(),
-                                name: filename,
-                                path: save_path.to_string_lossy().to_string(),
+                                name,
+                                path,
                             },
                         );
                     }
                 }
             }
+
+            processed += chunk.len();
         }
 
         log::info!(
@@ -471,4 +558,24 @@ pub async fn download_wallhaven_selected(
     });
 
     Ok(format!("即将下载 {count} 张壁纸"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_is_wallhaven_image_url() {
+        assert!(is_wallhaven_image_url(
+            "https://wallhaven.cc/images/abc.jpg"
+        ));
+        assert!(is_wallhaven_image_url(
+            "https://w.wallhaven.cc/full/ab/abc.jpg"
+        ));
+        assert!(is_wallhaven_image_url("http://wallhaven.cc/images/abc.jpg"));
+        assert!(!is_wallhaven_image_url(
+            "https://evil.com/wallhaven.cc/x.jpg"
+        ));
+        assert!(!is_wallhaven_image_url("ftp://wallhaven.cc/x.jpg"));
+    }
 }

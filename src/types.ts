@@ -168,12 +168,6 @@ export interface ActiveWallpaper {
   path: string | null;
 }
 
-export interface FileInfo {
-  name: string;
-  path: string;
-  size: number;
-}
-
 export interface MonitorInfo {
   id: string;
   name: string;
