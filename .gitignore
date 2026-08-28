@@ -26,6 +26,10 @@ dist-ssr
 # Claude Code & tooling data
 .tools/
 
+# 技能工具的运行时副本与状态（impeccable 等，属本机工具数据）
+.claude/
+.impeccable/
+
 # Documentation is now in docs/
 DESIGN.md
 
