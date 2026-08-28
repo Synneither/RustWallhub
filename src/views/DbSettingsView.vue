@@ -1,20 +1,25 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from "vue";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
-import type { AppConfig, ImageRecord, OrphanFile } from "../types";
+import type { AppConfig, ImageRecord, OrphanFile, SyncImportResult } from "../types";
 import {
   adoptOrphanFiles,
   checkDatabases,
   cleanThumbnails,
   deleteOrphanFiles,
   downloadMissingImages,
+  exportSnapshots,
+  importSnapshots,
   listDatabaseImages,
   listMissingImages,
   listOrphanFiles,
   markDislikedFiles,
+  ossSyncDownload,
+  ossSyncUpload,
   recoverDatabaseFiles,
   restoreAllFiles,
   saveSettings,
+  testOssConfig,
 } from "../utils/api";
 import { appState, askConfirm, dbReady, ensureDatabases, refreshStats, toast, toastError } from "../stores/app";
 import { requiredRule } from "../utils/rules";
@@ -29,6 +34,11 @@ const savingDir = ref(false);
 
 onMounted(async () => {
   dbDir.value = appState.config?.db_dir ?? "";
+  ossEndpoint.value = appState.config?.oss_endpoint ?? "";
+  ossBucket.value = appState.config?.oss_bucket ?? "";
+  ossAccessKeyId.value = appState.config?.oss_access_key_id ?? "";
+  ossAccessKeySecret.value = appState.config?.oss_access_key_secret ?? "";
+  ossPrefix.value = appState.config?.oss_prefix ?? "";
   await reloadAll();
 });
 
@@ -214,6 +224,150 @@ async function onCleanThumbnails() {
   } catch (e) {
     toastError(e);
   }
+}
+
+/* ════ 数据同步（快照导出/导入 + OSS） ════ */
+const ossEndpoint = ref("");
+const ossBucket = ref("");
+const ossAccessKeyId = ref("");
+const ossAccessKeySecret = ref("");
+const ossPrefix = ref("");
+const savingOss = ref(false);
+const testingOss = ref(false);
+const exporting = ref(false);
+const importing = ref(false);
+const uploading = ref(false);
+const cloudDownloading = ref(false);
+
+async function onSaveOss() {
+  if (!appState.config || savingOss.value) return;
+  savingOss.value = true;
+  try {
+    const next: AppConfig = {
+      ...appState.config,
+      oss_endpoint: ossEndpoint.value.trim(),
+      oss_bucket: ossBucket.value.trim(),
+      oss_access_key_id: ossAccessKeyId.value.trim(),
+      oss_access_key_secret: ossAccessKeySecret.value.trim(),
+      oss_prefix: ossPrefix.value.trim(),
+    };
+    await saveSettings(next);
+    appState.config = next;
+    toast("OSS 配置已保存", "success");
+  } catch (e) {
+    toastError(e);
+  } finally {
+    savingOss.value = false;
+  }
+}
+
+async function onTestOss() {
+  if (testingOss.value) return;
+  testingOss.value = true;
+  try {
+    const msg = await testOssConfig();
+    toast(msg, "success");
+  } catch (e) {
+    toastError(e);
+  } finally {
+    testingOss.value = false;
+  }
+}
+
+async function onExport() {
+  if (exporting.value) return;
+  try {
+    const dir = await openDialog({
+      directory: true,
+      title: "选择快照导出目录",
+      defaultPath: appState.config?.db_dir || undefined,
+    });
+    if (typeof dir !== "string") return;
+    exporting.value = true;
+    const r = await exportSnapshots(dir);
+    const names = [r.wallhaven ? "Wallhaven" : null, r.reddit ? "Reddit" : null]
+      .filter(Boolean)
+      .join("、");
+    toast(`已导出 ${names} 快照到 ${dir}`, "success");
+  } catch (e) {
+    toastError(e);
+  } finally {
+    exporting.value = false;
+  }
+}
+
+async function onImport() {
+  if (importing.value) return;
+  try {
+    const dir = await openDialog({
+      directory: true,
+      title: "选择包含快照文件的目录",
+      defaultPath: appState.config?.db_dir || undefined,
+    });
+    if (typeof dir !== "string") return;
+
+    const whPath = `${dir}/wallhaven_images.db`;
+    const rdPath = `${dir}/reddit_images.db`;
+    const ok = await askConfirm(
+      "从快照导入",
+      `将合并 ${dir} 下的快照到本地数据库：\n新记录会被插入，快照中标记喜欢的记录会恢复本地同条记录。\n本地已有数据不会被删除。是否继续？`,
+      { confirmText: "导入" },
+    );
+    if (!ok) return;
+
+    importing.value = true;
+    const r = await importSnapshots(whPath, rdPath);
+    toast(importResultText(r), "success");
+    await reloadAll();
+  } catch (e) {
+    toastError(e);
+  } finally {
+    importing.value = false;
+  }
+}
+
+async function onUpload() {
+  if (uploading.value) return;
+  uploading.value = true;
+  try {
+    const msg = await ossSyncUpload();
+    toast(msg, "success");
+  } catch (e) {
+    toastError(e);
+  } finally {
+    uploading.value = false;
+  }
+}
+
+async function onCloudDownload() {
+  if (cloudDownloading.value) return;
+  const ok = await askConfirm(
+    "从云端拉取",
+    "将下载 OSS 上的快照并合并到本地数据库：\n新记录会被插入，云端标记喜欢的记录会恢复本地同条记录。\n本地已有数据不会被删除。是否继续？",
+    { confirmText: "拉取并合并" },
+  );
+  if (!ok) return;
+  cloudDownloading.value = true;
+  try {
+    const r = await ossSyncDownload();
+    toast(importResultText(r), "success");
+    await reloadAll();
+  } catch (e) {
+    toastError(e);
+  } finally {
+    cloudDownloading.value = false;
+  }
+}
+
+function importResultText(r: SyncImportResult): string {
+  const parts: string[] = [];
+  if (r.wallhaven) {
+    parts.push(`Wallhaven 新增 ${r.wallhaven.inserted} 条、恢复 ${r.wallhaven.loved} 条`);
+  }
+  if (r.reddit) {
+    parts.push(`Reddit 新增 ${r.reddit.inserted} 条、恢复 ${r.reddit.loved} 条`);
+  }
+  return parts.length > 0 ? parts.join("；") : "没有可导入的内容";
 }
 
 async function onRestoreAll() {
@@ -505,6 +659,77 @@ const tab = ref<"missing" | "orphan" | "records">("missing");
           </v-btn>
         </div>
       </div>
+
+      <!-- 数据同步 -->
+      <div class="panel-card animate-in stagger-4">
+        <div class="panel-card__title">
+          <v-icon icon="mdi-cloud-sync-outline" size="18" color="primary" />数据同步
+        </div>
+        <p class="sync-desc text-body-2">
+          快照导出为单文件（VACUUM INTO），合并按记录进行：新记录插入、喜欢的记录恢复，本地数据不会被删除。多设备同步推荐上传 OSS 后在另一台电脑拉取。
+        </p>
+
+        <div class="sync-grid">
+          <v-text-field
+            v-model="ossEndpoint"
+            label="OSS Endpoint"
+            placeholder="oss-cn-beijing.aliyuncs.com"
+            density="compact"
+            class="settings-field"
+          />
+          <v-text-field
+            v-model="ossBucket"
+            label="Bucket"
+            density="compact"
+            class="settings-field"
+          />
+          <v-text-field
+            v-model="ossAccessKeyId"
+            label="AccessKey ID"
+            hint="建议使用 RAM 子账号，仅授权本前缀读写"
+            persistent-hint
+            density="compact"
+            class="settings-field"
+          />
+          <v-text-field
+            v-model="ossAccessKeySecret"
+            label="AccessKey Secret"
+            type="password"
+            density="compact"
+            class="settings-field"
+          />
+          <v-text-field
+            v-model="ossPrefix"
+            label="对象前缀（可选）"
+            placeholder="rustwallhub/"
+            density="compact"
+            class="settings-field"
+          />
+        </div>
+        <div class="sync-oss-actions">
+          <v-btn color="primary" variant="flat" :loading="savingOss" @click="onSaveOss">保存配置</v-btn>
+          <v-btn variant="tonal" prepend-icon="mdi-lan-check" :loading="testingOss" @click="onTestOss">
+            测试连接
+          </v-btn>
+        </div>
+
+        <v-divider class="my-4" />
+
+        <div class="maint-actions">
+          <v-btn variant="tonal" prepend-icon="mdi-file-export-outline" :loading="exporting" @click="onExport">
+            导出到文件夹
+          </v-btn>
+          <v-btn variant="tonal" prepend-icon="mdi-file-import-outline" :loading="importing" @click="onImport">
+            从文件夹导入
+          </v-btn>
+          <v-btn variant="tonal" prepend-icon="mdi-cloud-upload-outline" :loading="uploading" @click="onUpload">
+            上传到云端
+          </v-btn>
+          <v-btn variant="tonal" prepend-icon="mdi-cloud-download-outline" :loading="cloudDownloading" @click="onCloudDownload">
+            从云端拉取并合并
+          </v-btn>
+        </div>
+      </div>
     </template>
   </div>
 </template>
@@ -551,5 +776,19 @@ const tab = ref<"missing" | "orphan" | "records">("missing");
   display: flex;
   gap: var(--space-3);
   flex-wrap: wrap;
+}
+.sync-desc {
+  color: var(--text-secondary);
+  margin-bottom: var(--space-3);
+}
+.sync-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: var(--space-2) var(--space-3);
+}
+.sync-oss-actions {
+  display: flex;
+  gap: var(--space-3);
+  margin-top: var(--space-2);
 }
 </style>

@@ -36,6 +36,12 @@ export interface AppConfig {
   request_timeout: number; // 5-120 秒
   auto_update: boolean;
   proxy_url: string;
+  // OSS 云同步
+  oss_endpoint: string; // 如 "oss-cn-beijing.aliyuncs.com"
+  oss_bucket: string;
+  oss_access_key_id: string; // RAM 子账号，建议最小权限
+  oss_access_key_secret: string;
+  oss_prefix: string; // 对象前缀，如 "rustwallhub/"
 }
 
 /* ── settings 模块 ── */
@@ -160,6 +166,24 @@ export interface OrphanFile {
   path: string;
   size: number;
   source: string;
+}
+
+/* ── sync 模块 ── */
+
+/** 快照导入合并结果（单库） */
+export interface ImportStats {
+  inserted: number; // 新插入记录数
+  loved: number; // 由快照恢复为 love=1 的记录数
+}
+
+export interface SyncImportResult {
+  wallhaven: ImportStats | null;
+  reddit: ImportStats | null;
+}
+
+export interface SyncExportResult {
+  wallhaven: string | null; // 导出文件路径
+  reddit: string | null;
 }
 
 /* ── system / wallpaper ── */

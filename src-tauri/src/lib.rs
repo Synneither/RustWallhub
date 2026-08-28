@@ -2,6 +2,7 @@ mod commands;
 mod config;
 mod db;
 mod downloader;
+mod oss;
 mod reddit;
 mod state;
 mod thumbnail;
@@ -146,6 +147,12 @@ pub fn run() {
             mark_disliked_files,
             restore_all_files,
             list_missing_images,
+            // sync
+            export_snapshots,
+            import_snapshots,
+            oss_sync_upload,
+            oss_sync_download,
+            test_oss_config,
             // system
             get_active_wallpaper,
             // wallpaper (from wallpaper module)

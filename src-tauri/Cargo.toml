@@ -29,6 +29,10 @@ tokio = { version = "1", features = ["full"] }
 md5 = "0.7"
 dirs = "6"
 thiserror = "2"
+hmac = "0.12"
+sha1 = "0.10"
+base64 = "0.22"
+httpdate = "1"
 image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp", "gif"] }
 rayon = "1"
 log = "0.4"

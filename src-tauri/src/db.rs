@@ -241,6 +241,106 @@ pub fn init_reddit_db(db_path: &str) -> SqlResult<()> {
     ensure_love_column(&conn)
 }
 
+// ---------------------------------------------------------------------------
+// 快照导出 / 导入合并（多设备同步）
+// ---------------------------------------------------------------------------
+
+/// 快照导入合并结果
+#[derive(Clone, Copy, Debug, Default, Serialize)]
+pub struct ImportStats {
+    /// 新插入的记录数（本地不存在）
+    pub inserted: i64,
+    /// 由快照恢复为 love=1 的本地记录数
+    pub loved: i64,
+}
+
+/// 导出数据库快照到 `snapshot_path`（VACUUM INTO：原子写出、自带 checkpoint、碎片整理）。
+/// 目标文件已存在时会被删除后重建。
+pub fn export_snapshot(db_path: &str, snapshot_path: &str) -> SqlResult<()> {
+    fn io_err(e: std::io::Error) -> rusqlite::Error {
+        rusqlite::Error::SqliteFailure(
+            rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_IOERR),
+            Some(e.to_string()),
+        )
+    }
+    if let Some(parent) = Path::new(snapshot_path).parent() {
+        std::fs::create_dir_all(parent).map_err(io_err)?;
+    }
+    // VACUUM INTO 要求目标文件不存在
+    if Path::new(snapshot_path).exists() {
+        std::fs::remove_file(snapshot_path).map_err(io_err)?;
+    }
+    with_cached_connection(db_path, |conn| {
+        conn.execute("VACUUM INTO ?1", rusqlite::params![snapshot_path])?;
+        Ok(())
+    })
+}
+
+/// 从 Wallhaven 快照合并导入（ATTACH + 记录级合并）。
+/// 合并语义：快照中 love=1 的记录会把本地同 id 记录恢复为 love=1；
+/// 本地不存在的记录按原样插入；其余本地数据不动。
+pub fn import_wallhaven_snapshot(db_path: &str, snapshot_path: &str) -> SqlResult<ImportStats> {
+    with_cached_connection(db_path, |conn| {
+        attach_guard(conn, snapshot_path, |conn| {
+            let loved = conn.execute(
+                "UPDATE main.images SET love = 1
+                 WHERE love = 0
+                   AND EXISTS (SELECT 1 FROM incoming.images i
+                               WHERE i.wallhaven_id = main.images.wallhaven_id
+                                 AND i.love = 1)",
+                [],
+            )? as i64;
+            let inserted = conn.execute(
+                "INSERT OR IGNORE INTO main.images
+                    (wallhaven_id, name, hash, url, source_url, resolution, love, created_at)
+                 SELECT wallhaven_id, name, hash, url, source_url, resolution, love, created_at
+                 FROM incoming.images",
+                [],
+            )? as i64;
+            Ok(ImportStats { inserted, loved })
+        })
+    })
+}
+
+/// 从 Reddit 快照合并导入（合并键为 hash/url 唯一约束）。
+pub fn import_reddit_snapshot(db_path: &str, snapshot_path: &str) -> SqlResult<ImportStats> {
+    with_cached_connection(db_path, |conn| {
+        attach_guard(conn, snapshot_path, |conn| {
+            let loved = conn.execute(
+                "UPDATE main.images SET love = 1
+                 WHERE love = 0
+                   AND EXISTS (SELECT 1 FROM incoming.images i
+                               WHERE i.hash = main.images.hash
+                                 AND i.love = 1)",
+                [],
+            )? as i64;
+            let inserted = conn.execute(
+                "INSERT OR IGNORE INTO main.images
+                    (name, hash, url, title, permalink, love, created_at)
+                 SELECT name, hash, url, title, permalink, love, created_at
+                 FROM incoming.images",
+                [],
+            )? as i64;
+            Ok(ImportStats { inserted, loved })
+        })
+    })
+}
+
+/// ATTACH 快照库执行闭包，退出前保证 DETACH（即使闭包出错）。
+fn attach_guard<T>(
+    conn: &mut Connection,
+    snapshot_path: &str,
+    f: impl FnOnce(&mut Connection) -> SqlResult<T>,
+) -> SqlResult<T> {
+    conn.execute(
+        "ATTACH DATABASE ?1 AS incoming",
+        rusqlite::params![snapshot_path],
+    )?;
+    let result = f(conn);
+    let _ = conn.execute("DETACH DATABASE incoming", []);
+    result
+}
+
 pub fn get_existing_wallhaven_ids(db_path: &str) -> SqlResult<Vec<String>> {
     let ids = with_cached_connection(db_path, |conn| {
         let mut stmt = conn.prepare("SELECT wallhaven_id FROM images")?;
@@ -1487,5 +1587,155 @@ mod tests {
         let img_dir = TempDir::new().unwrap();
         let stats = get_db_stats(db.path(), &img_dir.path().to_string_lossy()).unwrap();
         assert_eq!(stats.total, 0);
+    }
+
+    /* ── 快照导出 / 导入合并 ── */
+
+    #[test]
+    fn test_export_snapshot_creates_valid_db() {
+        let db = TestDb::wallhaven();
+        insert_wallhaven_images_batch(
+            db.path(),
+            &[
+                (
+                    "id1".into(),
+                    "a.jpg".into(),
+                    "h1".into(),
+                    "u1".into(),
+                    "s1".into(),
+                    "1920x1080".into(),
+                ),
+            ],
+        )
+        .unwrap();
+
+        let dir = TempDir::new().unwrap();
+        let snap = dir.path().join("snap.db").to_string_lossy().to_string();
+        export_snapshot(db.path(), &snap).unwrap();
+        assert!(dir.path().join("snap.db").exists());
+
+        // 快照本身可读且包含数据
+        let count: i64 = Connection::open(&snap)
+            .unwrap()
+            .query_row("SELECT COUNT(*) FROM images", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(count, 1);
+
+        // 覆盖已存在的目标文件也能成功
+        export_snapshot(db.path(), &snap).unwrap();
+    }
+
+    #[test]
+    fn test_import_wallhaven_snapshot_merge() {
+        // 本地库：id1 正常、id2 被标记 dislike
+        let db = TestDb::wallhaven();
+        insert_wallhaven_images_batch(
+            db.path(),
+            &[
+                (
+                    "id1".into(),
+                    "a.jpg".into(),
+                    "h1".into(),
+                    "u1".into(),
+                    "s1".into(),
+                    "1920x1080".into(),
+                ),
+                (
+                    "id2".into(),
+                    "b.jpg".into(),
+                    "h2".into(),
+                    "u2".into(),
+                    "s2".into(),
+                    "1920x1080".into(),
+                ),
+            ],
+        )
+        .unwrap();
+        db.conn()
+            .execute("UPDATE images SET love = 0 WHERE wallhaven_id = 'id2'", [])
+            .unwrap();
+
+        // 快照库：id2 love=1（另一台机器上还喜欢）、id3 新记录、id1 也存在
+        let snap_dir = TempDir::new().unwrap();
+        let snap = snap_dir.path().join("snap.db").to_string_lossy().to_string();
+        init_wallhaven_db(&snap).unwrap();
+        let snap_conn = Connection::open(&snap).unwrap();
+        for (wid, name, hash, love) in [("id1", "a.jpg", "h1", 1), ("id2", "b.jpg", "h2", 1), ("id3", "c.jpg", "h3", 1)] {
+            snap_conn
+                .execute(
+                    "INSERT INTO images (wallhaven_id, name, hash, url, source_url, resolution, love)
+                     VALUES (?1, ?2, ?3, ?4, ?5, '1080p', ?6)",
+                    rusqlite::params![wid, name, hash, format!("u-{wid}"), format!("s-{wid}"), love],
+                )
+                .unwrap();
+        }
+
+        let stats = import_wallhaven_snapshot(db.path(), &snap).unwrap();
+        assert_eq!(stats.inserted, 1, "只应插入 id3");
+        assert_eq!(stats.loved, 1, "id2 应被恢复为 love=1");
+
+        let conn = db.conn();
+        let (love2, total): (i64, i64) = conn
+            .query_row(
+                "SELECT
+                    (SELECT love FROM images WHERE wallhaven_id = 'id2'),
+                    (SELECT COUNT(*) FROM images)",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(love2, 1);
+        assert_eq!(total, 3);
+    }
+
+    #[test]
+    fn test_import_reddit_snapshot_merge() {
+        let db = TestDb::reddit();
+        db.conn()
+            .execute(
+                "INSERT INTO images (name, hash, url) VALUES ('a.jpg', 'h1', 'u1')",
+                [],
+            )
+            .unwrap();
+        db.conn()
+            .execute("UPDATE images SET love = 0 WHERE hash = 'h1'", [])
+            .unwrap();
+
+        let snap_dir = TempDir::new().unwrap();
+        let snap = snap_dir.path().join("snap.db").to_string_lossy().to_string();
+        init_reddit_db(&snap).unwrap();
+        Connection::open(&snap)
+            .unwrap()
+            .execute(
+                "INSERT INTO images (name, hash, url, love) VALUES ('a.jpg', 'h1', 'u1', 1), ('b.jpg', 'h2', 'u2', 1)",
+                [],
+            )
+            .unwrap();
+
+        let stats = import_reddit_snapshot(db.path(), &snap).unwrap();
+        assert_eq!(stats.inserted, 1);
+        assert_eq!(stats.loved, 1);
+
+        let (love1, total): (i64, i64) = db
+            .conn()
+            .query_row(
+                "SELECT (SELECT love FROM images WHERE hash = 'h1'), (SELECT COUNT(*) FROM images)",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(love1, 1);
+        assert_eq!(total, 2);
+    }
+
+    #[test]
+    fn test_import_snapshot_rejects_non_database_file() {
+        let db = TestDb::wallhaven();
+        let dir = TempDir::new().unwrap();
+        let bogus = dir.path().join("bogus.db");
+        std::fs::write(&bogus, "not a database").unwrap();
+
+        let result = import_wallhaven_snapshot(db.path(), &bogus.to_string_lossy());
+        assert!(result.is_err(), "导入非数据库文件应报错");
     }
 }

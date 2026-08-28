@@ -74,6 +74,22 @@ pub struct AppConfig {
     /// HTTP/HTTPS 代理地址 (例如 "http://127.0.0.1:7890", 空字符串表示不使用代理)
     #[serde(default)]
     pub proxy_url: String,
+    // --- OSS 云同步 ---
+    /// OSS Endpoint (例如 "oss-cn-beijing.aliyuncs.com", 空字符串表示未配置)
+    #[serde(default)]
+    pub oss_endpoint: String,
+    /// OSS Bucket 名称
+    #[serde(default)]
+    pub oss_bucket: String,
+    /// RAM 子账号 AccessKey ID (建议只授权本应用前缀的读写)
+    #[serde(default)]
+    pub oss_access_key_id: String,
+    /// RAM 子账号 AccessKey Secret
+    #[serde(default)]
+    pub oss_access_key_secret: String,
+    /// 对象前缀 (例如 "rustwallhub/", 可留空)
+    #[serde(default)]
+    pub oss_prefix: String,
 }
 
 fn default_reddit_url() -> String {
@@ -234,6 +250,11 @@ impl Default for AppConfig {
             request_timeout: 30,
             auto_update: true,
             proxy_url: String::new(),
+            oss_endpoint: String::new(),
+            oss_bucket: String::new(),
+            oss_access_key_id: String::new(),
+            oss_access_key_secret: String::new(),
+            oss_prefix: String::new(),
         }
     }
 }

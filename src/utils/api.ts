@@ -21,6 +21,8 @@ import type {
   SlideshowTickPayload,
   Source,
   StatsResponse,
+  SyncExportResult,
+  SyncImportResult,
   ThumbnailBatch,
   UpdateInfo,
   UpdateProgressPayload,
@@ -144,6 +146,27 @@ export const restoreAllFiles = (source: Source) =>
 
 export const listMissingImages = (source: Source) =>
   invoke<ImageRecord[]>("list_missing_images", { source });
+
+/* ════════════ sync ════════════ */
+
+export const exportSnapshots = (dir: string) =>
+  invoke<SyncExportResult>("export_snapshots", { dir });
+
+export const importSnapshots = (
+  wallhavenPath: string | null,
+  redditPath: string | null,
+) =>
+  invoke<SyncImportResult>("import_snapshots", {
+    wallhavenPath,
+    redditPath,
+  });
+
+export const ossSyncUpload = () => invoke<string>("oss_sync_upload");
+
+export const ossSyncDownload = () =>
+  invoke<SyncImportResult>("oss_sync_download");
+
+export const testOssConfig = () => invoke<string>("test_oss_config");
 
 /* ════════════ system ════════════ */
 
