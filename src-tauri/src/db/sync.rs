@@ -106,4 +106,3 @@ fn attach_guard<T>(
     let _ = conn.execute("DETACH DATABASE incoming", []);
     result
 }
-

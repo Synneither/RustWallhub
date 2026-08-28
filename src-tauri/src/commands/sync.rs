@@ -205,7 +205,9 @@ pub async fn run_oss_upload(state: &AppState) -> Result<String, AppError> {
 
 /// 从 OSS 拉取快照并合并导入到本地两个库。
 #[tauri::command]
-pub async fn oss_sync_download(state: tauri::State<'_, AppState>) -> Result<SyncImportResult, AppError> {
+pub async fn oss_sync_download(
+    state: tauri::State<'_, AppState>,
+) -> Result<SyncImportResult, AppError> {
     log::info!("[CMD] oss_sync_download");
     run_oss_download(&state).await
 }
@@ -225,7 +227,9 @@ pub async fn run_oss_download(state: &AppState) -> Result<SyncImportResult, AppE
     let wh_exists = oss::head_object(&client, &oss, &wh_key).await?;
     let rd_exists = oss::head_object(&client, &oss, &rd_key).await?;
     if !wh_exists && !rd_exists {
-        return Err(AppError::Other("云端没有任何快照，请先在其他电脑上上传".into()));
+        return Err(AppError::Other(
+            "云端没有任何快照，请先在其他电脑上上传".into(),
+        ));
     }
 
     let wh_bytes = if wh_exists {
@@ -327,7 +331,10 @@ pub fn format_import_result(r: &SyncImportResult) -> String {
         ));
     }
     if let Some(s) = r.reddit {
-        parts.push(format!("Reddit 新增 {} 条、恢复 {} 条", s.inserted, s.loved));
+        parts.push(format!(
+            "Reddit 新增 {} 条、恢复 {} 条",
+            s.inserted, s.loved
+        ));
     }
     if parts.is_empty() {
         "没有可导入的内容".to_string()
@@ -384,11 +391,8 @@ pub async fn run_exit_tasks(handle: tauri::AppHandle) {
     }
 
     log::info!("[sync] 退出自动上传开始");
-    let result = tokio::time::timeout(
-        std::time::Duration::from_secs(15),
-        run_oss_upload(&state),
-    )
-    .await;
+    let result =
+        tokio::time::timeout(std::time::Duration::from_secs(15), run_oss_upload(&state)).await;
     match result {
         Ok(Ok(msg)) => {
             log::info!("[sync] 退出自动上传完成：{msg}");

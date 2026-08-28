@@ -2,7 +2,7 @@
 //!
 //! 统计结果有短缓存（写入操作会主动失效），外部改动最多 10 秒后可见。
 
-use super::{with_cached_connection, DbStats, invalidate_stats, STATS_CACHE};
+use super::{invalidate_stats, with_cached_connection, DbStats, STATS_CACHE};
 use rusqlite::Result as SqlResult;
 use std::collections::HashSet;
 use std::time::Instant;

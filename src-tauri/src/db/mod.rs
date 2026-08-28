@@ -8,9 +8,9 @@
 pub mod records;
 pub mod stats;
 pub mod sync;
-pub mod thumbs;
 #[cfg(test)]
 mod tests;
+pub mod thumbs;
 
 // 子模块统一重导出，外部仍按 `db::xxx` 调用，拆分对调用方透明
 pub use records::*;
@@ -264,7 +264,6 @@ pub fn init_reddit_db(db_path: &str) -> SqlResult<()> {
     ensure_love_column(&conn)?;
     ensure_created_at_index(&conn)
 }
-
 
 // ---------------------------------------------------------------------------
 // 索引与退出维护

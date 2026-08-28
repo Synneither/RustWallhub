@@ -43,4 +43,3 @@ pub fn clean_stale_thumbnails(thumbnail_dir: &str, save_dir: &str) -> u64 {
     log::info!("[DB] clean_stale_thumbnails: cleaned={}", cleaned);
     cleaned
 }
-

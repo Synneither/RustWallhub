@@ -88,7 +88,10 @@ fn object_url(oss: &OssConfig, key: &str) -> String {
     format!("https://{}.{}/{key}", oss.bucket, oss.endpoint)
 }
 
-async fn check_status(resp: reqwest::Response, action: &str) -> Result<reqwest::Response, AppError> {
+async fn check_status(
+    resp: reqwest::Response,
+    action: &str,
+) -> Result<reqwest::Response, AppError> {
     let status = resp.status();
     if status.is_success() {
         return Ok(resp);
@@ -132,11 +135,7 @@ pub async fn put_object(
 }
 
 /// 下载对象（GET）。
-pub async fn get_object(
-    client: &Client,
-    oss: &OssConfig,
-    key: &str,
-) -> Result<Vec<u8>, AppError> {
+pub async fn get_object(client: &Client, oss: &OssConfig, key: &str) -> Result<Vec<u8>, AppError> {
     let date = httpdate::fmt_http_date(std::time::SystemTime::now());
     let resource = format!("/{}/{}", oss.bucket, key);
     let auth = authorization(oss, "GET", "", &date, &resource);
@@ -200,8 +199,20 @@ mod tests {
     #[test]
     fn test_authorization_is_deterministic() {
         let oss = test_oss();
-        let a = authorization(&oss, "PUT", "application/octet-stream", "Thu, 01 Jan 2026 00:00:00 GMT", "/mybucket/rustwallhub/wallhaven_images.db");
-        let b = authorization(&oss, "PUT", "application/octet-stream", "Thu, 01 Jan 2026 00:00:00 GMT", "/mybucket/rustwallhub/wallhaven_images.db");
+        let a = authorization(
+            &oss,
+            "PUT",
+            "application/octet-stream",
+            "Thu, 01 Jan 2026 00:00:00 GMT",
+            "/mybucket/rustwallhub/wallhaven_images.db",
+        );
+        let b = authorization(
+            &oss,
+            "PUT",
+            "application/octet-stream",
+            "Thu, 01 Jan 2026 00:00:00 GMT",
+            "/mybucket/rustwallhub/wallhaven_images.db",
+        );
         assert_eq!(a, b);
         // base64(HMAC-SHA1) 固定 28 字符
         assert_eq!(a.len(), 28 + "OSS AKID:".len());
