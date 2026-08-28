@@ -27,7 +27,7 @@ pub fn run() {
         .init();
     log::info!("RustWallhub 启动");
 
-    tauri::Builder::default()
+    let app = tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_fs::init())
@@ -91,6 +91,7 @@ pub fn run() {
             let client = client_builder.build().expect("创建 HTTP client 失败");
 
             let auto_update = config.auto_update;
+            let auto_sync_start = config.oss_auto_download_on_start;
 
             app.manage(AppState {
                 config_path: Mutex::new(config_path),
@@ -106,6 +107,15 @@ pub fn run() {
                 tauri::async_runtime::spawn(async move {
                     tokio::time::sleep(Duration::from_secs(5)).await;
                     commands::settings::startup_check_update(&app_handle).await;
+                });
+            }
+
+            // 启动自动拉取：延后几秒，等前端完成数据库初始化引导
+            if auto_sync_start {
+                let app_handle = app.handle().clone();
+                tauri::async_runtime::spawn(async move {
+                    tokio::time::sleep(Duration::from_secs(6)).await;
+                    commands::sync::auto_sync_on_startup(&app_handle).await;
                 });
             }
 
@@ -162,8 +172,23 @@ pub fn run() {
             is_slideshow_running,
             list_monitors,
         ])
-        .run(tauri::generate_context!())
-        .expect("运行 Tauri 应用时出错");
+        .build(tauri::generate_context!())
+        .expect("构建 Tauri 应用时出错");
+
+    app.run(|handle, event| {
+        if let tauri::RunEvent::ExitRequested { api, .. } = event {
+            let state = handle.state::<AppState>();
+            if commands::sync::should_auto_upload_on_exit(&state) {
+                // 拦下退出，传完快照再真正退出（内部有 15 秒超时兜底）
+                api.prevent_exit();
+                let handle = handle.clone();
+                tauri::async_runtime::spawn(async move {
+                    commands::sync::auto_sync_on_exit(handle.clone()).await;
+                    handle.exit(0);
+                });
+            }
+        }
+    });
 }
 
 #[cfg(test)]

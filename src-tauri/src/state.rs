@@ -253,7 +253,9 @@ pub fn normalize_config_path(base_dir: &std::path::Path, value: String) -> Strin
         .to_string()
 }
 
-pub fn load_config(state: &tauri::State<'_, AppState>) -> Result<AppConfig, AppError> {
+/// 读取配置。参数用 `&AppState`：传入 `&tauri::State<'_, AppState>` 时靠 Deref 自动转换，
+/// 这样命令与后台钩子（拿到的可能是 `State` 也可能是 `&AppState`）都能复用。
+pub fn load_config(state: &AppState) -> Result<AppConfig, AppError> {
     let path = state
         .config_path
         .lock()

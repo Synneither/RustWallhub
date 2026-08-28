@@ -90,6 +90,12 @@ pub struct AppConfig {
     /// 对象前缀 (例如 "rustwallhub/", 可留空)
     #[serde(default)]
     pub oss_prefix: String,
+    /// 退出应用时自动把快照上传到云端
+    #[serde(default)]
+    pub oss_auto_upload_on_exit: bool,
+    /// 启动时自动从云端拉取快照并合并
+    #[serde(default)]
+    pub oss_auto_download_on_start: bool,
 }
 
 fn default_reddit_url() -> String {
@@ -255,6 +261,8 @@ impl Default for AppConfig {
             oss_access_key_id: String::new(),
             oss_access_key_secret: String::new(),
             oss_prefix: String::new(),
+            oss_auto_upload_on_exit: false,
+            oss_auto_download_on_start: false,
         }
     }
 }

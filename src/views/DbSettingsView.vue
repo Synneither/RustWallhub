@@ -39,6 +39,8 @@ onMounted(async () => {
   ossAccessKeyId.value = appState.config?.oss_access_key_id ?? "";
   ossAccessKeySecret.value = appState.config?.oss_access_key_secret ?? "";
   ossPrefix.value = appState.config?.oss_prefix ?? "";
+  ossAutoUpload.value = appState.config?.oss_auto_upload_on_exit ?? false;
+  ossAutoDownload.value = appState.config?.oss_auto_download_on_start ?? false;
   await reloadAll();
 });
 
@@ -238,6 +240,8 @@ const exporting = ref(false);
 const importing = ref(false);
 const uploading = ref(false);
 const cloudDownloading = ref(false);
+const ossAutoUpload = ref(false);
+const ossAutoDownload = ref(false);
 
 async function onSaveOss() {
   if (!appState.config || savingOss.value) return;
@@ -250,6 +254,8 @@ async function onSaveOss() {
       oss_access_key_id: ossAccessKeyId.value.trim(),
       oss_access_key_secret: ossAccessKeySecret.value.trim(),
       oss_prefix: ossPrefix.value.trim(),
+      oss_auto_upload_on_exit: ossAutoUpload.value,
+      oss_auto_download_on_start: ossAutoDownload.value,
     };
     await saveSettings(next);
     appState.config = next;
@@ -706,6 +712,23 @@ const tab = ref<"missing" | "orphan" | "records">("missing");
             class="settings-field"
           />
         </div>
+        <div class="sync-switches">
+          <v-switch
+            v-model="ossAutoUpload"
+            color="primary"
+            density="compact"
+            hide-details
+            label="退出应用时自动上传快照"
+          />
+          <v-switch
+            v-model="ossAutoDownload"
+            color="primary"
+            density="compact"
+            hide-details
+            label="启动时自动从云端拉取并合并"
+          />
+        </div>
+
         <div class="sync-oss-actions">
           <v-btn color="primary" variant="flat" :loading="savingOss" @click="onSaveOss">保存配置</v-btn>
           <v-btn variant="tonal" prepend-icon="mdi-lan-check" :loading="testingOss" @click="onTestOss">
@@ -785,6 +808,12 @@ const tab = ref<"missing" | "orphan" | "records">("missing");
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
   gap: var(--space-2) var(--space-3);
+}
+.sync-switches {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin-top: var(--space-2);
 }
 .sync-oss-actions {
   display: flex;

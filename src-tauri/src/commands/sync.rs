@@ -7,6 +7,7 @@ use crate::db::{self, ImportStats};
 use crate::oss::{self, OssConfig};
 use crate::state::{load_config, AppError, AppState};
 use serde::Serialize;
+use tauri::{Emitter, Manager};
 
 /// 数据库命令统一放到阻塞线程池，避免 rusqlite 占用 tokio worker。
 async fn run_blocking<F, T>(f: F) -> Result<T, AppError>
@@ -157,7 +158,12 @@ pub async fn import_snapshots(
 #[tauri::command]
 pub async fn oss_sync_upload(state: tauri::State<'_, AppState>) -> Result<String, AppError> {
     log::info!("[CMD] oss_sync_upload");
-    let config = load_config(&state)?;
+    run_oss_upload(&state).await
+}
+
+/// 上传快照的实现，命令与退出钩子共用。
+pub async fn run_oss_upload(state: &AppState) -> Result<String, AppError> {
+    let config = load_config(state)?;
     let oss = OssConfig::from_config(&config)?;
 
     let client = state
@@ -198,7 +204,12 @@ pub async fn oss_sync_upload(state: tauri::State<'_, AppState>) -> Result<String
 #[tauri::command]
 pub async fn oss_sync_download(state: tauri::State<'_, AppState>) -> Result<SyncImportResult, AppError> {
     log::info!("[CMD] oss_sync_download");
-    let config = load_config(&state)?;
+    run_oss_download(&state).await
+}
+
+/// 拉取并合并的实现，命令与启动钩子共用。
+pub async fn run_oss_download(state: &AppState) -> Result<SyncImportResult, AppError> {
+    let config = load_config(state)?;
     let oss = OssConfig::from_config(&config)?;
 
     let client = state
@@ -294,4 +305,90 @@ pub async fn test_oss_config(state: tauri::State<'_, AppState>) -> Result<String
     } else {
         "连接成功，云端暂无快照（上传后可在此拉取）".into()
     })
+}
+
+// ---------------------------------------------------------------------------
+// 自动同步钩子（启动拉取 / 退出上传）
+// ---------------------------------------------------------------------------
+
+/// 退出自动上传只做一次：否则 `exit()` 触发的第二次 ExitRequested 会再次拦截，形成死循环。
+static EXIT_SYNC_DONE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// 把合并结果转成一句人类可读的摘要（事件与日志共用）
+pub fn format_import_result(r: &SyncImportResult) -> String {
+    let mut parts = Vec::new();
+    if let Some(s) = r.wallhaven {
+        parts.push(format!(
+            "Wallhaven 新增 {} 条、恢复 {} 条",
+            s.inserted, s.loved
+        ));
+    }
+    if let Some(s) = r.reddit {
+        parts.push(format!("Reddit 新增 {} 条、恢复 {} 条", s.inserted, s.loved));
+    }
+    if parts.is_empty() {
+        "没有可导入的内容".to_string()
+    } else {
+        parts.join("；")
+    }
+}
+
+/// 退出前是否需要自动上传（只返回是否需要，实际执行在 `auto_sync_on_exit`）。
+/// 用 `EXIT_SYNC_DONE` 保证整个进程生命周期内只拦一次退出。
+pub fn should_auto_upload_on_exit(state: &AppState) -> bool {
+    if EXIT_SYNC_DONE.swap(true, std::sync::atomic::Ordering::SeqCst) {
+        return false;
+    }
+    load_config(state)
+        .map(|c| c.oss_auto_upload_on_exit)
+        .unwrap_or(false)
+}
+
+/// 退出时的自动上传。带整体超时，避免网络卡死导致应用关不掉。
+pub async fn auto_sync_on_exit(handle: tauri::AppHandle) {
+    log::info!("[sync] 退出自动上传开始");
+    let state = handle.state::<AppState>();
+    let result = tokio::time::timeout(
+        std::time::Duration::from_secs(15),
+        run_oss_upload(&state),
+    )
+    .await;
+    match result {
+        Ok(Ok(msg)) => log::info!("[sync] 退出自动上传完成：{msg}"),
+        Ok(Err(e)) => log::warn!("[sync] 退出自动上传失败：{e}"),
+        Err(_) => log::warn!("[sync] 退出自动上传超时（15 秒），已放弃"),
+    }
+}
+
+/// 启动时的自动拉取。失败只记日志，不打断应用启动；
+/// 本地库尚未初始化时静默跳过（初始化由前端引导）。
+pub async fn auto_sync_on_startup(handle: &tauri::AppHandle) {
+    let state = handle.state::<AppState>();
+    let config = match load_config(&state) {
+        Ok(c) => c,
+        Err(e) => {
+            log::warn!("[sync] 启动自动拉取：读取配置失败 {e}");
+            return;
+        }
+    };
+    if !config.oss_auto_download_on_start {
+        return;
+    }
+    if !db::db_exists(&config.wallhaven_db_path) && !db::db_exists(&config.reddit_db_path) {
+        log::info!("[sync] 启动自动拉取：本地数据库尚未初始化，跳过");
+        return;
+    }
+
+    log::info!("[sync] 启动自动拉取开始");
+    match run_oss_download(&state).await {
+        Ok(r) => {
+            let msg = format_import_result(&r);
+            log::info!("[sync] 启动自动拉取完成：{msg}");
+            let _ = handle.emit("sync-completed", msg);
+        }
+        Err(e) => {
+            log::warn!("[sync] 启动自动拉取失败：{e}");
+            let _ = handle.emit("sync-failed", e.to_string());
+        }
+    }
 }

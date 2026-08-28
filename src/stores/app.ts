@@ -24,6 +24,8 @@ import {
   onImageDownloaded,
   onSettingsChanged,
   onSlideshowTick,
+  onSyncCompleted,
+  onSyncFailed,
   onUpdateAvailable,
   onUpdateInstalling,
   onUpdateProgress,
@@ -281,6 +283,17 @@ export async function registerGlobalListeners() {
   await onSlideshowTick((p: SlideshowTickPayload) => {
     appState.slideshow.running = true;
     appState.slideshow.current = p;
+  });
+
+  // 启动自动拉取的结果：成功后刷新统计与图库，失败只提示
+  await onSyncCompleted((msg: string) => {
+    toast(`云端同步：${msg}`, "success");
+    refreshStats();
+    appState.galleryEpoch++;
+  });
+
+  await onSyncFailed((msg: string) => {
+    toast(`云端同步失败：${msg}`, "error");
   });
 }
 

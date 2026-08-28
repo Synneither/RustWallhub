@@ -227,3 +227,13 @@ export const onUpdateInstalling = (cb: () => void): Promise<UnlistenFn> =>
 export const onSlideshowTick = (
   cb: (p: SlideshowTickPayload) => void,
 ): Promise<UnlistenFn> => listen("slideshow-tick", (e) => cb(e.payload as SlideshowTickPayload));
+
+/* ════════════ 自动同步（启动拉取的结果） ════════════ */
+
+/** 启动自动拉取成功，payload 是结果摘要文本 */
+export const onSyncCompleted = (cb: (msg: string) => void): Promise<UnlistenFn> =>
+  listen("sync-completed", (e) => cb(e.payload as string));
+
+/** 启动自动拉取失败，payload 是错误文本 */
+export const onSyncFailed = (cb: (msg: string) => void): Promise<UnlistenFn> =>
+  listen("sync-failed", (e) => cb(e.payload as string));

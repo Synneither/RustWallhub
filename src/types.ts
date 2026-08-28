@@ -42,6 +42,8 @@ export interface AppConfig {
   oss_access_key_id: string; // RAM 子账号，建议最小权限
   oss_access_key_secret: string;
   oss_prefix: string; // 对象前缀，如 "rustwallhub/"
+  oss_auto_upload_on_exit: boolean; // 退出时自动上传快照
+  oss_auto_download_on_start: boolean; // 启动时自动拉取并合并
 }
 
 /* ── settings 模块 ── */
