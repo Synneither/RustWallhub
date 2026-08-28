@@ -90,12 +90,20 @@ pub async fn search_wallhaven(
         .data
         .iter()
         .map(|img| {
-            let prefix = if img.id.len() >= 2 {
-                &img.id[..2]
-            } else {
-                &img.id[..1]
-            };
-            let thumbnail_url = format!("https://th.wallhaven.cc/small/{prefix}/{}.jpg", img.id);
+            // 优先用 large 缩略图（约 500px 宽），放大网格时不模糊；
+            // 缺失时回退到 small 的固定 URL 规则。
+            let thumbnail_url = img
+                .thumbs
+                .as_ref()
+                .map(|t| t.large.clone())
+                .unwrap_or_else(|| {
+                    let prefix = if img.id.len() >= 2 {
+                        &img.id[..2]
+                    } else {
+                        &img.id[..1]
+                    };
+                    format!("https://th.wallhaven.cc/small/{prefix}/{}.jpg", img.id)
+                });
             WallhavenImageEntry {
                 id: img.id.clone(),
                 thumbnail_url,

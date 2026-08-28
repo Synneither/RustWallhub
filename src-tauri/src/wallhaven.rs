@@ -27,6 +27,18 @@ pub struct WallhavenImage {
     pub file_size: u64,
     #[allow(dead_code)]
     pub file_type: String,
+    /// API 返回的三种缩略图 URL（small / large / original）
+    #[serde(default)]
+    pub thumbs: Option<WallhavenThumbs>,
+}
+
+#[derive(Deserialize, Debug, Clone)]
+pub struct WallhavenThumbs {
+    pub large: String,
+    #[allow(dead_code)]
+    pub original: String,
+    #[allow(dead_code)]
+    pub small: String,
 }
 
 #[derive(Deserialize, Debug)]
