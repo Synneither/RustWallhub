@@ -9,6 +9,9 @@ use crate::state::{load_config, AppError, AppState};
 use serde::Serialize;
 use tauri::{Emitter, Manager};
 
+/// 同步用的临时目录名（放在系统临时目录下，退出时清理）
+const TEMP_DIR_NAME: &str = "rustwallhub-sync";
+
 /// 数据库命令统一放到阻塞线程池，避免 rusqlite 占用 tokio worker。
 async fn run_blocking<F, T>(f: F) -> Result<T, AppError>
 where
@@ -174,7 +177,7 @@ pub async fn run_oss_upload(state: &AppState) -> Result<String, AppError> {
 
     let wh_db = config.wallhaven_db_path.clone();
     let rd_db = config.reddit_db_path.clone();
-    let temp_dir = std::env::temp_dir().join("rustwallhub-sync");
+    let temp_dir = std::env::temp_dir().join(TEMP_DIR_NAME);
     let snapshots = run_blocking(move || {
         std::fs::create_dir_all(&temp_dir)
             .map_err(|e| AppError::Other(format!("创建临时目录失败: {e}")))?;
@@ -238,7 +241,7 @@ pub async fn run_oss_download(state: &AppState) -> Result<SyncImportResult, AppE
 
     let wh_db = config.wallhaven_db_path.clone();
     let rd_db = config.reddit_db_path.clone();
-    let temp_dir = std::env::temp_dir().join("rustwallhub-sync");
+    let temp_dir = std::env::temp_dir().join(TEMP_DIR_NAME);
     run_blocking(move || {
         std::fs::create_dir_all(&temp_dir)
             .map_err(|e| AppError::Other(format!("创建临时目录失败: {e}")))?;
@@ -333,28 +336,65 @@ pub fn format_import_result(r: &SyncImportResult) -> String {
     }
 }
 
-/// 退出前是否需要自动上传（只返回是否需要，实际执行在 `auto_sync_on_exit`）。
-/// 用 `EXIT_SYNC_DONE` 保证整个进程生命周期内只拦一次退出。
-pub fn should_auto_upload_on_exit(state: &AppState) -> bool {
-    if EXIT_SYNC_DONE.swap(true, std::sync::atomic::Ordering::SeqCst) {
-        return false;
-    }
-    load_config(state)
-        .map(|c| c.oss_auto_upload_on_exit)
-        .unwrap_or(false)
+/// 退出任务只跑一次：`exit()` 触发的第二次 ExitRequested 若再拦截就会死循环。
+/// 注意这里**不看配置**——收尾工作（清理临时文件、WAL 归零）无论如何都要做，
+/// 是否上传由 `run_exit_tasks` 内部判断。
+pub fn begin_exit_tasks() -> bool {
+    !EXIT_SYNC_DONE.swap(true, std::sync::atomic::Ordering::SeqCst)
 }
 
-/// 退出时的自动上传。带整体超时，避免网络卡死导致应用关不掉。
-pub async fn auto_sync_on_exit(handle: tauri::AppHandle) {
-    log::info!("[sync] 退出自动上传开始");
+/// 删除同步用的临时快照文件（每次上传都会在临时目录留一份）。
+pub fn cleanup_temp_snapshots() {
+    let dir = std::env::temp_dir().join(TEMP_DIR_NAME);
+    if !dir.exists() {
+        return;
+    }
+    match std::fs::remove_dir_all(&dir) {
+        Ok(()) => log::info!("[sync] 已清理临时快照目录 {}", dir.display()),
+        Err(e) => log::warn!("[sync] 清理临时快照目录失败：{e}"),
+    }
+}
+
+/// 退出收尾：清临时文件 → WAL 归零 + 更新查询计划 →（按需）上传快照。
+/// 整体 20 秒超时兜底，避免网络卡死导致应用关不掉。
+pub async fn run_exit_tasks(handle: tauri::AppHandle) {
     let state = handle.state::<AppState>();
+    let config = load_config(&state).ok();
+
+    // 1. 清掉上一轮遗留的临时快照
+    cleanup_temp_snapshots();
+
+    // 2. 数据库收尾：WAL checkpoint + PRAGMA optimize
+    if let Some(cfg) = &config {
+        for path in [&cfg.wallhaven_db_path, &cfg.reddit_db_path] {
+            match db::maintain_on_exit(path) {
+                Ok(()) => log::info!("[exit] 数据库收尾完成：{path}"),
+                Err(e) => log::warn!("[exit] 数据库收尾失败（{path}）：{e}"),
+            }
+        }
+    }
+
+    // 3. 按需上传快照
+    let auto_upload = config
+        .as_ref()
+        .map(|c| c.oss_auto_upload_on_exit)
+        .unwrap_or(false);
+    if !auto_upload {
+        return;
+    }
+
+    log::info!("[sync] 退出自动上传开始");
     let result = tokio::time::timeout(
         std::time::Duration::from_secs(15),
         run_oss_upload(&state),
     )
     .await;
     match result {
-        Ok(Ok(msg)) => log::info!("[sync] 退出自动上传完成：{msg}"),
+        Ok(Ok(msg)) => {
+            log::info!("[sync] 退出自动上传完成：{msg}");
+            // 上传用到的临时快照已经传完，直接清掉
+            cleanup_temp_snapshots();
+        }
         Ok(Err(e)) => log::warn!("[sync] 退出自动上传失败：{e}"),
         Err(_) => log::warn!("[sync] 退出自动上传超时（15 秒），已放弃"),
     }

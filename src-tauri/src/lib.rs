@@ -177,13 +177,13 @@ pub fn run() {
 
     app.run(|handle, event| {
         if let tauri::RunEvent::ExitRequested { api, .. } = event {
-            let state = handle.state::<AppState>();
-            if commands::sync::should_auto_upload_on_exit(&state) {
-                // 拦下退出，传完快照再真正退出（内部有 15 秒超时兜底）
+            // 收尾任务（清临时文件、WAL 归零、按需上传快照）每次进程只跑一次，
+            // 否则 exit() 触发的第二次 ExitRequested 会再次拦截，形成死循环。
+            if commands::sync::begin_exit_tasks() {
                 api.prevent_exit();
                 let handle = handle.clone();
                 tauri::async_runtime::spawn(async move {
-                    commands::sync::auto_sync_on_exit(handle.clone()).await;
+                    commands::sync::run_exit_tasks(handle.clone()).await;
                     handle.exit(0);
                 });
             }
