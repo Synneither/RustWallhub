@@ -22,7 +22,6 @@
   --accent-success: #10b981;
   --accent-warning: #f59e0b;
   --accent-error: #ef4444;
-  --accent-gold: #c9a94e;
 
   /* ── 图片预览（固定深色查看器，不随主题变化） ── */
   --preview-bg: #101012;
@@ -43,7 +42,7 @@
   /* ── 间距（4px 基准） ── */
   --space-1: 4px;  --space-2: 8px;  --space-3: 12px;
   --space-4: 16px; --space-5: 20px; --space-6: 24px;
-  --space-8: 32px; --space-10: 40px; --space-12: 48px;
+  --space-8: 32px; --space-10: 40px;
 
   /* ── 圆角 ── */
   --radius-sm: 4px;
@@ -54,11 +53,9 @@
 
   /* ── 缓动 ── */
   --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
-  --ease-in-out: cubic-bezier(0.65, 0, 0.35, 1);
 
   /* ── 阴影（功能性，非装饰） ── */
   --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.3);
-  --shadow-md: 0 2px 8px rgba(0, 0, 0, 0.25);
   --shadow-lg: 0 8px 24px rgba(0, 0, 0, 0.35);
 }
 
@@ -85,7 +82,6 @@
   --border-active: 1px solid rgba(37, 99, 235, 0.3);
 
   --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.04);
-  --shadow-md: 0 2px 8px rgba(0, 0, 0, 0.06);
   --shadow-lg: 0 8px 24px rgba(0, 0, 0, 0.1);
 }
 
@@ -143,14 +139,6 @@ body {
   opacity: 0;
 }
 
-/* ── 卡片 ── */
-.ark-card,
-.glass-card {
-  background: var(--surface-card) !important;
-  border: var(--border-card) !important;
-  box-shadow: var(--shadow-sm);
-}
-
 /* ── 数据面板 ── */
 .data-panel {
   background: var(--surface-card) !important;
@@ -158,9 +146,6 @@ body {
   border-left: 2px solid var(--accent-primary) !important;
   box-shadow: var(--shadow-sm);
   overflow: hidden;
-}
-.operations-panel {
-  border-left: 2px solid var(--accent-warning) !important;
 }
 .progress-panel {
   border-left: 2px solid var(--accent-primary) !important;
@@ -173,13 +158,6 @@ body {
   font-weight: 700;
   letter-spacing: -0.01em;
   line-height: 1;
-}
-.text-display {
-  font-family: 'Rajdhani', 'Space Grotesk', system-ui, sans-serif;
-  font-size: 1.75rem;
-  line-height: 1.1;
-  font-weight: 700;
-  letter-spacing: -0.01em;
 }
 .text-heading {
   font-family: 'Rajdhani', 'Space Grotesk', system-ui, sans-serif;
@@ -216,21 +194,6 @@ body {
   color: var(--text-tertiary);
 }
 
-/* ── 数据行 ── */
-.data-row {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 6px 10px;
-  border-radius: var(--radius-sm);
-  background: rgba(255, 255, 255, 0.015);
-  transition: background 0.15s;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.04);
-}
-.data-row:hover {
-  background: rgba(255, 255, 255, 0.035);
-}
-
 /* ── 入场动画 ── */
 @keyframes fadeInUp {
   from { opacity: 0; transform: translateY(6px); }
@@ -243,14 +206,11 @@ body {
 .stagger-2 { animation-delay: 60ms; }
 .stagger-3 { animation-delay: 90ms; }
 .stagger-4 { animation-delay: 120ms; }
-.stagger-5 { animation-delay: 150ms; }
-.stagger-6 { animation-delay: 180ms; }
 
 /* ── Surface 工具类 ── */
 .surface-card { background: var(--surface-card); }
 .surface-elevated { background: var(--surface-elevated); }
 .surface-base { background: var(--surface-base); }
-.hairline-border { border: var(--border-card); }
 
 /* ── Shimmer 加载 ── */
 .shimmer {
@@ -277,20 +237,6 @@ body {
 }
 
 /* ── Settings 共享样式 ── */
-.settings-group-label {
-  font-size: 0.75rem;
-  color: var(--text-secondary);
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
-  padding: 16px 0 8px;
-  font-weight: 600;
-}
-.settings-group-label:first-of-type {
-  padding-top: 8px;
-}
-.settings-group {
-  padding: 0 0 4px;
-}
 .settings-field :deep(.v-field) {
   border-color: var(--border-default);
   transition: border-color 0.2s, box-shadow 0.2s;
@@ -325,23 +271,6 @@ body {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
   gap: 12px;
-}
-.download-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(clamp(100px, 18vw, 140px), 1fr));
-  gap: 6px;
-  max-height: 280px;
-  overflow-y: auto;
-}
-.download-thumb {
-  aspect-ratio: 16 / 9;
-  border-radius: var(--radius-sm);
-  overflow: hidden;
-  background: var(--surface-card);
-}
-.download-thumb-img {
-  width: 100%; height: 100%;
-  object-fit: cover; display: block;
 }
 
 /* ── 空状态（全局复用：图库 / 搜索页） ── */
@@ -405,10 +334,6 @@ body {
   max-width: 480px;
   text-align: center;
   word-break: break-word;
-}
-
-.empty-dir {
-  margin-top: 16px;
 }
 
 /* ── 异步组件加载态 ── */

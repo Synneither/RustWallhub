@@ -416,20 +416,24 @@ fn set_xfce_wallpaper(path_str: &str) -> Option<String> {
         .output()
         .ok()?;
     let stdout = String::from_utf8_lossy(&output.stdout);
+    let mut any = false;
+    let mut all_ok = true;
     for line in stdout.lines() {
         let parts: Vec<&str> = line.splitn(2, ' ').collect();
         if parts.len() == 2 && parts[0].contains("last-image") {
-            if let Ok(output) = Command::new("xfconf-query")
+            // 每个显示器/工作区都有一个独立的 last-image 属性，逐个设置，
+            // 不要命中第一个就 return——否则多显示器/多工作区只设了第一块。
+            any = true;
+            match Command::new("xfconf-query")
                 .args(["-c", "xfce4-desktop", "-p", parts[0].trim(), "-s", path_str])
                 .output()
             {
-                if output.status.success() {
-                    return Some("\u{58c1}\u{7eb8}\u{5df2}\u{8bbe}\u{7f6e} (XFCE)".to_string());
-                }
+                Ok(output) if output.status.success() => {}
+                _ => all_ok = false,
             }
         }
     }
-    None
+    (any && all_ok).then(|| "\u{58c1}\u{7eb8}\u{5df2}\u{8bbe}\u{7f6e} (XFCE)".to_string())
 }
 
 /// KDE Plasma (qdbus)
@@ -532,12 +536,18 @@ fn set_hyprland_wallpaper(path_str: &str) -> Option<String> {
             .output()
             .is_ok_and(|o| o.status.success())
     } else {
-        monitors.iter().all(|monitor| {
-            Command::new("hyprctl")
+        // 逐块设置，不因某一块失败就短路后续显示器（iter().all 会在第一次失败时停止）。
+        let mut all_ok = true;
+        for monitor in &monitors {
+            let success = Command::new("hyprctl")
                 .args(["hyprpaper", "wallpaper", &format!("{monitor},{path_str}")])
                 .output()
-                .is_ok_and(|o| o.status.success())
-        })
+                .is_ok_and(|o| o.status.success());
+            if !success {
+                all_ok = false;
+            }
+        }
+        all_ok
     };
 
     ok.then(|| "\u{58c1}\u{7eb8}\u{5df2}\u{8bbe}\u{7f6e} (Hyprland)".to_string())

@@ -1,7 +1,9 @@
 //! 图片记录的增删改查：存在性检查、批量入库、分页列表、缺失列表。
 
+#[cfg(test)]
+use super::open;
 use super::stats::existing_file_names;
-use super::{invalidate_stats, open, with_cached_connection, ImageRecord};
+use super::{invalidate_stats, with_cached_connection, ImageRecord};
 use rusqlite::Result as SqlResult;
 
 pub fn get_existing_wallhaven_ids(db_path: &str) -> SqlResult<Vec<String>> {
@@ -36,7 +38,7 @@ pub fn get_existing_reddit_urls(db_path: &str) -> SqlResult<Vec<String>> {
     Ok(urls)
 }
 
-#[cfg_attr(not(test), allow(dead_code))]
+#[cfg(test)]
 pub fn insert_wallhaven_image(
     db_path: &str,
     wallhaven_id: &str,
@@ -71,7 +73,7 @@ pub fn insert_wallhaven_image(
     Ok(result)
 }
 
-#[cfg_attr(not(test), allow(dead_code))]
+#[cfg(test)]
 pub fn insert_reddit_image(
     db_path: &str,
     name: &str,

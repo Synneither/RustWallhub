@@ -199,41 +199,47 @@ export function assetUrl(path: string): string {
 
 /* ════════════ 事件监听 ════════════ */
 
+/* 事件监听：统一用 listen<T> 让 payload 带上类型，
+ * 后端改字段名时前端会直接编译报错，而不是静默拿到 undefined。 */
+
 export const onDownloadProgress = (
   cb: (p: DownloadProgressPayload) => void,
-): Promise<UnlistenFn> => listen("download-progress", (e) => cb(e.payload as DownloadProgressPayload));
+): Promise<UnlistenFn> =>
+  listen<DownloadProgressPayload>("download-progress", (e) => cb(e.payload));
 
 export const onDownloadComplete = (
   cb: (p: DownloadCompletePayload) => void,
-): Promise<UnlistenFn> => listen("download-complete", (e) => cb(e.payload as DownloadCompletePayload));
+): Promise<UnlistenFn> =>
+  listen<DownloadCompletePayload>("download-complete", (e) => cb(e.payload));
 
 export const onImageDownloaded = (
   cb: (p: ImageDownloadedPayload) => void,
-): Promise<UnlistenFn> => listen("image-downloaded", (e) => cb(e.payload as ImageDownloadedPayload));
+): Promise<UnlistenFn> =>
+  listen<ImageDownloadedPayload>("image-downloaded", (e) => cb(e.payload));
 
 export const onSettingsChanged = (cb: () => void): Promise<UnlistenFn> =>
   listen("settings-changed", () => cb());
 
 export const onUpdateAvailable = (cb: (p: UpdateInfo) => void): Promise<UnlistenFn> =>
-  listen("update-available", (e) => cb(e.payload as UpdateInfo));
+  listen<UpdateInfo>("update-available", (e) => cb(e.payload));
 
 export const onUpdateProgress = (
   cb: (p: UpdateProgressPayload) => void,
-): Promise<UnlistenFn> => listen("update-progress", (e) => cb(e.payload as UpdateProgressPayload));
+): Promise<UnlistenFn> =>
+  listen<UpdateProgressPayload>("update-progress", (e) => cb(e.payload));
 
 export const onUpdateInstalling = (cb: () => void): Promise<UnlistenFn> =>
   listen("update-installing", () => cb());
 
-export const onSlideshowTick = (
-  cb: (p: SlideshowTickPayload) => void,
-): Promise<UnlistenFn> => listen("slideshow-tick", (e) => cb(e.payload as SlideshowTickPayload));
+export const onSlideshowTick = (cb: (p: SlideshowTickPayload) => void): Promise<UnlistenFn> =>
+  listen<SlideshowTickPayload>("slideshow-tick", (e) => cb(e.payload));
 
 /* ════════════ 自动同步（启动拉取的结果） ════════════ */
 
 /** 启动自动拉取成功，payload 是结果摘要文本 */
 export const onSyncCompleted = (cb: (msg: string) => void): Promise<UnlistenFn> =>
-  listen("sync-completed", (e) => cb(e.payload as string));
+  listen<string>("sync-completed", (e) => cb(e.payload));
 
 /** 启动自动拉取失败，payload 是错误文本 */
 export const onSyncFailed = (cb: (msg: string) => void): Promise<UnlistenFn> =>
-  listen("sync-failed", (e) => cb(e.payload as string));
+  listen<string>("sync-failed", (e) => cb(e.payload));

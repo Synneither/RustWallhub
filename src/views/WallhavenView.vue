@@ -1,21 +1,34 @@
 <script setup lang="ts">
-import { computed, onMounted, reactive, ref } from "vue";
+import { computed, reactive, ref } from "vue";
 import { openUrl } from "@tauri-apps/plugin-opener";
-import type { AppConfig, WallhavenImageEntry, WallhavenSearchResult, WallhavenSelected } from "../types";
+import type { WallhavenImageEntry, WallhavenSearchResult, WallhavenSelected } from "../types";
 import {
   downloadWallhavenSelected,
-  saveSettings,
   searchWallhaven,
   startWallhavenDownload,
 } from "../utils/api";
 import { appState, clearNewImages, toast, toastError } from "../stores/app";
 import { positiveInt } from "../utils/rules";
+import { useConfigDraft } from "../composables/useConfigDraft";
 import ProgressCard from "../components/ProgressCard.vue";
 import NewImagesStrip from "../components/NewImagesStrip.vue";
 import EmptyState from "../components/EmptyState.vue";
 
 /* ── 搜索条件（= wallhaven_* 配置，需保存后生效） ── */
-const draft = reactive({
+const WALLHAVEN_DRAFT_KEYS = [
+  "wallhaven_api_key",
+  "wallhaven_q",
+  "wallhaven_categories",
+  "wallhaven_purity",
+  "wallhaven_sorting",
+  "wallhaven_top_range",
+  "wallhaven_atleast",
+  "wallhaven_ratios",
+  "wallhaven_order",
+  "wallhaven_max_images",
+] as const;
+
+const { draft, isDirty, saving, persist } = useConfigDraft(WALLHAVEN_DRAFT_KEYS, {
   wallhaven_api_key: "",
   wallhaven_q: "",
   wallhaven_categories: "010",
@@ -26,21 +39,6 @@ const draft = reactive({
   wallhaven_ratios: "landscape",
   wallhaven_order: "desc",
   wallhaven_max_images: 100,
-});
-
-onMounted(() => {
-  const c = appState.config;
-  if (!c) return;
-  draft.wallhaven_api_key = c.wallhaven_api_key;
-  draft.wallhaven_q = c.wallhaven_q;
-  draft.wallhaven_categories = c.wallhaven_categories;
-  draft.wallhaven_purity = c.wallhaven_purity;
-  draft.wallhaven_sorting = c.wallhaven_sorting;
-  draft.wallhaven_top_range = c.wallhaven_top_range;
-  draft.wallhaven_atleast = c.wallhaven_atleast;
-  draft.wallhaven_ratios = c.wallhaven_ratios;
-  draft.wallhaven_order = c.wallhaven_order;
-  draft.wallhaven_max_images = c.wallhaven_max_images;
 });
 
 /* 三位开关辅助 */
@@ -107,43 +105,6 @@ const nsfwWithoutKey = computed(
 );
 
 /* ── 保存 ── */
-const WALLHAVEN_DRAFT_KEYS = [
-  "wallhaven_api_key",
-  "wallhaven_q",
-  "wallhaven_categories",
-  "wallhaven_purity",
-  "wallhaven_sorting",
-  "wallhaven_top_range",
-  "wallhaven_atleast",
-  "wallhaven_ratios",
-  "wallhaven_order",
-  "wallhaven_max_images",
-] as const;
-
-function isDirty(): boolean {
-  const c = appState.config;
-  if (!c) return false;
-  return WALLHAVEN_DRAFT_KEYS.some((key) => draft[key] !== c[key]);
-}
-
-const saving = ref(false);
-async function persist(): Promise<boolean> {
-  if (!appState.config) return false;
-  if (!isDirty()) return true;
-  saving.value = true;
-  try {
-    const next: AppConfig = { ...appState.config, ...draft };
-    await saveSettings(next);
-    appState.config = next;
-    return true;
-  } catch (e) {
-    toastError(e);
-    return false;
-  } finally {
-    saving.value = false;
-  }
-}
-
 async function onSaveOnly() {
   if (await persist()) toast("设置已保存", "success");
 }
@@ -507,8 +468,14 @@ async function onDownloadPreview() {
           :class="{ 'wh-cell--selected': selected.has(img.id) }"
           :style="{ aspectRatio: ratioOf(img.resolution) }"
           title="单击选择，双击预览大图"
+          role="button"
+          tabindex="0"
+          :aria-label="img.id"
+          :aria-pressed="selected.has(img.id)"
           @click="toggleSelect(img)"
           @dblclick.stop="openPreview(img)"
+          @keydown.enter.prevent="toggleSelect(img)"
+          @keydown.space.prevent="toggleSelect(img)"
         >
           <img :src="img.thumbnail_url" :alt="img.id" loading="lazy" />
           <button class="wh-cell__preview" title="预览大图" @click.stop="openPreview(img)">

@@ -1,18 +1,11 @@
 <script setup lang="ts">
-import { onMounted, reactive, ref } from "vue";
-import type { AppConfig } from "../types";
-import { saveSettings } from "../utils/api";
+import { ref } from "vue";
 import { startRedditDownload } from "../utils/api";
 import { appState, clearNewImages, toast, toastError } from "../stores/app";
 import { positiveInt, requiredRule } from "../utils/rules";
+import { useConfigDraft } from "../composables/useConfigDraft";
 import ProgressCard from "../components/ProgressCard.vue";
 import NewImagesStrip from "../components/NewImagesStrip.vue";
-
-const draft = reactive<Pick<AppConfig, "reddit_url" | "reddit_max_posts" | "reddit_max_images">>({
-  reddit_url: "",
-  reddit_max_posts: 100,
-  reddit_max_images: 100,
-});
 
 const REDDIT_DRAFT_KEYS = [
   "reddit_url",
@@ -20,41 +13,14 @@ const REDDIT_DRAFT_KEYS = [
   "reddit_max_images",
 ] as const;
 
-function isDirty(): boolean {
-  const c = appState.config;
-  if (!c) return false;
-  return REDDIT_DRAFT_KEYS.some((key) => draft[key] !== c[key]);
-}
-
-const saving = ref(false);
-const starting = ref(false);
-const formValid = ref(false);
-
-onMounted(() => {
-  const c = appState.config;
-  if (c) {
-    draft.reddit_url = c.reddit_url;
-    draft.reddit_max_posts = c.reddit_max_posts;
-    draft.reddit_max_images = c.reddit_max_images;
-  }
+const { draft, isDirty, saving, persist } = useConfigDraft(REDDIT_DRAFT_KEYS, {
+  reddit_url: "",
+  reddit_max_posts: 100,
+  reddit_max_images: 100,
 });
 
-async function persist(): Promise<boolean> {
-  if (!appState.config) return false;
-  if (!isDirty()) return true;
-  saving.value = true;
-  try {
-    const next: AppConfig = { ...appState.config, ...draft };
-    await saveSettings(next);
-    appState.config = next;
-    return true;
-  } catch (e) {
-    toastError(e);
-    return false;
-  } finally {
-    saving.value = false;
-  }
-}
+const starting = ref(false);
+const formValid = ref(false);
 
 async function onSave() {
   if (await persist()) toast("设置已保存", "success");

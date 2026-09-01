@@ -47,15 +47,21 @@ jobs:
         with:
           deno-version: v2.x
 
-      - name: Build frontend
-        run: deno task build
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      # 只装依赖：tauri-action 会执行 tauri.conf.json 里的 beforeBuildCommand（deno task build）。
+      # 之前这里额外跑了一次 deno task build，等于每次发布都做两遍 vue-tsc 全量类型检查。
+      - name: Install frontend deps
+        run: deno install
 
       - name: Build and publish Tauri app
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
           APPIMAGE_EXTRACT_AND_RUN: '1'
         with:
           tagName: "${{ github.event_name == 'push' && github.ref_name || format('ci-test-{0}', github.run_id) }}"

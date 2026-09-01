@@ -74,9 +74,11 @@ pub fn is_valid_image(data: &[u8], content_type: &str) -> bool {
 }
 
 pub fn file_is_image(path: &Path) -> bool {
+    // 用 eq_ignore_ascii_case 逐一比对，避免每次调用都 `to_lowercase()` 分配一个 String
+    // ——图库目录扫描和缩略图清理都会逐文件调它，放大后很可观。
     path.extension()
         .and_then(|ext| ext.to_str())
-        .is_some_and(|ext| IMAGE_EXTENSIONS.contains(&ext.to_lowercase().as_str()))
+        .is_some_and(|ext| IMAGE_EXTENSIONS.iter().any(|e| ext.eq_ignore_ascii_case(e)))
 }
 
 /// 单张图片下载的硬上限，防止异常源或错误 Content-Type 把内存撑爆。
@@ -84,6 +86,26 @@ pub const MAX_IMAGE_BYTES: usize = 256 * 1024 * 1024;
 
 pub fn compute_md5(data: &[u8]) -> String {
     format!("{:x}", md5::compute(data))
+}
+
+/// 流式计算文件 MD5，边读边喂给哈希器。
+///
+/// [`compute_md5`] 需要先把整张图读进内存，4K 壁纸单张可达 50MB，批量收养孤儿文件时
+/// 内存峰值会很明显。这里按 64KB 分块读取，峰值恒定。
+pub fn compute_md5_file(path: &Path) -> Result<String, std::io::Error> {
+    use std::io::Read;
+
+    let mut ctx = md5::Context::new();
+    let mut file = std::fs::File::open(path)?;
+    let mut buf = [0u8; 64 * 1024];
+    loop {
+        let n = file.read(&mut buf)?;
+        if n == 0 {
+            break;
+        }
+        ctx.consume(&buf[..n]);
+    }
+    Ok(format!("{:x}", ctx.compute()))
 }
 pub async fn download_image_bytes(
     client: &reqwest::Client,
@@ -167,16 +189,21 @@ pub async fn download_urls_concurrent(
         let url = url.clone();
         let cancel = cancel.clone();
         let handle = tokio::spawn(async move {
-            let _permit = semaphore.acquire().await;
             let mut last_err = String::new();
             for attempt in 0..=max_retries {
                 if cancel.load(std::sync::atomic::Ordering::Relaxed) {
                     return (idx, Err("下载已取消".to_string()));
                 }
+                // 每次尝试前才获取许可，退避等待期间把槽位让给别人。
+                // 若在循环外长期持有，大量失败时会占着槽位睡 1+2+4 秒，并发 6 时吞吐直接塌方。
+                let Ok(permit) = semaphore.acquire().await else {
+                    return (idx, Err("下载任务已终止".to_string()));
+                };
                 match download_image_bytes(&client, &url).await {
                     Ok(res) => return (idx, Ok(res)),
                     Err(e) => {
                         last_err = e;
+                        drop(permit); // 退避前先归还许可，别占着槽位睡觉
                         if attempt < max_retries {
                             tokio::time::sleep(std::time::Duration::from_secs(2u64.pow(attempt)))
                                 .await;

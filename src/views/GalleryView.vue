@@ -1,5 +1,15 @@
 <script setup lang="ts">
-import { computed, onActivated, onBeforeUnmount, onDeactivated, onMounted, reactive, ref, watch } from "vue";
+import {
+  computed,
+  onActivated,
+  onBeforeUnmount,
+  onDeactivated,
+  onMounted,
+  reactive,
+  ref,
+  shallowRef,
+  watch,
+} from "vue";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import type { ImageInfo, LocalImageEntry, MonitorInfo, OrphanFile } from "../types";
@@ -21,9 +31,9 @@ import {
   stopSlideshow,
 } from "../utils/api";
 import { appState, askConfirm, dbReady, toast, toastError } from "../stores/app";
-import { formatBytes } from "../utils/format";
 import EmptyState from "../components/EmptyState.vue";
 import ImageViewer from "../components/ImageViewer.vue";
+import ImageDetailDrawer from "../components/ImageDetailDrawer.vue";
 
 /* ════ 浏览状态 ════ */
 type SourceTab = "wallhaven" | "reddit";
@@ -71,18 +81,24 @@ const images = ref<LocalImageEntry[]>([]);
 const total = ref(0);
 /** 孤儿模式：全量孤儿列表，前端分页 */
 const orphanAll = ref<LocalImageEntry[]>([]);
-const thumbUrls = reactive<Record<string, string>>({});
+/** 缩略图 URL 缓存（文件名 → asset URL），上限见 THUMB_CACHE_MAX。
+ * 用 shallowRef + Map：整批写入只替换一次引用、触发一次响应式更新。
+ * 此前是 reactive<Record<string,string>>（600 个键会被深度代理），
+ * 切换来源时逐个 delete 会触发 600 次独立更新。 */
+const thumbUrls = shallowRef<Map<string, string>>(new Map());
 const THUMB_CACHE_MAX = 600;
 
-/** 限制缩略图 URL 缓存大小，避免长时间浏览后无限增长。 */
-function cacheThumb(name: string, url: string) {
-  if (!(name in thumbUrls)) {
-    const keys = Object.keys(thumbUrls);
-    if (keys.length >= THUMB_CACHE_MAX) {
-      delete thumbUrls[keys[0]];
-    }
+/** 批量写入缩略图 URL：克隆一次、整体替换引用，只触发一次响应式更新。 */
+function cacheThumbs(entries: Iterable<readonly [string, string]>) {
+  const next = new Map(thumbUrls.value);
+  for (const [name, url] of entries) next.set(name, url);
+  // Map 保持插入顺序，超限时从最早插入的条目开始丢弃
+  while (next.size > THUMB_CACHE_MAX) {
+    const oldest = next.keys().next().value;
+    if (oldest === undefined) break;
+    next.delete(oldest);
   }
-  thumbUrls[name] = url;
+  thumbUrls.value = next;
 }
 
 let searchTimer: ReturnType<typeof setTimeout> | null = null;
@@ -109,8 +125,8 @@ function scheduleLoad() {
 }
 
 watch(source, () => {
-  // 切换来源后旧缩略图 URL 不能跨源复用
-  for (const key of Object.keys(thumbUrls)) delete thumbUrls[key];
+  // 切换来源后旧缩略图 URL 不能跨源复用；整体替换引用，只触发一次更新
+  thumbUrls.value = new Map();
 });
 
 const totalPages = computed(() => Math.max(1, Math.ceil(total.value / pageSize.value)));
@@ -147,7 +163,7 @@ async function load() {
       images.value = res.images;
       if (customDir.value) {
         // 自定义目录无缩略图管线，直接用原图；同时避免同名文件命中旧缩略图缓存
-        for (const img of res.images) cacheThumb(img.name, assetUrl(img.path));
+        cacheThumbs(res.images.map((img) => [img.name, assetUrl(img.path)] as const));
       } else {
         await loadThumbs(seq);
       }
@@ -170,20 +186,16 @@ async function loadThumbs(seq = loadSeq) {
     const dpr = appState.config?.thumbnail_dpr ?? 2;
     const batch = await resolveThumbnails(source.value, names, dpr);
     if (seq !== loadSeq) return;
-    for (const it of batch.items) {
-      cacheThumb(it.name, assetUrl(it.thumb_path));
-    }
+    cacheThumbs(batch.items.map((it) => [it.name, assetUrl(it.thumb_path)] as const));
   } catch (e) {
     if (seq !== loadSeq) return;
     // 缩略图失败不致命，回退原图
-    for (const img of images.value) {
-      if (!thumbUrls[img.name]) cacheThumb(img.name, assetUrl(img.path));
-    }
+    cacheThumbs(images.value.map((img) => [img.name, assetUrl(img.path)] as const));
   }
 }
 
 function thumbOf(img: LocalImageEntry): string {
-  return thumbUrls[img.name] ?? assetUrl(img.path);
+  return thumbUrls.value.get(img.name) ?? assetUrl(img.path);
 }
 
 /* 触发重载 */
@@ -307,8 +319,11 @@ function openViewerFor(img: LocalImageEntry) {
 const detailOpen = ref(false);
 const detailLoading = ref(false);
 const detail = ref<ImageInfo | null>(null);
+/** 触发详情时的原始条目，详情抽屉的预览/删除直接用它，避免用 detail 字段手工拼 entry */
+const detailEntry = ref<LocalImageEntry | null>(null);
 
 async function openDetail(img: LocalImageEntry) {
+  detailEntry.value = img;
   detailOpen.value = true;
   detailLoading.value = true;
   detail.value = null;
@@ -624,7 +639,13 @@ async function onStopSlideshow() {
         :key="img.name"
         class="gallery-card"
         :class="{ 'gallery-card--selected': selectionMode && selected.has(img.name) }"
+        role="button"
+        tabindex="0"
+        :aria-label="img.name"
+        :aria-pressed="selectionMode ? selected.has(img.name) : null"
         @click="onCardClick(img)"
+        @keydown.enter.prevent="onCardClick(img)"
+        @keydown.space.prevent="onCardClick(img)"
       >
         <img :src="thumbOf(img)" :alt="img.name" loading="lazy" />
         <span v-if="img.is_orphan && !customDir" class="gallery-card__orphan">孤儿</span>
@@ -661,57 +682,19 @@ async function onStopSlideshow() {
     </div>
 
     <!-- 详情抽屉 -->
-    <v-navigation-drawer v-model="detailOpen" location="right" width="360" temporary class="detail-drawer">
-      <div v-if="detailLoading" class="async-state"><v-progress-circular indeterminate color="primary" /></div>
-      <div v-else-if="detail" class="detail-body">
-        <div class="detail-head">
-          <span class="text-heading detail-head__name">{{ detail.name }}</span>
-          <v-spacer />
-          <v-btn icon="mdi-close" variant="text" size="small" @click="detailOpen = false" />
-        </div>
-        <div class="detail-preview">
-          <img :src="assetUrl(detail.path)" :alt="detail.name" @click="openViewerFor({ name: detail!.name, path: detail!.path, thumb_path: null, size: detail!.size, is_orphan: false, modified_date: null })" />
-        </div>
-        <div class="detail-rows">
-          <div class="detail-row"><span class="stat-label">分辨率</span><span class="text-body">{{ detail.resolution ?? (detail.width && detail.height ? `${detail.width}×${detail.height}` : "-") }}</span></div>
-          <div class="detail-row"><span class="stat-label">格式</span><span class="text-body">{{ detail.format ?? "-" }}</span></div>
-          <div class="detail-row"><span class="stat-label">大小</span><span class="text-body">{{ formatBytes(detail.size) }}</span></div>
-          <div class="detail-row"><span class="stat-label">来源</span><span class="text-body">{{ detail.source ?? "未入库" }}</span></div>
-          <div v-if="detail.created_at" class="detail-row"><span class="stat-label">入库时间</span><span class="text-body">{{ detail.created_at.slice(0, 16) }}</span></div>
-          <div v-if="detail.title" class="detail-row detail-row--col"><span class="stat-label">标题</span><span class="text-body">{{ detail.title }}</span></div>
-          <div v-if="detail.source_url || detail.permalink || detail.download_url" class="detail-row detail-row--col">
-            <span class="stat-label">链接</span>
-            <div class="detail-links">
-              <v-btn v-if="detail.source_url" size="x-small" variant="text" color="primary" @click="onOpenLink(detail.source_url)">来源页面</v-btn>
-              <v-btn v-if="detail.permalink" size="x-small" variant="text" color="primary" @click="onOpenLink(detail.permalink)">Reddit 帖子</v-btn>
-              <v-btn v-if="detail.download_url" size="x-small" variant="text" color="primary" @click="onOpenLink(detail.download_url)">原图 URL</v-btn>
-            </div>
-          </div>
-        </div>
-        <div class="detail-actions">
-          <v-select
-            v-model="monitorChoice"
-            :items="monitorItems"
-            label="显示器"
-            density="compact"
-            hide-details
-            class="settings-field"
-          />
-          <v-btn
-            color="primary"
-            variant="flat"
-            prepend-icon="mdi-monitor"
-            :loading="settingWallpaper"
-            @click="onSetWallpaper(detail.path, monitorChoice)"
-          >
-            设为壁纸
-          </v-btn>
-          <v-btn variant="tonal" color="error" prepend-icon="mdi-delete-outline" @click="onDeleteSingle({ name: detail.name, path: detail.path, thumb_path: null, size: detail.size, is_orphan: !detail.source, modified_date: null })">
-            删除
-          </v-btn>
-        </div>
-      </div>
-    </v-navigation-drawer>
+    <ImageDetailDrawer
+      v-model:detail-open="detailOpen"
+      :detail="detail"
+      :entry="detailEntry"
+      :loading="detailLoading"
+      :monitor-items="monitorItems"
+      v-model:monitor="monitorChoice"
+      :setting-wallpaper="settingWallpaper"
+      @open-viewer="openViewerFor"
+      @open-link="onOpenLink"
+      @set-wallpaper="(path, monitor) => onSetWallpaper(path, monitor)"
+      @delete="onDeleteSingle"
+    />
 
     <!-- 全屏查看器 -->
     <ImageViewer

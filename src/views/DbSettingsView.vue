@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from "vue";
+import { computed, onActivated, onDeactivated, onMounted, ref, watch } from "vue";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import type { AppConfig, ImageRecord, OrphanFile, SyncImportResult } from "../types";
 import {
@@ -32,6 +32,12 @@ import ProgressCard from "../components/ProgressCard.vue";
 const dbDir = ref("");
 const savingDir = ref(false);
 
+// KeepAlive 下该视图只在首次挂载时跑一次 onMounted，之后切走再切回不会重新加载。
+// 用 viewActive 标志 + onActivated/onDeactivated + 监听 galleryEpoch，保证：
+// 1) 每次切回本页都刷新；2) 本页可见时下载完成/补下载（galleryEpoch++）也会刷新。
+let viewActive = false;
+let hasActivated = false;
+
 onMounted(async () => {
   dbDir.value = appState.config?.db_dir ?? "";
   ossEndpoint.value = appState.config?.oss_endpoint ?? "";
@@ -41,8 +47,26 @@ onMounted(async () => {
   ossPrefix.value = appState.config?.oss_prefix ?? "";
   ossAutoUpload.value = appState.config?.oss_auto_upload_on_exit ?? false;
   ossAutoDownload.value = appState.config?.oss_auto_download_on_start ?? false;
+  viewActive = true;
   await reloadAll();
 });
+
+onActivated(() => {
+  viewActive = true;
+  // 首次挂载时 onActivated 紧跟 onMounted 触发，跳过那一次避免重复加载；
+  // 之后每次从其他页面切回来都刷新一遍缺失/孤儿列表。
+  if (hasActivated) reloadAll();
+  hasActivated = true;
+});
+onDeactivated(() => {
+  viewActive = false;
+});
+watch(
+  () => appState.galleryEpoch,
+  () => {
+    if (viewActive) reloadAll();
+  },
+);
 
 async function pickDbDir() {
   try {

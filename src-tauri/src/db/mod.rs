@@ -122,6 +122,8 @@ fn migrate_legacy_indexes(conn: &Connection, db_path: &str) -> SqlResult<()> {
 
 /// 只读打开已存在的数据库（不创建文件）。
 /// 文件不存在时返回错误，避免任何查询路径静默创建空库。
+/// 仅被 `#[cfg(test)]` 的单条插入函数使用（批量路径走 `with_cached_connection`）。
+#[cfg(test)]
 fn open(db_path: &str) -> SqlResult<Connection> {
     let conn = Connection::open_with_flags(
         db_path,

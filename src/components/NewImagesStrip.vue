@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, reactive, watch } from "vue";
+import { computed, shallowRef, watch } from "vue";
 import { appState } from "../stores/app";
 import type { Source } from "../types";
 import { assetUrl, resolveThumbnails } from "../utils/api";
@@ -15,8 +15,10 @@ const images = computed(() =>
 const shown = computed(() => images.value.slice(-MAX_SHOW));
 const extra = computed(() => Math.max(0, images.value.length - MAX_SHOW));
 
-/* 96px 的小格子没必要加载 4K 原图，优先取后端已生成好的缩略图。 */
-const thumbUrls = reactive<Record<string, string>>({});
+/* 96px 的小格子没必要加载 4K 原图，优先取后端已生成好的缩略图。
+ * shallowRef + Map：整批写入只触发一次更新；并设上限，避免长会话里无限增长。 */
+const thumbUrls = shallowRef<Map<string, string>>(new Map());
+const THUMB_CACHE_MAX = 200;
 let thumbSeq = 0;
 
 watch(
@@ -29,7 +31,15 @@ watch(
       const dpr = appState.config?.thumbnail_dpr ?? 2;
       const batch = await resolveThumbnails(props.source, names, dpr);
       if (seq !== thumbSeq) return;
-      for (const it of batch.items) thumbUrls[it.name] = assetUrl(it.thumb_path);
+      const next = new Map(thumbUrls.value);
+      for (const it of batch.items) next.set(it.name, assetUrl(it.thumb_path));
+      // Map 保持插入顺序，超限时丢弃最早写入的条目
+      while (next.size > THUMB_CACHE_MAX) {
+        const oldest = next.keys().next().value;
+        if (oldest === undefined) break;
+        next.delete(oldest);
+      }
+      thumbUrls.value = next;
     } catch {
       // 失败时退回到原图，保证预览条可用
     }
@@ -38,7 +48,7 @@ watch(
 );
 
 function thumbOf(name: string, path: string): string {
-  return thumbUrls[name] ?? assetUrl(path);
+  return thumbUrls.value.get(name) ?? assetUrl(path);
 }
 </script>
 

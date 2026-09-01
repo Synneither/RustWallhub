@@ -68,12 +68,17 @@ impl ProgressThrottle {
 // ---------------------------------------------------------------------------
 
 pub struct FileListCache {
+    /// 目录中的**全量**条目（不含任何搜索过滤）。搜索与排序只在读取时应用，
+    /// 否则一次带搜索的扫描会把子集写进缓存，清空搜索框后图库会凭空少图。
     pub items: std::sync::Arc<[FileEntry]>,
     pub source: String,
     pub dir_path: String,
     pub cached_at: Instant,
     /// 缓存创建时目录的 mtime。目录有增删时 mtime 会变化，可用于快速失效。
     pub dir_modified: Option<std::time::SystemTime>,
+    /// `items` 当前已按此排序键排好序。请求同一排序键且无搜索时可直接切片分页，
+    /// 省掉每翻一页就做一次的 O(n log n) 全量重排。
+    pub sorted_by: String,
 }
 
 #[derive(Clone)]
@@ -120,7 +125,7 @@ impl serde::Serialize for AppError {
     }
 }
 
-/// 校验一个字符串是“纯文件名”而不是路径（拒绝 `/`、`\`、绝对路径与 `..` 组件）。
+/// 校验一个字符串是“纯文件名”而不是路径（拒绝 `/`、绝对路径与 `..` 组件）。
 /// 所有从 IPC 接收、随后要拼接到目录后面的 filename 参数都应先经过此校验。
 pub fn ensure_plain_filename(name: &str) -> Result<(), AppError> {
     use std::path::Component;
@@ -128,7 +133,7 @@ pub fn ensure_plain_filename(name: &str) -> Result<(), AppError> {
     let path = std::path::Path::new(name);
     let mut components = path.components();
     let valid = match (components.next(), components.next()) {
-        (Some(Component::Normal(_)), None) => !name.contains('\\'),
+        (Some(Component::Normal(_)), None) => !has_path_separator(name),
         _ => false,
     };
     if !valid {
@@ -137,25 +142,70 @@ pub fn ensure_plain_filename(name: &str) -> Result<(), AppError> {
     Ok(())
 }
 
+/// Windows 上反斜杠是路径分隔符，出现在文件名里即视为穿越尝试；
+/// Linux/macOS 上反斜杠是**合法**的文件名字符，不能因此拒绝该文件。
+#[cfg(target_os = "windows")]
+fn has_path_separator(name: &str) -> bool {
+    name.contains('\\')
+}
+
+#[cfg(not(target_os = "windows"))]
+fn has_path_separator(_name: &str) -> bool {
+    false
+}
+
 /// Safely join `name` onto `base`, rejecting path-traversal attempts like `../`.
 /// Returns the canonicalized path if it lies within `base`, otherwise an error.
 pub fn safe_join(base: &std::path::Path, name: &str) -> Result<PathBuf, AppError> {
+    let base_canonical = base
+        .canonicalize()
+        .map_err(|e| AppError::Other(format!("无法解析基础路径: {e}")))?;
+    safe_join_with(base, &base_canonical, name)
+}
+
+/// 与 [`safe_join`] 相同的校验，但复用已 canonicalize 过的 base。
+/// 单个文件在循环里反复 canonicalize base 是纯浪费（每个文件 2 次 syscall）。
+fn safe_join_with(
+    base: &std::path::Path,
+    base_canonical: &std::path::Path,
+    name: &str,
+) -> Result<PathBuf, AppError> {
     ensure_plain_filename(name)?;
     let candidate = base.join(name);
     // If the file doesn't exist yet, canonicalize the parent and join the filename
     let resolved = if candidate.exists() {
         candidate.canonicalize()
     } else {
-        base.canonicalize().map(|c| c.join(name))
+        Ok(base_canonical.join(name))
     };
     let resolved = resolved.map_err(|e| AppError::Other(format!("无法解析路径: {e}")))?;
-    let base_canonical = base
-        .canonicalize()
-        .map_err(|e| AppError::Other(format!("无法解析基础路径: {e}")))?;
-    if !resolved.starts_with(&base_canonical) {
+    if !resolved.starts_with(base_canonical) {
         return Err(AppError::Other("非法的文件路径".into()));
     }
     Ok(resolved)
+}
+
+/// 批量解析文件名 → 安全路径。base 只 canonicalize 一次，且**单个失败不会中断整批**：
+/// 失败项只记日志并跳过，返回成功解析的 `(文件名, 路径)` 列表。
+///
+/// 批量操作（删除/标记/收养）里若用 `safe_join(...)?`，第一个失败就会让剩余文件全部
+/// 得不到处理，而用户点了「删除 20 个」往往期望尽力完成。
+pub fn safe_join_all<'a>(base: &std::path::Path, names: &'a [String]) -> Vec<(&'a str, PathBuf)> {
+    let base_canonical = match base.canonicalize() {
+        Ok(c) => c,
+        Err(e) => {
+            log::warn!("[safe_join_all] 无法解析基础路径 {}: {}", base.display(), e);
+            return Vec::new();
+        }
+    };
+    let mut out = Vec::with_capacity(names.len());
+    for name in names {
+        match safe_join_with(base, &base_canonical, name) {
+            Ok(path) => out.push((name.as_str(), path)),
+            Err(e) => log::warn!("[safe_join_all] 跳过 {}: {}", name, e),
+        }
+    }
+    out
 }
 
 // ---------------------------------------------------------------------------

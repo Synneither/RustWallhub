@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, reactive, ref } from "vue";
+import { computed, ref } from "vue";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import type { AppConfig } from "../types";
 import { checkUpdate, installUpdate, saveSettings } from "../utils/api";
@@ -7,6 +7,7 @@ import { appState, askConfirm, dbReady, ensureDatabases, toast, toastError } fro
 import { positiveInt, requiredRule } from "../utils/rules";
 import { useTheme, type Theme } from "../stores/theme";
 import { formatBytes } from "../utils/format";
+import { useConfigDraft } from "../composables/useConfigDraft";
 
 const { theme, userOverride, set: setTheme, resetToSystem } = useTheme();
 // 与 store 实际状态派生：手动指定过则高亮对应主题，否则高亮"跟随系统"
@@ -14,7 +15,18 @@ const themeChoice = computed<"system" | Theme>(() =>
   userOverride.value ? theme.value : "system",
 );
 
-const draft = reactive({
+const SETTINGS_DRAFT_KEYS = [
+  "wallhaven_save_dir",
+  "reddit_save_dir",
+  "thumbnails_dir",
+  "download_concurrency",
+  "request_timeout",
+  "thumbnail_dpr",
+  "proxy_url",
+  "auto_update",
+] as const;
+
+const { draft, saving } = useConfigDraft(SETTINGS_DRAFT_KEYS, {
   wallhaven_save_dir: "",
   reddit_save_dir: "",
   thumbnails_dir: "",
@@ -23,19 +35,6 @@ const draft = reactive({
   thumbnail_dpr: 2,
   proxy_url: "",
   auto_update: true,
-});
-
-onMounted(() => {
-  const c = appState.config;
-  if (!c) return;
-  draft.wallhaven_save_dir = c.wallhaven_save_dir;
-  draft.reddit_save_dir = c.reddit_save_dir;
-  draft.thumbnails_dir = c.thumbnails_dir;
-  draft.download_concurrency = c.download_concurrency;
-  draft.request_timeout = c.request_timeout;
-  draft.thumbnail_dpr = c.thumbnail_dpr;
-  draft.proxy_url = c.proxy_url;
-  draft.auto_update = c.auto_update;
 });
 
 async function pickDir(field: "wallhaven_save_dir" | "reddit_save_dir" | "thumbnails_dir") {
@@ -48,7 +47,6 @@ async function pickDir(field: "wallhaven_save_dir" | "reddit_save_dir" | "thumbn
 }
 
 /* ── 保存 ── */
-const saving = ref(false);
 const savedFlash = ref(false);
 
 async function onSave() {

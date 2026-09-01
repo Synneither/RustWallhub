@@ -89,7 +89,7 @@ pub fn ensure_thumbnail(
     Ok(dst)
 }
 
-#[cfg_attr(not(test), allow(dead_code))]
+#[cfg(test)]
 pub fn save_thumbnail_from_bytes(
     thumb_dir: &Path,
     filename: &str,

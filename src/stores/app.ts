@@ -3,12 +3,10 @@
  * App.vue 在挂载时调用 bootstrap() 与 registerGlobalListeners()。
  */
 import { reactive, computed } from "vue";
+import type { UnlistenFn } from "@tauri-apps/api/event";
 import type {
   AppConfig,
   DatabaseStatus,
-  DownloadCompletePayload,
-  DownloadProgressPayload,
-  ImageDownloadedPayload,
   SlideshowTickPayload,
   StatsResponse,
   UpdateInfo,
@@ -231,69 +229,107 @@ function schedulePostDownloadRefresh() {
   }, 400);
 }
 
+/** 已注册的全局监听器卸载函数，供 unregisterGlobalListeners() 与 HMR 统一解绑。 */
+const unlistenFns: UnlistenFn[] = [];
+
 export async function registerGlobalListeners() {
   if (listenersRegistered) return;
   listenersRegistered = true;
 
-  await onDownloadProgress((p: DownloadProgressPayload) => {
-    const t = taskOf(p.source);
-    t.active = true;
-    t.done = p.done;
-    t.total = p.total;
-    t.message = p.message;
-  });
+  // 逐个 await 并保存卸载函数。此前返回值全部丢弃，dev 下 HMR 重新执行本模块时
+  // 监听器会叠加（表现为 toast 重复弹出、galleryEpoch 一次事件自增多次）。
+  unlistenFns.push(
+    await onDownloadProgress((p) => {
+      const t = taskOf(p.source);
+      t.active = true;
+      t.done = p.done;
+      t.total = p.total;
+      t.message = p.message;
+    }),
+  );
 
-  await onDownloadComplete((p: DownloadCompletePayload) => {
-    const t = taskOf(p.source);
-    t.active = false;
-    t.done = p.total;
-    t.total = p.total;
-    t.message = p.message;
-    t.lastComplete = { success: p.success, total: p.total, message: p.message };
-    toast(p.message || `下载完成：成功 ${p.success}/${p.total}`, "success");
-    schedulePostDownloadRefresh();
-  });
+  unlistenFns.push(
+    await onDownloadComplete((p) => {
+      const t = taskOf(p.source);
+      t.active = false;
+      t.done = p.total;
+      t.total = p.total;
+      t.message = p.message;
+      t.lastComplete = { success: p.success, total: p.total, message: p.message };
+      toast(p.message || `下载完成：成功 ${p.success}/${p.total}`, "success");
+      schedulePostDownloadRefresh();
+    }),
+  );
 
-  await onImageDownloaded((p: ImageDownloadedPayload) => {
-    appState.newImages.push({ source: p.source, name: p.name, path: p.path });
-    // 预览条最多展示 12 张，这里限制会话内累积数量，避免长任务让数组无限增长。
-    const MAX_NEW_IMAGES = 120;
-    if (appState.newImages.length > MAX_NEW_IMAGES) {
-      appState.newImages.splice(0, appState.newImages.length - MAX_NEW_IMAGES);
-    }
-  });
+  unlistenFns.push(
+    await onImageDownloaded((p) => {
+      appState.newImages.push({ source: p.source, name: p.name, path: p.path });
+      // 预览条最多展示 12 张，这里限制会话内累积数量，避免长任务让数组无限增长。
+      const MAX_NEW_IMAGES = 120;
+      if (appState.newImages.length > MAX_NEW_IMAGES) {
+        appState.newImages.splice(0, appState.newImages.length - MAX_NEW_IMAGES);
+      }
+    }),
+  );
 
-  await onSettingsChanged(() => {
-    appState.galleryEpoch++;
-  });
+  unlistenFns.push(
+    await onSettingsChanged(() => {
+      appState.galleryEpoch++;
+    }),
+  );
 
-  await onUpdateAvailable((info: UpdateInfo) => {
-    appState.update.info = info;
-  });
+  unlistenFns.push(
+    await onUpdateAvailable((info) => {
+      appState.update.info = info;
+    }),
+  );
 
-  await onUpdateProgress((p) => {
-    appState.update.downloaded = p.downloaded;
-    appState.update.total = p.total;
-  });
+  unlistenFns.push(
+    await onUpdateProgress((p) => {
+      appState.update.downloaded = p.downloaded;
+      appState.update.total = p.total;
+    }),
+  );
 
-  await onUpdateInstalling(() => {
-    appState.update.installing = true;
-  });
+  unlistenFns.push(
+    await onUpdateInstalling(() => {
+      appState.update.installing = true;
+    }),
+  );
 
-  await onSlideshowTick((p: SlideshowTickPayload) => {
-    appState.slideshow.running = true;
-    appState.slideshow.current = p;
-  });
+  unlistenFns.push(
+    await onSlideshowTick((p) => {
+      appState.slideshow.running = true;
+      appState.slideshow.current = p;
+    }),
+  );
 
   // 启动自动拉取的结果：成功后刷新统计与图库，失败只提示
-  await onSyncCompleted((msg: string) => {
-    toast(`云端同步：${msg}`, "success");
-    refreshStats();
-    appState.galleryEpoch++;
-  });
+  unlistenFns.push(
+    await onSyncCompleted((msg) => {
+      toast(`云端同步：${msg}`, "success");
+      refreshStats();
+      appState.galleryEpoch++;
+    }),
+  );
 
-  await onSyncFailed((msg: string) => {
-    toast(`云端同步失败：${msg}`, "error");
+  unlistenFns.push(
+    await onSyncFailed((msg) => {
+      toast(`云端同步失败：${msg}`, "error");
+    }),
+  );
+}
+
+/** 解绑全部全局监听器并复位注册标志（HMR / 卸载时调用）。 */
+export function unregisterGlobalListeners() {
+  for (const unlisten of unlistenFns.splice(0)) unlisten();
+  listenersRegistered = false;
+}
+
+// Vite 热更新会重新执行本模块，此时必须解绑旧监听器，否则与新的那套并存。
+if (import.meta.hot) {
+  import.meta.hot.dispose(() => {
+    unregisterGlobalListeners();
   });
 }
 
