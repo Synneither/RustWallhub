@@ -401,7 +401,11 @@ mod tests {
         assert!(ensure_plain_filename("..").is_err());
         assert!(ensure_plain_filename("../a.jpg").is_err());
         assert!(ensure_plain_filename("sub/a.jpg").is_err());
+        // 反斜杠在 Windows 是路径分隔符（应拒绝），在 Linux/macOS 是合法文件名字符（应接受）。
+        #[cfg(windows)]
         assert!(ensure_plain_filename("sub\\a.jpg").is_err());
+        #[cfg(not(windows))]
+        assert!(ensure_plain_filename("sub\\a.jpg").is_ok());
         assert!(ensure_plain_filename("").is_err());
     }
 }
