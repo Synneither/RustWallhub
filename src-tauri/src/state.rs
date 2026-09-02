@@ -2,8 +2,9 @@
 //!
 //! All Tauri commands in `commands/` depend on the types and helpers defined here.
 
-use crate::config::AppConfig;
+use crate::config::{AppConfig, Source};
 use rusqlite::Connection;
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex};
@@ -97,7 +98,9 @@ pub struct FileEntry {
 pub struct AppState {
     pub config_path: Mutex<PathBuf>,
     pub file_cache: Mutex<Option<FileListCache>>,
-    pub cancel_flag: Mutex<Option<Arc<AtomicBool>>>,
+    /// 按 source 独立的下载取消标志。旧实现是单个 `Option<Arc<AtomicBool>>` 槽位，
+    /// 并发下载时后启动者会覆盖前者，导致 cancel 只能取消最后一个任务。
+    pub cancel_flag: Mutex<HashMap<String, Arc<AtomicBool>>>,
     pub http_client: Mutex<reqwest::Client>,
     pub config_cache: Mutex<Option<AppConfig>>,
     pub slideshow_cancel: Mutex<Option<Arc<AtomicBool>>>,
@@ -348,10 +351,11 @@ pub fn save_config(state: &tauri::State<'_, AppState>, config: &AppConfig) -> Re
     Ok(())
 }
 
-pub fn setup_cancel_flag(state: &AppState) -> Arc<AtomicBool> {
+pub fn setup_cancel_flag(state: &AppState, source: Source) -> Arc<AtomicBool> {
     let flag = Arc::new(AtomicBool::new(false));
     if let Ok(mut guard) = state.cancel_flag.lock() {
-        *guard = Some(flag.clone());
+        // 按 source 存，避免并发下载时后启动者覆盖前者的取消标志。
+        guard.insert(source.to_string(), flag.clone());
     }
     flag
 }
@@ -385,9 +389,17 @@ pub async fn save_image(
     bytes: &[u8],
 ) -> Result<(), String> {
     let save_path = save_path.as_ref();
-    tokio::fs::write(save_path, bytes)
+    // 原子写：直接 write 会在中途崩溃/断电/取消时留下截断的损坏图片（内容寻址的
+    // Reddit 文件名 `{hash}.{ext}` 会「看似正确」但图片已坏）。先写同目录临时文件再 rename。
+    let mut tmp_os = save_path.as_os_str().to_os_string();
+    tmp_os.push(".tmp");
+    let tmp = std::path::PathBuf::from(tmp_os);
+    tokio::fs::write(&tmp, bytes)
         .await
-        .map_err(|e| format!("写入文件失败 {}: {e}", save_path.display()))
+        .map_err(|e| format!("写入临时文件失败 {}: {e}", tmp.display()))?;
+    tokio::fs::rename(&tmp, save_path)
+        .await
+        .map_err(|e| format!("重命名文件失败 {}: {e}", save_path.display()))
 }
 
 #[cfg(test)]

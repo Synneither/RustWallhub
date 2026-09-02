@@ -147,6 +147,10 @@ export function askConfirm(
   text: string,
   opts: { danger?: boolean; confirmText?: string } = {},
 ): Promise<boolean> {
+  // 若已有未决确认框，先以 false 结算旧的，避免旧调用方的 await 永久挂起。
+  if (appState.confirm.visible) {
+    settleConfirm(false);
+  }
   return new Promise((resolve) => {
     appState.confirm = {
       visible: true,
@@ -258,7 +262,11 @@ export async function registerGlobalListeners() {
       t.total = p.total;
       t.message = p.message;
       t.lastComplete = { success: p.success, total: p.total, message: p.message };
-      toast(p.message || `下载完成：成功 ${p.success}/${p.total}`, "success");
+      // 取消/部分失败不能被误报成绿色成功，按结果选类型。
+      const cancelled = p.message?.includes("取消");
+      const allSuccess = p.success === p.total;
+      const msg = p.message || `下载完成：成功 ${p.success}/${p.total}`;
+      toast(msg, cancelled ? "info" : allSuccess ? "success" : "error");
       schedulePostDownloadRefresh();
     }),
   );

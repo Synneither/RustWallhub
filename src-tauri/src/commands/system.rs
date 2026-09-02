@@ -33,15 +33,17 @@ fn get_active_wallpaper_sync() -> Result<ActiveWallpaper, AppError> {
     let json: serde_json::Value = serde_json::from_str(&content)
         .map_err(|e| AppError::Other(format!("解析 noctalia 配置失败: {e}")))?;
 
+    // gsettings 探测失败（非 GNOME / 命令不可用）时回退 light 主题，
+    // 避免 `is_none_or` 把「探测失败」误判成「dark 主题」而读错 key。
     let is_dark = Command::new("gsettings")
         .args(["get", "org.gnome.desktop.interface", "color-scheme"])
         .output()
-        .ok()
-        .is_none_or(|o| {
+        .map(|o| {
             String::from_utf8_lossy(&o.stdout)
                 .to_lowercase()
                 .contains("dark")
-        });
+        })
+        .unwrap_or(false);
 
     let key = if is_dark { "dark" } else { "light" };
 

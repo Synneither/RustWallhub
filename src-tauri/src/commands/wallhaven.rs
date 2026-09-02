@@ -1,5 +1,6 @@
 //! Wallhaven commands: search_wallhaven, start_wallhaven_download, download_wallhaven_selected.
 
+use crate::config::Source;
 use crate::db;
 use crate::downloader;
 use crate::state::{
@@ -97,11 +98,8 @@ pub async fn search_wallhaven(
                 .as_ref()
                 .map(|t| t.large.clone())
                 .unwrap_or_else(|| {
-                    let prefix = if img.id.len() >= 2 {
-                        &img.id[..2]
-                    } else {
-                        &img.id[..1]
-                    };
+                    // 空 id 时 `[..1]` 会字节越界 panic，用 min(2) 截断（空 id → 空前缀）。
+                    let prefix = &img.id[..img.id.len().min(2)];
                     format!("https://th.wallhaven.cc/small/{prefix}/{}.jpg", img.id)
                 });
             WallhavenImageEntry {
@@ -131,7 +129,7 @@ pub async fn start_wallhaven_download(
 ) -> Result<String, AppError> {
     log::info!("[CMD] start_wallhaven_download called");
     let config = crate::state::load_config(&state)?;
-    let cancel = setup_cancel_flag(&state);
+    let cancel = setup_cancel_flag(&state, Source::Wallhaven);
     let app_clone = app.clone();
     let client = state
         .http_client
@@ -333,10 +331,12 @@ pub async fn start_wallhaven_download(
                     Ok(Ok(res)) => res,
                     Ok(Err(e)) => {
                         log::error!("[wallhaven] 批量写入数据库失败: {e}");
+                        rollback_saved_files(&saved_files);
                         (0, batch_len, Vec::new())
                     }
                     Err(e) => {
                         log::error!("[wallhaven] 批量写入数据库任务异常: {e}");
+                        rollback_saved_files(&saved_files);
                         (0, batch_len, Vec::new())
                     }
                 };
@@ -395,7 +395,7 @@ pub async fn download_wallhaven_selected(
         )));
     }
     let config = crate::state::load_config(&state)?;
-    let cancel = setup_cancel_flag(&state);
+    let cancel = setup_cancel_flag(&state, Source::Wallhaven);
     let app_clone = app.clone();
     let client = state
         .http_client
@@ -520,10 +520,12 @@ pub async fn download_wallhaven_selected(
                     Ok(Ok(res)) => res,
                     Ok(Err(e)) => {
                         log::error!("[wallhaven] 批量写入数据库失败: {e}");
+                        rollback_saved_files(&saved_files);
                         (0, batch_len, Vec::new())
                     }
                     Err(e) => {
                         log::error!("[wallhaven] 批量写入数据库任务异常: {e}");
+                        rollback_saved_files(&saved_files);
                         (0, batch_len, Vec::new())
                     }
                 };
@@ -566,6 +568,17 @@ pub async fn download_wallhaven_selected(
     });
 
     Ok(format!("即将下载 {count} 张壁纸"))
+}
+
+/// DB 写入失败时回滚已落盘的文件，避免「磁盘有文件、库无记录」的孤儿状态。
+fn rollback_saved_files(saved_files: &[(String, String)]) {
+    for (name, path) in saved_files {
+        if let Err(e) = std::fs::remove_file(path) {
+            log::warn!("[wallhaven] 回滚文件失败 {name}: {e}");
+        } else {
+            log::warn!("[wallhaven] DB 写入失败，已回滚文件 {name}");
+        }
+    }
 }
 
 #[cfg(test)]

@@ -432,18 +432,25 @@ const recordTotalPages = computed(() =>
   Math.max(1, Math.ceil(recordTotal.value / RECORD_PAGE_SIZE)),
 );
 
+/** 记录列表竞态控制：快速切来源/翻页时，慢响应不得覆盖新响应。 */
+let recordSeq = 0;
+
 async function loadRecords() {
+  const seq = ++recordSeq;
   recordsLoading.value = true;
   try {
-    records.value = await listDatabaseImages(
+    const res = await listDatabaseImages(
       recordSource.value,
       RECORD_PAGE_SIZE,
       (recordPage.value - 1) * RECORD_PAGE_SIZE,
     );
+    if (seq !== recordSeq) return;
+    records.value = res;
   } catch (e) {
+    if (seq !== recordSeq) return;
     toastError(e);
   } finally {
-    recordsLoading.value = false;
+    if (seq === recordSeq) recordsLoading.value = false;
   }
 }
 
@@ -571,6 +578,7 @@ const tab = ref<"missing" | "orphan" | "records">("missing");
               :loading="loading"
               show-select
               item-value="name"
+              return-object
               density="compact"
               class="db-table"
               :headers="[
@@ -618,6 +626,7 @@ const tab = ref<"missing" | "orphan" | "records">("missing");
               :loading="loading"
               show-select
               item-value="path"
+              return-object
               density="compact"
               class="db-table"
               :headers="[

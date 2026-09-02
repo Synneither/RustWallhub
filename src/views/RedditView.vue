@@ -31,8 +31,8 @@ async function onStart() {
   starting.value = true;
   try {
     if (!(await persist())) return;
-    clearNewImages("reddit");
     const msg = await startRedditDownload();
+    clearNewImages("reddit");
     toast(msg, "info");
   } catch (e) {
     toastError(e);

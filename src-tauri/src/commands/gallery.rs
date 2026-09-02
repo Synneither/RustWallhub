@@ -620,7 +620,10 @@ pub async fn adopt_orphan_files(
                     wallhaven_id.to_string(),
                     name.to_string(),
                     hash,
-                    String::new(),
+                    // url 列 UNIQUE，收养的孤儿没有真实下载 URL，若全写空串，
+                    // 批量收养时第二条起会撞 UNIQUE 约束被静默 skip（只入 1 条）。
+                    // 用 `orphan:{name}` 占位保证唯一，且不会与真实 https URL 冲突。
+                    format!("orphan:{name}"),
                     String::new(),
                     "unknown".to_string(),
                 ));
@@ -628,7 +631,7 @@ pub async fn adopt_orphan_files(
                 reddit_batch.push((
                     name.to_string(),
                     hash,
-                    String::new(),
+                    format!("orphan:{name}"),
                     String::new(),
                     String::new(),
                 ));

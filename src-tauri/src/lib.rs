@@ -39,7 +39,19 @@ pub fn run() {
                 .unwrap_or_else(|_| PathBuf::from("."));
             let config_path = config_dir.join("rustwallhub").join("config.json");
 
-            let mut config = AppConfig::load(&config_path).unwrap_or_default();
+            // 配置损坏时不再静默回退默认值：记日志并把损坏文件备份成 .corrupt，
+            // 避免用户 save_dir/API key/OSS 凭据静默丢失、且随后 save 用默认值覆盖原文件。
+            let mut config = match AppConfig::load(&config_path) {
+                Ok(c) => c,
+                Err(e) => {
+                    log::error!("[startup] 配置加载失败，已备份损坏文件并使用默认配置: {e}");
+                    let backup = config_path.with_extension("json.corrupt");
+                    if let Err(ren) = std::fs::rename(&config_path, &backup) {
+                        log::error!("[startup] 备份损坏配置失败: {ren}");
+                    }
+                    AppConfig::default()
+                }
+            };
             config.sync_db_dir();
             if let Some(base_dir) = config_path.parent() {
                 config.db_dir = state::normalize_config_path(base_dir, config.db_dir);
@@ -96,7 +108,7 @@ pub fn run() {
             app.manage(AppState {
                 config_path: Mutex::new(config_path),
                 file_cache: Mutex::new(None),
-                cancel_flag: Mutex::new(None),
+                cancel_flag: Mutex::new(std::collections::HashMap::new()),
                 http_client: Mutex::new(client),
                 config_cache: Mutex::new(Some(config)),
                 slideshow_cancel: Mutex::new(None),

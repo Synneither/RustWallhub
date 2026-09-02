@@ -204,7 +204,7 @@ impl AppConfig {
         }
     }
 
-    /// 保存配置到文件。自动创建父目录。
+    /// 保存配置到文件。自动创建父目录；先写临时文件再 rename，原子落盘。
     pub fn save(&self, path: &Path) -> Result<(), String> {
         log::info!("[config] save: saving to {}", path.display());
         let mut config = self.clone();
@@ -213,7 +213,11 @@ impl AppConfig {
             std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
         }
         let content = serde_json::to_string_pretty(&config).map_err(|e| e.to_string())?;
-        std::fs::write(path, content).map_err(|e| e.to_string())?;
+        // 原子写：直接 write 会在写入中途崩溃/断电时截断 config.json（叠加启动时的
+        // unwrap_or_default 会导致配置全部丢失）。先写同目录临时文件再 rename。
+        let tmp = path.with_extension("json.tmp");
+        std::fs::write(&tmp, content).map_err(|e| e.to_string())?;
+        std::fs::rename(&tmp, path).map_err(|e| e.to_string())?;
         log::info!("[config] save: done");
         Ok(())
     }

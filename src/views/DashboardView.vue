@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, inject, onMounted, ref } from "vue";
+import { computed, inject, onActivated, onMounted, ref } from "vue";
 import { appState, dbReady, refreshStats, toast, toastError } from "../stores/app";
 import { assetUrl, getActiveWallpaper, startWallhavenDownload, startRedditDownload, stopSlideshow } from "../utils/api";
 import StatPanel from "../components/StatPanel.vue";
@@ -54,6 +54,11 @@ async function onStopSlideshow() {
 
 onMounted(() => {
   if (dbReady.value) refreshStats();
+  loadActiveWallpaper();
+});
+
+// KeepAlive 下切走再切回时重载「当前壁纸」，否则在图库换壁纸后返回仍显示旧值。
+onActivated(() => {
   loadActiveWallpaper();
 });
 

@@ -84,8 +84,31 @@ fn authorization(
     format!("OSS {}:{}", oss.access_key_id, signature)
 }
 
+/// 对对象 key 做 RFC 3986 百分号编码（保留 `/` 与 unreserved 字符）。
+/// 签名里的 canonicalized resource 用**未编码**的原始 key，URL 用编码后的 key，
+/// 两者必须分开处理，否则非 ASCII 前缀下签名与 URL 不匹配。
+fn url_encode_key(key: &str) -> String {
+    const HEX: &[u8; 16] = b"0123456789ABCDEF";
+    let mut out = String::with_capacity(key.len() * 3);
+    for &b in key.as_bytes() {
+        if b.is_ascii_alphanumeric() || matches!(b, b'/' | b'-' | b'_' | b'.' | b'~') {
+            out.push(b as char);
+        } else {
+            out.push('%');
+            out.push(HEX[(b >> 4) as usize] as char);
+            out.push(HEX[(b & 0xf) as usize] as char);
+        }
+    }
+    out
+}
+
 fn object_url(oss: &OssConfig, key: &str) -> String {
-    format!("https://{}.{}/{key}", oss.bucket, oss.endpoint)
+    format!(
+        "https://{}.{}/{}",
+        oss.bucket,
+        oss.endpoint,
+        url_encode_key(key)
+    )
 }
 
 async fn check_status(
@@ -235,6 +258,11 @@ mod tests {
         assert_eq!(
             object_url(&oss, "rustwallhub/x.db"),
             "https://mybucket.oss-cn-beijing.aliyuncs.com/rustwallhub/x.db"
+        );
+        // 非 ASCII / 空格应被百分号编码，`/` 保留
+        assert_eq!(
+            object_url(&oss, "rustwallhub/壁纸 库.db"),
+            "https://mybucket.oss-cn-beijing.aliyuncs.com/rustwallhub/%E5%A3%81%E7%BA%B8%20%E5%BA%93.db"
         );
     }
 

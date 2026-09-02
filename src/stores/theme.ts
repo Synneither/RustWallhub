@@ -26,11 +26,19 @@ const userOverride = ref(stored !== null);
 
 // 系统主题变化时自动跟随（仅当用户未手动指定时）
 const media = window.matchMedia("(prefers-color-scheme: dark)");
-media.addEventListener("change", (e) => {
+const onMediaChange = (e: MediaQueryListEvent) => {
   if (userOverride.value) return;
   theme.value = e.matches ? "dim" : "light";
   logger.action("Theme", "系统主题变化已跟随", { theme: theme.value });
-});
+};
+media.addEventListener("change", onMediaChange);
+
+// HMR 时移除旧监听器，避免热更新后监听器叠加
+if (import.meta.hot) {
+  import.meta.hot.dispose(() => {
+    media.removeEventListener("change", onMediaChange);
+  });
+}
 
 function persist() {
   try {

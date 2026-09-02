@@ -14,7 +14,8 @@ export interface IntRuleOptions {
 }
 
 export function positiveInt(v: number, opts: IntRuleOptions = {}): true | string {
-  if (v === undefined || v === null) return true;
+  // null/undefined 不再放行：字段被清空时应提示，而不是把空值当合法。
+  if (v === undefined || v === null) return "请输入有效数字";
   if (typeof v !== "number" || isNaN(v)) return "请输入有效数字";
   const min = opts.allowZero ? 0 : opts.min ?? 1;
   if (v < min) return opts.allowZero ? "不能为负数" : `不能小于 ${min}`;

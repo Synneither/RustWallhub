@@ -9,7 +9,6 @@ import {
   shallowRef,
   watch,
 } from "vue";
-import { openUrl } from "@tauri-apps/plugin-opener";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import type { ImageInfo, LocalImageEntry, MonitorInfo, OrphanFile } from "../types";
 import {
@@ -34,6 +33,7 @@ import EmptyState from "../components/EmptyState.vue";
 import ImageViewer from "../components/ImageViewer.vue";
 import ImageDetailDrawer from "../components/ImageDetailDrawer.vue";
 import { useSelection } from "../composables/useSelection";
+import { openUrlSafe } from "../utils/openUrl";
 
 /* ════ 浏览状态 ════ */
 type SourceTab = "wallhaven" | "reddit";
@@ -317,29 +317,30 @@ const detailLoading = ref(false);
 const detail = ref<ImageInfo | null>(null);
 /** 触发详情时的原始条目，详情抽屉的预览/删除直接用它，避免用 detail 字段手工拼 entry */
 const detailEntry = ref<LocalImageEntry | null>(null);
+/** 详情请求竞态控制：快速点开 A/B 两图时，慢响应不得覆盖快响应、也不得误关抽屉。 */
+let detailSeq = 0;
 
 async function openDetail(img: LocalImageEntry) {
+  const seq = ++detailSeq;
   detailEntry.value = img;
   detailOpen.value = true;
   detailLoading.value = true;
   detail.value = null;
   try {
-    detail.value = await getImageInfo(source.value, img.name);
+    const info = await getImageInfo(source.value, img.name);
+    if (seq !== detailSeq) return;
+    detail.value = info;
   } catch (e) {
+    if (seq !== detailSeq) return;
     toastError(e);
     detailOpen.value = false;
   } finally {
-    detailLoading.value = false;
+    if (seq === detailSeq) detailLoading.value = false;
   }
 }
 
 async function onOpenLink(url: string | null) {
-  if (!url) return;
-  try {
-    await openUrl(url);
-  } catch (e) {
-    toastError(e);
-  }
+  await openUrlSafe(url);
 }
 
 /* ════ 壁纸 ════ */

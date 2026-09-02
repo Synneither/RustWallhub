@@ -17,7 +17,9 @@ export function formatBytes(bytes: number): string {
 export function formatDateTime(raw: string | null | undefined): string {
   if (!raw) return "-";
   const normalized = raw.includes("T") ? raw : raw.replace(" ", "T");
-  const d = new Date(normalized.endsWith("Z") ? normalized : normalized + "Z");
+  // 已带时区（Z 或 ±hh:mm）就不再拼 Z，否则 `...+08:00Z` 是非法字符串解析失败。
+  const hasTz = /(?:Z|[+-]\d{2}:?\d{2})$/.test(normalized);
+  const d = new Date(hasTz ? normalized : normalized + "Z");
   if (isNaN(d.getTime())) return raw.slice(0, 16);
   const pad = (n: number) => String(n).padStart(2, "0");
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;

@@ -1,5 +1,6 @@
 //! Reddit commands: start_reddit_download.
 
+use crate::config::Source;
 use crate::db;
 use crate::downloader;
 use crate::reddit;
@@ -19,7 +20,7 @@ pub async fn start_reddit_download(
 ) -> Result<String, AppError> {
     log::info!("[CMD] start_reddit_download called");
     let config = crate::state::load_config(&state)?;
-    let cancel = setup_cancel_flag(&state);
+    let cancel = setup_cancel_flag(&state, Source::Reddit);
     let app_clone = app.clone();
     let client = state
         .http_client
@@ -213,10 +214,19 @@ pub async fn start_reddit_download(
                     Ok(Ok(res)) => res,
                     Ok(Err(e)) => {
                         log::error!("[reddit] 批量写入数据库失败: {e}");
+                        // 回滚：删除已落盘文件，避免磁盘有文件但库无记录的孤儿状态。
+                        for (name, path) in &saved_files {
+                            let _ = std::fs::remove_file(path);
+                            log::warn!("[reddit] DB 写入失败，已回滚文件 {name}");
+                        }
                         (0, batch_len, Vec::new())
                     }
                     Err(e) => {
                         log::error!("[reddit] 批量写入数据库任务异常: {e}");
+                        for (name, path) in &saved_files {
+                            let _ = std::fs::remove_file(path);
+                            log::warn!("[reddit] DB 写入失败，已回滚文件 {name}");
+                        }
                         (0, batch_len, Vec::new())
                     }
                 };

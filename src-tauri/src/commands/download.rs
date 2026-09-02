@@ -24,7 +24,7 @@ pub async fn recover_database_files(
         ));
     }
     let config = crate::state::load_config(&state)?;
-    let cancel = setup_cancel_flag(&state);
+    let cancel = setup_cancel_flag(&state, source);
     let client = state
         .http_client
         .lock()
@@ -52,7 +52,15 @@ pub async fn recover_database_files(
             Ok::<Vec<db::ImageRecord>, rusqlite::Error>(
                 images
                     .into_iter()
-                    .filter(|img| !Path::new(&filter_save_dir).join(&img.name).exists())
+                    .filter(|img| {
+                        // 防快照注入的路径穿越：name 必须通过纯文件名校验，
+                        // 与 download_missing_images 入口的校验保持一致。
+                        if crate::state::ensure_plain_filename(&img.name).is_err() {
+                            log::warn!("[recover] 跳过非法文件名（疑似恶意快照）: {:?}", img.name);
+                            return false;
+                        }
+                        !Path::new(&filter_save_dir).join(&img.name).exists()
+                    })
                     .collect(),
             )
         })
@@ -177,7 +185,7 @@ pub async fn download_missing_images(
         crate::state::ensure_plain_filename(&img.name)?;
     }
     let config = crate::state::load_config(&state)?;
-    let cancel = setup_cancel_flag(&state);
+    let cancel = setup_cancel_flag(&state, source);
     let client = state
         .http_client
         .lock()
@@ -282,7 +290,8 @@ pub async fn download_missing_images(
 pub async fn cancel_downloads(state: tauri::State<'_, AppState>) -> Result<(), AppError> {
     log::info!("[CMD] cancel_downloads called");
     if let Ok(guard) = state.cancel_flag.lock() {
-        if let Some(ref flag) = *guard {
+        // 置位所有 source 的取消标志，保证并发下载全部能取消。
+        for flag in guard.values() {
             flag.store(true, Ordering::Relaxed);
         }
     }

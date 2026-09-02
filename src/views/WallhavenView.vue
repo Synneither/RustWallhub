@@ -1,6 +1,5 @@
 <script setup lang="ts">
 import { computed, ref } from "vue";
-import { openUrl } from "@tauri-apps/plugin-opener";
 import type { WallhavenImageEntry, WallhavenSearchResult, WallhavenSelected } from "../types";
 import {
   downloadWallhavenSelected,
@@ -11,6 +10,7 @@ import { appState, clearNewImages, toast, toastError } from "../stores/app";
 import { positiveInt } from "../utils/rules";
 import { useConfigDraft } from "../composables/useConfigDraft";
 import { useSelection } from "../composables/useSelection";
+import { openUrlSafe } from "../utils/openUrl";
 import ProgressCard from "../components/ProgressCard.vue";
 import NewImagesStrip from "../components/NewImagesStrip.vue";
 import EmptyState from "../components/EmptyState.vue";
@@ -201,8 +201,8 @@ async function onDownloadSelected() {
       resolution: i.resolution,
       short_url: i.short_url,
     }));
-    clearNewImages("wallhaven");
     const msg = await downloadWallhavenSelected(payload);
+    clearNewImages("wallhaven");
     toast(msg, "info");
     selected.clear();
   } catch (e) {
@@ -218,8 +218,8 @@ async function onBatchDownload() {
   startingBatch.value = true;
   try {
     if (!(await persist())) return;
-    clearNewImages("wallhaven");
     const msg = await startWallhavenDownload();
+    clearNewImages("wallhaven");
     toast(msg, "info");
   } catch (e) {
     toastError(e);
@@ -249,11 +249,7 @@ function closePreview() {
 
 async function onOpenSource() {
   if (!previewImage.value) return;
-  try {
-    await openUrl(previewImage.value.short_url);
-  } catch (e) {
-    toastError(e);
-  }
+  await openUrlSafe(previewImage.value.short_url);
 }
 
 async function onDownloadPreview() {
@@ -270,8 +266,8 @@ async function onDownloadPreview() {
         short_url: img.short_url,
       },
     ];
-    clearNewImages("wallhaven");
     const msg = await downloadWallhavenSelected(payload);
+    clearNewImages("wallhaven");
     toast(msg, "info");
     previewOpen.value = false;
   } catch (e) {
