@@ -171,20 +171,22 @@ mod win_monitors {
 /// Percent-encode a file path for use in a `file://` URI.
 /// Handles spaces, non-ASCII characters, and other special characters.
 fn url_escape_path(path: &str) -> String {
-    path.chars()
-        .flat_map(|c| {
-            if c.is_ascii_alphanumeric() || matches!(c, '/' | '-' | '_' | '.' | '~') {
-                vec![c]
-            } else {
-                let mut buf = [0u8; 4];
-                c.encode_utf8(&mut buf)
-                    .as_bytes()
-                    .iter()
-                    .flat_map(|b| format!("%{:02X}", b).chars().collect::<Vec<_>>())
-                    .collect()
+    const HEX: &[u8; 16] = b"0123456789ABCDEF";
+    // 预分配（最坏情况每个字符都编码成 %XX，3 倍原长），避免旧实现的逐字符堆分配。
+    let mut out = String::with_capacity(path.len() * 3);
+    for c in path.chars() {
+        if c.is_ascii_alphanumeric() || matches!(c, '/' | '-' | '_' | '.' | '~') {
+            out.push(c);
+        } else {
+            let mut buf = [0u8; 4];
+            for &b in c.encode_utf8(&mut buf).as_bytes() {
+                out.push('%');
+                out.push(HEX[(b >> 4) as usize] as char);
+                out.push(HEX[(b & 0xf) as usize] as char);
             }
-        })
-        .collect()
+        }
+    }
+    out
 }
 
 // ---------------------------------------------------------------------------
@@ -622,8 +624,10 @@ fn set_windows_wallpaper(path_str: &str) -> Option<String> {
     (result != 0).then(|| "\u{58c1}\u{7eb8}\u{5df2}\u{8bbe}\u{7f6e} (Windows)".to_string())
 }
 
-/// 缓存首次探测成功的 Linux 桌面环境，轮播/连续设壁纸时不再逐项执行外部命令探测。
-static LINUX_BACKEND: std::sync::OnceLock<Option<&'static str>> = std::sync::OnceLock::new();
+/// 缓存上次探测成功的 Linux 桌面环境，轮播/连续设壁纸时避免逐项执行外部命令探测。
+/// 用 `Mutex<Option<_>>` 而非 `OnceLock`：探测结果可能失效（DE 会话切换、工具被卸载），
+/// 失败时清空缓存并回退到全量探测，而不是永久卡在一个已失效的 backend 上。
+static LINUX_BACKEND: std::sync::Mutex<Option<&'static str>> = std::sync::Mutex::new(None);
 
 type LinuxSetter = fn(&str) -> Option<String>;
 
@@ -641,10 +645,16 @@ fn set_with_backend(path: &str, backend: &str) -> Option<String> {
 }
 
 fn set_linux_wallpaper(path: &str) -> Result<(String, &'static str), AppError> {
-    if let Some(Some(backend)) = LINUX_BACKEND.get() {
-        return set_with_backend(path, backend)
-            .map(|message| (message, *backend))
-            .ok_or_else(|| AppError::Other(format!("设置壁纸失败 ({backend})")));
+    // 快路径：用缓存的 backend 直接设置。持锁期间只读取缓存值，不调用外部命令。
+    let cached = LINUX_BACKEND.lock().ok().and_then(|guard| *guard);
+    if let Some(backend) = cached {
+        if let Some(message) = set_with_backend(path, backend) {
+            return Ok((message, backend));
+        }
+        // 缓存的 backend 失效：清空，回退到下方全量探测。
+        if let Ok(mut guard) = LINUX_BACKEND.lock() {
+            *guard = None;
+        }
     }
 
     let backends: [(&'static str, LinuxSetter); 7] = [
@@ -659,7 +669,9 @@ fn set_linux_wallpaper(path: &str) -> Result<(String, &'static str), AppError> {
 
     for (name, setter) in backends {
         if let Some(message) = setter(path) {
-            let _ = LINUX_BACKEND.set(Some(name));
+            if let Ok(mut guard) = LINUX_BACKEND.lock() {
+                *guard = Some(name);
+            }
             return Ok((message, name));
         }
     }

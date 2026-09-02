@@ -4,6 +4,9 @@ use std::path::{Path, PathBuf};
 /// 基础缩略图宽度（按 1x DPR）。前端传入 devicePixelRatio 后按比例放大。
 const THUMB_BASE_WIDTH: u32 = 240;
 
+/// 允许的最大 DPR 档位（与前端 thumbnail_dpr 的 1-3 约束一致）。
+const MAX_DPR: u32 = 3;
+
 /// 自定义线程池，限制并行缩略图生成的核数，避免 CPU 满载
 fn thumbnail_pool() -> &'static rayon::ThreadPool {
     static POOL: std::sync::OnceLock<rayon::ThreadPool> = std::sync::OnceLock::new();
@@ -41,12 +44,7 @@ pub fn thumb_path(thumb_dir: &Path, filename: &str, dpr: u32) -> PathBuf {
     thumb_dir.join(thumb_filename(filename, dpr))
 }
 
-fn resize_and_save(
-    img: image::DynamicImage,
-    dst: &Path,
-    _filename: &str,
-    max_width: u32,
-) -> Result<(), String> {
+fn resize_and_save(img: image::DynamicImage, dst: &Path, max_width: u32) -> Result<(), String> {
     let (w, _h) = (img.width(), img.height());
     let thumb = if w > max_width {
         // thumbnail 保持纵横比，避免缩略图变形
@@ -85,7 +83,7 @@ pub fn ensure_thumbnail(
         .decode()
         .map_err(|e| format!("decode image failed {}: {e}", filename))?;
 
-    resize_and_save(img, &dst, filename, max_w)?;
+    resize_and_save(img, &dst, max_w)?;
     Ok(dst)
 }
 
@@ -112,14 +110,15 @@ pub fn save_thumbnail_from_bytes(
     let img = image::load_from_memory(bytes)
         .map_err(|e| format!("decode image from memory failed {}: {e}", filename))?;
 
-    resize_and_save(img, &dst, filename, max_w)?;
+    resize_and_save(img, &dst, max_w)?;
     Ok(dst)
 }
 
 /// 删除某文件的所有缩略图（兼容新旧格式 + 多 DPR）
 pub fn remove_thumbnails(thumb_dir: &Path, filename: &str) {
     let _ = std::fs::remove_file(thumb_dir.join(filename));
-    for dpr in [1u32, 2, 3] {
+    // thumbnail_dpr 允许 1-3，这里覆盖全部档位；用常量替代魔法数字 [1,2,3]。
+    for dpr in 1..=MAX_DPR {
         let _ = std::fs::remove_file(thumb_dir.join(thumb_filename_for_dpr(filename, dpr)));
     }
 }

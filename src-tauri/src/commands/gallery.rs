@@ -341,6 +341,9 @@ fn file_entry_to_image(e: &FileEntry) -> LocalImageEntry {
     }
 }
 
+/// 单次缩略图批量解析的文件数上限（一页最多 96 张，留余量；防止 IPC 传入超长列表）。
+const MAX_THUMB_BATCH: usize = 200;
+
 #[tauri::command]
 pub async fn resolve_thumbnails(
     state: tauri::State<'_, AppState>,
@@ -356,9 +359,13 @@ pub async fn resolve_thumbnails(
         dpr
     );
     // 文件名只能是一个普通文件名，拒绝任何 IPC 传入的路径穿越。
+    // 同时给单次批量上限，防止前端传一个超长列表把 rayon 池跑满、卡住其他命令。
     let mut seen = HashSet::new();
-    let mut safe_filenames = Vec::with_capacity(filenames.len());
+    let mut safe_filenames = Vec::with_capacity(filenames.len().min(MAX_THUMB_BATCH));
     for name in filenames {
+        if safe_filenames.len() >= MAX_THUMB_BATCH {
+            break;
+        }
         state::ensure_plain_filename(&name)?;
         if seen.insert(name.clone()) {
             safe_filenames.push(name);
@@ -695,9 +702,12 @@ pub async fn get_image_info(
             let rd = rd_db_path.clone();
             let lookup_name = name.clone();
             tokio::task::spawn_blocking(move || {
+                // 只有确认 wallhaven 库中确实没有（Ok(None)）才回退查 reddit；
+                // 库损坏/锁死（Err）必须直接暴露，否则会被误判为孤儿文件。
                 match db::get_wallhaven_image_by_name(&wh, &lookup_name) {
                     Ok(Some(rec)) => Ok(Some(rec)),
-                    _ => db::get_reddit_image_by_name(&rd, &lookup_name),
+                    Ok(None) => db::get_reddit_image_by_name(&rd, &lookup_name),
+                    Err(e) => Err(e),
                 }
             })
             .await

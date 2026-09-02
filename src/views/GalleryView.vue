@@ -5,7 +5,6 @@ import {
   onBeforeUnmount,
   onDeactivated,
   onMounted,
-  reactive,
   ref,
   shallowRef,
   watch,
@@ -34,6 +33,7 @@ import { appState, askConfirm, dbReady, toast, toastError } from "../stores/app"
 import EmptyState from "../components/EmptyState.vue";
 import ImageViewer from "../components/ImageViewer.vue";
 import ImageDetailDrawer from "../components/ImageDetailDrawer.vue";
+import { useSelection } from "../composables/useSelection";
 
 /* ════ 浏览状态 ════ */
 type SourceTab = "wallhaven" | "reddit";
@@ -240,14 +240,10 @@ onBeforeUnmount(() => {
 
 /* ════ 多选与批量 ════ */
 const selectionMode = ref(false);
-const selected = reactive(new Set<string>());
+const { selected, toggle: toggleSelect, clear: clearSelected } = useSelection();
 
-function toggleSelect(name: string) {
-  if (selected.has(name)) selected.delete(name);
-  else selected.add(name);
-}
 function clearSelection() {
-  selected.clear();
+  clearSelected();
   selectionMode.value = false;
 }
 function onCardClick(img: LocalImageEntry) {
@@ -618,7 +614,7 @@ async function onStopSlideshow() {
       <v-btn variant="tonal" @click="load">重试</v-btn>
     </EmptyState>
     <div v-else-if="loading && images.length === 0" class="gallery-grid">
-      <div v-for="i in 12" :key="i" class="gallery-card shimmer" />
+      <div v-for="i in pageSize" :key="i" class="gallery-card shimmer" />
     </div>
     <EmptyState
       v-else-if="images.length === 0 && searchDebounced"
@@ -633,7 +629,7 @@ async function onStopSlideshow() {
       :desc="customDir ? '该目录下没有可识别的图片文件' : orphanOnly ? '保存目录中的文件都已在数据库中登记' : '前往 Wallhaven 或 Reddit 页面下载图片'"
     />
 
-    <div v-else class="gallery-grid">
+    <div v-else class="gallery-grid" :aria-busy="loading" :class="{ 'gallery-grid--loading': loading }">
       <div
         v-for="img in images"
         :key="img.name"
@@ -743,6 +739,12 @@ async function onStopSlideshow() {
   gap: var(--space-2);
   align-content: start;
   padding-bottom: var(--space-4);
+}
+/* 翻页加载期间：旧网格降透明 + 禁点，给出明确的加载反馈（此前翻页时网格静止无反馈） */
+.gallery-grid--loading {
+  opacity: 0.45;
+  pointer-events: none;
+  transition: opacity 0.15s;
 }
 .gallery-card {
   position: relative;

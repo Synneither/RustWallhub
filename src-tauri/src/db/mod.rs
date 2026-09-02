@@ -41,10 +41,31 @@ static MIGRATED_DBS: std::sync::OnceLock<std::sync::Mutex<HashSet<String>>> =
 
 type SharedConnection = std::sync::Arc<std::sync::Mutex<Connection>>;
 
+/// 文件身份标识，用于检测「路径相同但文件已被外部替换」。
+/// Unix 用 (inode, device)，精确；Windows 没有稳定的 inode 等价物（`file_index` 是 nightly），
+/// 退化为 (文件大小, 最后写入时间) 弱身份——文件被替换时这两者几乎总会变化。
+type FileIdentity = (u64, u64);
+
+#[cfg(unix)]
+fn file_identity(meta: &std::fs::Metadata) -> Option<FileIdentity> {
+    use std::os::unix::fs::MetadataExt;
+    Some((meta.ino(), meta.dev()))
+}
+
+#[cfg(windows)]
+fn file_identity(meta: &std::fs::Metadata) -> Option<FileIdentity> {
+    use std::os::windows::fs::MetadataExt;
+    Some((meta.file_size(), meta.last_write_time()))
+}
+
 /// 进程级 SQLite 连接缓存。数据库文件数量固定且很小，这里按路径缓存连接，
 /// 避免图库/统计/下载等高频命令反复 `Connection::open`。
-static CONNECTION_CACHE: std::sync::OnceLock<std::sync::Mutex<HashMap<String, SharedConnection>>> =
-    std::sync::OnceLock::new();
+/// 值附带打开时的文件身份，命中时比对身份：路径仍在但 inode 变了（文件被替换）
+/// 就丢弃旧连接重连，否则会继续往已 unlink 的旧 inode 写、数据静默丢失。
+type ConnectionCacheEntry = (SharedConnection, Option<FileIdentity>);
+type ConnectionCacheMap = std::sync::Mutex<HashMap<String, ConnectionCacheEntry>>;
+
+static CONNECTION_CACHE: std::sync::OnceLock<ConnectionCacheMap> = std::sync::OnceLock::new();
 
 type StatsCacheKey = (String, String);
 type StatsCacheMap = HashMap<StatsCacheKey, (Instant, Option<std::time::SystemTime>, DbStats)>;
@@ -65,9 +86,13 @@ pub fn invalidate_stats(db_path: &str) {
 fn cached_connection(db_path: &str) -> SqlResult<SharedConnection> {
     let cache = CONNECTION_CACHE.get_or_init(|| std::sync::Mutex::new(HashMap::new()));
     let mut cache = cache.lock().map_err(|_| rusqlite::Error::InvalidQuery)?;
-    if let Some(conn) = cache.get(db_path) {
-        // 如果文件已被外部删除/重建，必须丢弃旧连接，否则会继续操作已删除的 inode。
-        if Path::new(db_path).exists() {
+    if let Some((conn, cached_id)) = cache.get(db_path) {
+        // 命中缓存时校验文件身份：路径仍在、且 inode/文件索引未变（未被删除重建/替换）
+        // 才复用；否则丢弃旧连接，否则会继续操作已 unlink 的 inode、写入静默丢失。
+        let current_id = std::fs::metadata(db_path)
+            .ok()
+            .and_then(|m| file_identity(&m));
+        if current_id.is_some() && cached_id == &current_id {
             return Ok(conn.clone());
         }
         cache.remove(db_path);
@@ -80,7 +105,10 @@ fn cached_connection(db_path: &str) -> SqlResult<SharedConnection> {
     configure_connection(&conn)?;
     migrate_legacy_indexes(&conn, db_path)?;
     let conn = std::sync::Arc::new(std::sync::Mutex::new(conn));
-    cache.insert(db_path.to_string(), conn.clone());
+    let id = std::fs::metadata(db_path)
+        .ok()
+        .and_then(|m| file_identity(&m));
+    cache.insert(db_path.to_string(), (conn.clone(), id));
     Ok(conn)
 }
 

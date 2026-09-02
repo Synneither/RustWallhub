@@ -2,7 +2,7 @@
  * 全局应用状态（无 pinia，reactive 单例模块）。
  * App.vue 在挂载时调用 bootstrap() 与 registerGlobalListeners()。
  */
-import { reactive, computed } from "vue";
+import { reactive, computed, shallowRef } from "vue";
 import type { UnlistenFn } from "@tauri-apps/api/event";
 import type {
   AppConfig,
@@ -77,8 +77,10 @@ export const appState = reactive({
   /* 下载任务：key = source */
   downloads: {} as Record<string, DownloadTaskState>,
 
-  /* 本次会话新下载的图片（各源页面"新图预览条"消费） */
-  newImages: [] as NewImageEntry[],
+  /* 本次会话新下载的图片（各源页面"新图预览条"消费）。
+   * shallowRef：整批下载每张都触发一次 push，若用 reactive 数组会被逐元素深度代理；
+   * 这里只在替换引用时触发更新，写入时用不可变替换。 */
+  newImages: shallowRef<NewImageEntry[]>([]),
 
   /* 轮播 */
   slideshow: {
@@ -263,11 +265,13 @@ export async function registerGlobalListeners() {
 
   unlistenFns.push(
     await onImageDownloaded((p) => {
-      appState.newImages.push({ source: p.source, name: p.name, path: p.path });
+      // newImages 是 shallowRef（reactive 单例里自动解包，读写直接当数组用）。
+      // 用不可变替换而非 push，触发 shallowRef 的替换更新，且避免逐元素深代理。
+      appState.newImages = [...appState.newImages, { source: p.source, name: p.name, path: p.path }];
       // 预览条最多展示 12 张，这里限制会话内累积数量，避免长任务让数组无限增长。
       const MAX_NEW_IMAGES = 120;
       if (appState.newImages.length > MAX_NEW_IMAGES) {
-        appState.newImages.splice(0, appState.newImages.length - MAX_NEW_IMAGES);
+        appState.newImages = appState.newImages.slice(appState.newImages.length - MAX_NEW_IMAGES);
       }
     }),
   );

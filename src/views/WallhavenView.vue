@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, reactive, ref } from "vue";
+import { computed, ref } from "vue";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import type { WallhavenImageEntry, WallhavenSearchResult, WallhavenSelected } from "../types";
 import {
@@ -10,6 +10,7 @@ import {
 import { appState, clearNewImages, toast, toastError } from "../stores/app";
 import { positiveInt } from "../utils/rules";
 import { useConfigDraft } from "../composables/useConfigDraft";
+import { useSelection } from "../composables/useSelection";
 import ProgressCard from "../components/ProgressCard.vue";
 import NewImagesStrip from "../components/NewImagesStrip.vue";
 import EmptyState from "../components/EmptyState.vue";
@@ -145,7 +146,7 @@ async function onPage(delta: number) {
 }
 
 /* ── 勾选与下载 ── */
-const selected = reactive(new Set<string>());
+const { selected, toggle: toggleSelect } = useSelection();
 
 /** 从 "2560x1440" 解析宽高比，供网格单元格按需定高（竖屏图不再被 16:10 裁切） */
 function ratioOf(resolution: string): string {
@@ -156,9 +157,21 @@ function ratioOf(resolution: string): string {
   return w > 0 && h > 0 ? `${w} / ${h}` : "16 / 10";
 }
 
-function toggleSelect(img: WallhavenImageEntry) {
-  if (selected.has(img.id)) selected.delete(img.id);
-  else selected.add(img.id);
+/* 单击选择 / 双击预览：同一元素上直接绑 click+dblclick 会让双击先触发两次选择切换（闪烁）。
+ * 这里用 250ms 延迟判定：短时间内第二次点击视为双击，取消选择、改为预览。 */
+let cellClickTimer: ReturnType<typeof setTimeout> | null = null;
+
+function onCellClick(img: WallhavenImageEntry) {
+  if (cellClickTimer) {
+    clearTimeout(cellClickTimer);
+    cellClickTimer = null;
+    openPreview(img);
+    return;
+  }
+  cellClickTimer = setTimeout(() => {
+    cellClickTimer = null;
+    toggleSelect(img.id);
+  }, 250);
 }
 
 const allPageSelected = computed(() => {
@@ -472,10 +485,9 @@ async function onDownloadPreview() {
           tabindex="0"
           :aria-label="img.id"
           :aria-pressed="selected.has(img.id)"
-          @click="toggleSelect(img)"
-          @dblclick.stop="openPreview(img)"
-          @keydown.enter.prevent="toggleSelect(img)"
-          @keydown.space.prevent="toggleSelect(img)"
+          @click="onCellClick(img)"
+          @keydown.enter.prevent="toggleSelect(img.id)"
+          @keydown.space.prevent="toggleSelect(img.id)"
         >
           <img :src="img.thumbnail_url" :alt="img.id" loading="lazy" />
           <button class="wh-cell__preview" title="预览大图" @click.stop="openPreview(img)">
