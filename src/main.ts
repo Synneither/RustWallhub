@@ -6,6 +6,9 @@ import "./assets/style.css";
 // Vuetify core + 项目内 MDI 图标子集。组件改为按需导入，Vite 只打包用到的组件样式。
 import 'vuetify/styles/core';
 import './assets/mdi-subset.css';
+// 自托管 UI 字体（Space Grotesk / Rajdhani），不再从 Google Fonts CDN 加载：
+// 离线可用、不向外部发请求，CSP 也就不用为 fonts.googleapis/gstatic 开口子。
+import './assets/fonts.css';
 
 import {
   VApp,

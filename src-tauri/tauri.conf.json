@@ -20,12 +20,11 @@
       }
     ],
     "security": {
-      "csp": "default-src 'self' asset:; img-src 'self' asset: http://asset.localhost blob: data: https://th.wallhaven.cc https://w.wallhaven.cc https://wallhaven.cc; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com data:; connect-src 'self' ipc: http://ipc.localhost",
+      "csp": "default-src 'self' asset:; img-src 'self' asset: http://asset.localhost blob: data: https://th.wallhaven.cc https://w.wallhaven.cc https://wallhaven.cc; style-src 'self' 'unsafe-inline'; font-src 'self' data:; connect-src 'self' ipc: http://ipc.localhost",
       "assetProtocol": {
         "enable": true,
         "scope": [
-          "$CACHE/rustwallhub/**",
-          "$HOME/**"
+          "$CACHE/rustwallhub/**"
         ]
       }
     }
