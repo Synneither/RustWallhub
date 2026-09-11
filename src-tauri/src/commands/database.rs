@@ -1,5 +1,5 @@
 //! Database query commands: list_database_images, list_orphan_files,
-//! mark_disliked_files, count_missing_images, restore_all_files, list_missing_images.
+//! mark_disliked_files, restore_all_files, list_missing_images, refresh_file_caches.
 
 use crate::config::Source;
 use crate::db;
@@ -7,6 +7,21 @@ use crate::downloader;
 use crate::state::{AppError, AppState};
 use serde::Serialize;
 use std::collections::HashSet;
+
+/// 清掉目录列表与统计缓存，让紧随其后的读取反映磁盘真实现状。
+///
+/// 「数据库」页刷新时会连发 `list_missing_images` / `list_orphan_files` / `get_stats`
+/// 三条命令，它们共用目录列表缓存（因此只扫一次目录）。但在这之前必须先清一次：
+/// 缓存有 5 秒 TTL，不清的话用户点了「刷新」可能看到几秒前的旧结果。
+///
+/// 清完之后三条命令仍然共享**同一次**重新扫描，所以既保证新鲜又不重复扫盘。
+#[tauri::command]
+pub async fn refresh_file_caches() -> Result<(), AppError> {
+    log::info!("[CMD] refresh_file_caches");
+    db::clear_dir_listings();
+    db::clear_stats_caches();
+    Ok(())
+}
 
 /// 数据库命令统一放到阻塞线程池，避免 rusqlite/文件扫描占用 tokio worker。
 async fn run_blocking<F, T>(f: F) -> Result<T, AppError>
@@ -49,18 +64,16 @@ pub async fn list_database_images(
             db::get_reddit_images(&config.reddit_db_path, limit, offset).map_err(AppError::Db)
         }
         Source::All => {
-            // 两库合并分页：各取前 offset+limit 条，合并排序后再切页。
-            let fetch = limit.saturating_add(offset).max(limit);
-            let mut rows = db::get_wallhaven_images(&config.wallhaven_db_path, fetch, 0)?;
-            rows.extend(db::get_reddit_images(&config.reddit_db_path, fetch, 0)?);
-            rows.sort_by(|a, b| {
-                b.created_at
-                    .cmp(&a.created_at)
-                    .then_with(|| b.id.cmp(&a.id))
-            });
-            let start = (offset as usize).min(rows.len());
-            let end = start.saturating_add(limit as usize).min(rows.len());
-            Ok(rows[start..end].to_vec())
+            // 两库合并分页：通过 ATTACH + UNION ALL 在数据库层合并排序分页。
+            // 旧实现"各取 limit+offset 条再应用层切片"的代价随 offset 线性增长
+            // （深翻页时要把近 2 万条记录读进内存再深拷贝），这里改成 O(limit)。
+            db::get_all_images_paged(
+                &config.wallhaven_db_path,
+                &config.reddit_db_path,
+                limit,
+                offset,
+            )
+            .map_err(AppError::Db)
         }
     })
     .await
@@ -83,21 +96,23 @@ pub async fn list_orphan_files(
                 let db_names: HashSet<String> =
                     db::get_all_filenames(db_path)?.into_iter().collect();
 
+                // 走目录列表缓存：本页刷新时「缺失列表 / 孤儿列表 / 统计」三处
+                // 共用同一次 read_dir，不再各扫一遍。大小也一并从快照取，
+                // 不必再对每个文件 stat。
+                let listing = db::dir_listing(save_dir);
                 let mut orphans = Vec::new();
-                if let Ok(entries) = std::fs::read_dir(dir) {
-                    for entry in entries.flatten() {
-                        let file_path = entry.path();
-                        if file_path.is_file() && downloader::file_is_image(&file_path) {
-                            let name = entry.file_name().to_string_lossy().to_string();
-                            if !db_names.contains(&name) {
-                                orphans.push(OrphanFile {
-                                    name,
-                                    path: file_path.to_string_lossy().to_string(),
-                                    size: entry.metadata().map_or(0, |m| m.len()),
-                                    source: src.to_string(),
-                                });
-                            }
-                        }
+                for (name, size) in listing.iter() {
+                    // file_is_image 只看扩展名，用文件名字符串即可，无需真实路径
+                    if !downloader::file_is_image(std::path::Path::new(name)) {
+                        continue;
+                    }
+                    if !db_names.contains(name) {
+                        orphans.push(OrphanFile {
+                            name: name.clone(),
+                            path: dir.join(name).to_string_lossy().to_string(),
+                            size: *size,
+                            source: src.to_string(),
+                        });
                     }
                 }
                 Ok(orphans)

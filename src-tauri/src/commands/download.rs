@@ -1,15 +1,12 @@
 //! Download orchestration commands: recover_database_files, download_missing_images, cancel_downloads.
 
+use crate::commands::download_common::{emit_complete, emit_progress};
 use crate::config::Source;
 use crate::db;
 use crate::downloader;
-use crate::state::{
-    save_image, setup_cancel_flag, AppError, AppState, DownloadComplete, DownloadProgress,
-    ProgressThrottle,
-};
+use crate::state::{save_image, setup_cancel_flag, AppError, AppState, ProgressThrottle};
 use std::path::Path;
 use std::sync::atomic::Ordering;
-use tauri::Emitter;
 
 #[tauri::command]
 pub async fn recover_database_files(
@@ -82,9 +79,7 @@ pub async fn recover_database_files(
         let mut success = 0u32;
 
         // 分批下载 + 分批落盘：避免把所有原图 bytes 同时囤在内存里。
-        let chunk_size = (config.download_concurrency.max(1) as usize)
-            .saturating_mul(2)
-            .max(1);
+        let chunk_size = downloader::download_chunk_size(config.download_concurrency);
         let mut progress_throttle = ProgressThrottle::new();
         let mut processed = 0usize;
         for chunk in to_download.chunks(chunk_size) {
@@ -103,14 +98,12 @@ pub async fn recover_database_files(
                 let file_path = Path::new(&save_dir).join(&img.name);
 
                 if progress_throttle.should_emit(i + 1 == total as usize) {
-                    let _ = app.emit(
-                        "download-progress",
-                        DownloadProgress {
-                            source: src_inner.clone(),
-                            done: i as u32,
-                            total,
-                            message: format!("正在下载 {} ({}/{})", img.name, i + 1, total),
-                        },
+                    emit_progress(
+                        &app,
+                        &src_inner,
+                        i as u32,
+                        total,
+                        format!("正在下载 {} ({}/{})", img.name, i + 1, total),
                     );
                 }
 
@@ -121,15 +114,7 @@ pub async fn recover_database_files(
                         success,
                         total
                     );
-                    let _ = app.emit(
-                        "download-complete",
-                        DownloadComplete {
-                            source: src_inner.clone(),
-                            success,
-                            total,
-                            message: "下载已取消".to_string(),
-                        },
-                    );
+                    emit_complete(&app, &src_inner, success, total, "下载已取消".to_string());
                     return;
                 }
 
@@ -137,7 +122,6 @@ pub async fn recover_database_files(
                     Ok((bytes, _content_type)) => match save_image(&file_path, bytes).await {
                         Ok(()) => {
                             success += 1;
-                            db::invalidate_stats(&db_path);
                         }
                         Err(e) => log::error!("[recover] {}", e),
                     },
@@ -149,15 +133,18 @@ pub async fn recover_database_files(
             processed += chunk.len();
         }
 
+        // 统计缓存统一在这里失效一次：per-image 调用会让缓存对整轮下载形同虚设。
+        if success > 0 {
+            db::invalidate_stats(&db_path);
+        }
+
         log::info!("[recover] complete: success={}/{}", success, total);
-        let _ = app.emit(
-            "download-complete",
-            DownloadComplete {
-                source: src_inner,
-                success,
-                total,
-                message: format!("数据库下载完成: 成功 {success}/{total}"),
-            },
+        emit_complete(
+            &app,
+            &src_inner,
+            success,
+            total,
+            format!("数据库下载完成: 成功 {success}/{total}"),
         );
     });
 
@@ -205,9 +192,7 @@ pub async fn download_missing_images(
         let mut success = 0u32;
 
         // 分批下载，防止大任务把所有图片同时放在内存里。
-        let chunk_size = (download_concurrency.max(1) as usize)
-            .saturating_mul(2)
-            .max(1);
+        let chunk_size = downloader::download_chunk_size(download_concurrency);
         let mut progress_throttle = ProgressThrottle::new();
         let mut processed = 0usize;
         for chunk in images.chunks(chunk_size) {
@@ -226,14 +211,12 @@ pub async fn download_missing_images(
                 let file_path = Path::new(&save_dir).join(&img.name);
 
                 if progress_throttle.should_emit(i + 1 == total as usize) {
-                    let _ = app.emit(
-                        "download-progress",
-                        DownloadProgress {
-                            source: source_str.clone(),
-                            done: i as u32,
-                            total,
-                            message: format!("正在下载 {} ({}/{})", img.name, i + 1, total),
-                        },
+                    emit_progress(
+                        &app,
+                        &source_str,
+                        i as u32,
+                        total,
+                        format!("正在下载 {} ({}/{})", img.name, i + 1, total),
                     );
                 }
 
@@ -243,15 +226,7 @@ pub async fn download_missing_images(
                         success,
                         total
                     );
-                    let _ = app.emit(
-                        "download-complete",
-                        DownloadComplete {
-                            source: source_str.clone(),
-                            success,
-                            total,
-                            message: "下载已取消".to_string(),
-                        },
-                    );
+                    emit_complete(&app, &source_str, success, total, "下载已取消".to_string());
                     return;
                 }
 
@@ -259,7 +234,6 @@ pub async fn download_missing_images(
                     Ok((bytes, _content_type)) => match save_image(&file_path, bytes).await {
                         Ok(()) => {
                             success += 1;
-                            db::invalidate_stats(&db_path);
                         }
                         Err(e) => log::error!("[download_missing] {}", e),
                     },
@@ -271,15 +245,17 @@ pub async fn download_missing_images(
             processed += chunk.len();
         }
 
+        if success > 0 {
+            db::invalidate_stats(&db_path);
+        }
+
         log::info!("[download_missing] complete: success={}/{}", success, total);
-        let _ = app.emit(
-            "download-complete",
-            DownloadComplete {
-                source: source_str.clone(),
-                success,
-                total,
-                message: format!("补下载完成: 成功 {success}/{total}"),
-            },
+        emit_complete(
+            &app,
+            &source_str,
+            success,
+            total,
+            format!("补下载完成: 成功 {success}/{total}"),
         );
     });
 

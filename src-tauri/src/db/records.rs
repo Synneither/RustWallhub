@@ -3,7 +3,7 @@
 #[cfg(test)]
 use super::open;
 use super::stats::existing_file_names;
-use super::{invalidate_stats, with_cached_connection, ImageRecord};
+use super::{db_exists, invalidate_stats, with_cached_connection, ImageRecord};
 use rusqlite::Result as SqlResult;
 
 pub fn get_existing_wallhaven_ids(db_path: &str) -> SqlResult<Vec<String>> {
@@ -121,21 +121,26 @@ pub fn insert_wallhaven_images_batch_detailed(
         let mut added = 0u64;
         let mut skipped = 0u64;
         let mut added_names = Vec::new();
-        for (wallhaven_id, name, hash, url, source_url, resolution) in images {
-            match tx.execute(
+        {
+            // prepare_cached：循环内复用已编译语句，避免每条记录重新 prepare 一遍。
+            let mut stmt = tx.prepare_cached(
                 "INSERT INTO images (wallhaven_id, name, hash, url, source_url, resolution) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-                rusqlite::params![wallhaven_id, name, hash, url, source_url, resolution],
-            ) {
-                Ok(_) => {
-                    added += 1;
-                    added_names.push(name.clone());
+            )?;
+            for (wallhaven_id, name, hash, url, source_url, resolution) in images {
+                match stmt.execute(
+                    rusqlite::params![wallhaven_id, name, hash, url, source_url, resolution],
+                ) {
+                    Ok(_) => {
+                        added += 1;
+                        added_names.push(name.clone());
+                    }
+                    Err(rusqlite::Error::SqliteFailure(err, _))
+                        if err.code == rusqlite::ErrorCode::ConstraintViolation =>
+                    {
+                        skipped += 1;
+                    }
+                    Err(e) => return Err(e),
                 }
-                Err(rusqlite::Error::SqliteFailure(err, _))
-                    if err.code == rusqlite::ErrorCode::ConstraintViolation =>
-                {
-                    skipped += 1;
-                }
-                Err(e) => return Err(e),
             }
         }
         tx.commit()?;
@@ -170,21 +175,24 @@ pub fn insert_reddit_images_batch_detailed(
         let mut added = 0u64;
         let mut skipped = 0u64;
         let mut added_names = Vec::new();
-        for (name, hash, url, title, permalink) in images {
-            match tx.execute(
+        {
+            // prepare_cached：循环内复用已编译语句，避免每条记录重新 prepare 一遍。
+            let mut stmt = tx.prepare_cached(
                 "INSERT INTO images (name, hash, url, title, permalink) VALUES (?1, ?2, ?3, ?4, ?5)",
-                rusqlite::params![name, hash, url, title, permalink],
-            ) {
-                Ok(_) => {
-                    added += 1;
-                    added_names.push(name.clone());
+            )?;
+            for (name, hash, url, title, permalink) in images {
+                match stmt.execute(rusqlite::params![name, hash, url, title, permalink]) {
+                    Ok(_) => {
+                        added += 1;
+                        added_names.push(name.clone());
+                    }
+                    Err(rusqlite::Error::SqliteFailure(err, _))
+                        if err.code == rusqlite::ErrorCode::ConstraintViolation =>
+                    {
+                        skipped += 1;
+                    }
+                    Err(e) => return Err(e),
                 }
-                Err(rusqlite::Error::SqliteFailure(err, _))
-                    if err.code == rusqlite::ErrorCode::ConstraintViolation =>
-                {
-                    skipped += 1;
-                }
-                Err(e) => return Err(e),
             }
         }
         tx.commit()?;
@@ -318,6 +326,87 @@ pub fn get_wallhaven_missing_love(db_path: &str) -> SqlResult<Vec<ImageRecord>> 
     })
 }
 
+/// 跨两个库合并分页（`Source::All`）。
+///
+/// 两个库是各自独立的 SQLite 文件，无法在单条 SQL 里 JOIN，所以用 `ATTACH` 把
+/// reddit 库挂到 wallhaven 连接上，再用 `UNION ALL` 在数据库层完成合并 + 排序 + 分页。
+///
+/// 相比"各取 limit+offset 条 → 应用层合并排序 → 切片"的旧实现，这样做的意义在于
+/// 分页开销是 O(limit) 而不是 O(offset)：翻到第 100 页时不再需要先把约 2 万条记录
+/// 全部读进内存并深拷贝一遍。
+///
+/// `reddit_db_path` 为空或文件不存在时只返回 wallhaven 的结果。
+pub fn get_all_images_paged(
+    wallhaven_db_path: &str,
+    reddit_db_path: &str,
+    limit: i64,
+    offset: i64,
+) -> SqlResult<Vec<ImageRecord>> {
+    // reddit 库不可用 → 退化为单库查询，语义与"只有 wallhaven 有数据"一致。
+    if reddit_db_path.is_empty() || !db_exists(reddit_db_path) {
+        return get_wallhaven_images(wallhaven_db_path, limit, offset);
+    }
+
+    with_cached_connection(wallhaven_db_path, |conn| {
+        // 连接是缓存复用的，所以先把可能残留的挂载清掉，保证 ATTACH 是幂等的。
+        // 正常路径下 DETACH 已经执行过、这里无事发生；万一上次 DETACH 失败，
+        // 不清掉的话后续每次 ATTACH 都会报 "already in use"。
+        let _ = conn.execute("DETACH DATABASE reddit_db", []);
+
+        conn.execute(
+            "ATTACH DATABASE ?1 AS reddit_db",
+            rusqlite::params![reddit_db_path],
+        )?;
+
+        let result = (|| -> SqlResult<Vec<ImageRecord>> {
+            let mut stmt = conn.prepare(
+                "SELECT id, name, hash, url, source_url, resolution, love, created_at, src FROM (
+                     SELECT id, name, hash, url,
+                            COALESCE(source_url, '') AS source_url,
+                            COALESCE(resolution, 'unknown') AS resolution,
+                            COALESCE(love, 1) AS love,
+                            COALESCE(created_at, '') AS created_at,
+                            'wallhaven' AS src
+                     FROM main.images
+                     UNION ALL
+                     SELECT id, name, hash, url,
+                            '' AS source_url,
+                            '' AS resolution,
+                            COALESCE(love, 1) AS love,
+                            COALESCE(created_at, '') AS created_at,
+                            'reddit' AS src
+                     FROM reddit_db.images
+                 )
+                 ORDER BY created_at DESC, id DESC
+                 LIMIT ?1 OFFSET ?2",
+            )?;
+            let images = stmt
+                .query_map(rusqlite::params![limit, offset], |row| {
+                    Ok(ImageRecord {
+                        id: row.get(0)?,
+                        name: row.get(1)?,
+                        hash: row.get(2)?,
+                        url: row.get(3)?,
+                        source_url: row.get(4)?,
+                        resolution: row.get(5)?,
+                        title: None,
+                        permalink: None,
+                        love: row.get(6)?,
+                        created_at: row.get(7)?,
+                        source: row.get(8)?,
+                    })
+                })?
+                .collect::<SqlResult<Vec<_>>>()?;
+            Ok(images)
+        })();
+
+        // 无论查询成功与否都要 DETACH，否则连接被缓存复用时会带着已挂载的库。
+        let _ = conn.execute("DETACH DATABASE reddit_db", []);
+
+        result
+    })
+}
+
 pub fn get_wallhaven_missing_files(db_path: &str, save_dir: &str) -> SqlResult<Vec<ImageRecord>> {
     let existing = existing_file_names(save_dir);
     with_cached_connection(db_path, |conn| {
@@ -342,7 +431,7 @@ pub fn get_wallhaven_missing_files(db_path: &str, save_dir: &str) -> SqlResult<V
             })?
             .collect::<SqlResult<Vec<_>>>()?
             .into_iter()
-            .filter(|img| !existing.contains(&img.name))
+            .filter(|img| !existing.contains_key(&img.name))
             .collect::<Vec<_>>();
         Ok(images)
     })
@@ -372,7 +461,7 @@ pub fn get_reddit_missing_files(db_path: &str, save_dir: &str) -> SqlResult<Vec<
             })?
             .collect::<SqlResult<Vec<_>>>()?
             .into_iter()
-            .filter(|img| !existing.contains(&img.name))
+            .filter(|img| !existing.contains_key(&img.name))
             .collect::<Vec<_>>();
         Ok(images)
     })

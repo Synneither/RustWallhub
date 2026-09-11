@@ -22,6 +22,7 @@ use rusqlite::{Connection, OpenFlags, Result as SqlResult};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
+use std::sync::Arc;
 use std::time::Instant;
 
 /// 每个连接都会用到的连接级 PRAGMA（busy_timeout / synchronous / cache_size
@@ -68,19 +69,114 @@ type ConnectionCacheMap = std::sync::Mutex<HashMap<String, ConnectionCacheEntry>
 static CONNECTION_CACHE: std::sync::OnceLock<ConnectionCacheMap> = std::sync::OnceLock::new();
 
 type StatsCacheKey = (String, String);
-type StatsCacheMap = HashMap<StatsCacheKey, (Instant, Option<std::time::SystemTime>, DbStats)>;
+type StatsCacheMap = HashMap<StatsCacheKey, (Instant, DbStats)>;
 
-/// 统计结果短缓存。写入路径会主动失效；外部改动最多 2 秒后可见。
+/// 统计缓存的存活秒数。刷新依赖写操作主动失效，超过这个时长也会强制重算兜底。
+pub(crate) const STATS_CACHE_TTL_SECS: u64 = 10;
+
+/// 统计结果短缓存。写入路径会主动失效；外部改动最多 `STATS_CACHE_TTL_SECS` 秒后可见。
 static STATS_CACHE: std::sync::OnceLock<std::sync::Mutex<StatsCacheMap>> =
     std::sync::OnceLock::new();
 
+/// 目录内容快照：文件名 → 文件大小（字节）。
+///
+/// 只收**普通文件**，不含子目录——缺失判定按文件名匹配，若把同名子目录算作"存在"
+/// 会让缺失数漏报。
+pub(crate) type DirListing = HashMap<String, u64>;
+
+type DirListingCacheMap = HashMap<String, (Instant, Arc<DirListing>)>;
+
+/// 目录列表缓存的兜底存活秒数。
+///
+/// 之所以要缓存：一次「数据库」页刷新会对每个源目录做 3 次全量 `read_dir`
+/// ——缺失列表、孤儿列表、统计各一次；两个源就是 6 次。缓存让它们共用一次扫描。
+pub(crate) const DIR_LISTING_TTL_SECS: u64 = 5;
+
+static DIR_LISTING_CACHE: std::sync::OnceLock<std::sync::Mutex<DirListingCacheMap>> =
+    std::sync::OnceLock::new();
+
+/// 真正扫一次目录，得到「普通文件名 → 大小」快照。目录不存在时返回空表。
+///
+/// `file_type` 与 `metadata` 都取自目录项本身，不额外触发 stat。
+fn scan_dir(dir: &str) -> DirListing {
+    let mut files = DirListing::new();
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return files;
+    };
+    for entry in entries.flatten() {
+        let Ok(ft) = entry.file_type() else { continue };
+        if !ft.is_file() {
+            continue;
+        }
+        let size = entry.metadata().map_or(0, |m| m.len());
+        files.insert(entry.file_name().to_string_lossy().to_string(), size);
+    }
+    files
+}
+
+/// 取目录内容快照（带短缓存）。目录不存在时返回空表。
+///
+/// 返回 `Arc` 以便多处共享同一份列表，避免每个调用方各拷贝一次上千条记录。
+pub(crate) fn dir_listing(dir: &str) -> Arc<DirListing> {
+    // 单测里直接绕过缓存：测试会在毫秒级内改同一目录再读（比如删掉文件后立刻
+    // 重新统计缺失数），5 秒 TTL 会稳定地返回旧结果。
+    //
+    // 这里**不**改用目录 mtime 做校验——统计缓存早就踩过这个坑：往子目录写文件时
+    // 父目录 mtime 不一定更新，靠 mtime 判断新鲜度并不可靠。生产环境的新鲜度由
+    // `invalidate_stats`（写路径）和 `refresh_file_caches`（用户点刷新）保证。
+    if cfg!(test) {
+        return Arc::new(scan_dir(dir));
+    }
+
+    let cache = DIR_LISTING_CACHE.get_or_init(|| std::sync::Mutex::new(HashMap::new()));
+    if let Ok(guard) = cache.lock() {
+        if let Some((at, listing)) = guard.get(dir) {
+            if at.elapsed().as_secs() < DIR_LISTING_TTL_SECS {
+                return Arc::clone(listing);
+            }
+        }
+    }
+
+    let listing = Arc::new(scan_dir(dir));
+    if let Ok(mut guard) = cache.lock() {
+        guard.insert(dir.to_string(), (Instant::now(), Arc::clone(&listing)));
+    }
+    listing
+}
+
+/// 清空**全部**目录列表缓存。
+///
+/// 故意做成全清而不是按目录清：写操作（下载落盘、删除、收养）往往只拿得到
+/// db_path 而不知道对应的 save_dir。目录扫描本身不贵且读多写少，
+/// 全清换来的是"任何写路径都自动生效"，不会漏。
+pub fn clear_dir_listings() {
+    if let Some(cache) = DIR_LISTING_CACHE.get() {
+        if let Ok(mut cache) = cache.lock() {
+            cache.clear();
+        }
+    }
+}
+
+/// 清空全部统计缓存。用于「用户显式要求刷新」的场景。
+pub fn clear_stats_caches() {
+    if let Some(cache) = STATS_CACHE.get() {
+        if let Ok(mut cache) = cache.lock() {
+            cache.clear();
+        }
+    }
+}
+
 /// 使某个 DB 的统计缓存失效（下载完成、删除、标记、恢复等写操作后调用）。
+///
+/// 同时清掉目录列表缓存：能走到这里的都是"磁盘内容可能变了"的写路径，
+/// 让两处缓存保持同一步调，避免统计说"文件在"而孤儿列表说"不在"。
 pub fn invalidate_stats(db_path: &str) {
     if let Some(cache) = STATS_CACHE.get() {
         if let Ok(mut cache) = cache.lock() {
             cache.retain(|(db, _), _| db != db_path);
         }
     }
+    clear_dir_listings();
 }
 
 fn cached_connection(db_path: &str) -> SqlResult<SharedConnection> {
@@ -205,7 +301,27 @@ pub struct DbStats {
     pub dislike: i64,
 }
 
+/// 表名与列名可容纳的标识符白名单。
+///
+/// 这两者要拼进 SQL（SQLite 不支持把表名/列名做成参数），所以必须限制取值范围。
+/// 当前调用方传的都是编译期字面量，但裸 `&str` 参数一旦被误用就是注入口子，
+/// 这里用断言把风险挡在函数入口。
+fn assert_sql_identifier(ident: &str) -> SqlResult<()> {
+    let valid = !ident.is_empty()
+        && ident
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_');
+    if valid {
+        Ok(())
+    } else {
+        log::error!("[DB] 非法 SQL 标识符被拒绝: {:?}", ident);
+        Err(rusqlite::Error::InvalidParameterName(ident.to_string()))
+    }
+}
+
 fn ensure_text_column(conn: &Connection, table: &str, column: &str) -> SqlResult<()> {
+    assert_sql_identifier(table)?;
+    assert_sql_identifier(column)?;
     let mut stmt = conn.prepare(&format!("PRAGMA table_info({table})"))?;
     let column_names: Vec<String> = stmt
         .query_map([], |row| row.get(1))?
@@ -301,9 +417,14 @@ pub fn init_reddit_db(db_path: &str) -> SqlResult<()> {
 
 /// 列表查询按 `created_at DESC, id DESC` 排序，建索引可直接省掉排序。
 /// 数据量小时无感，库到几千条后能明显减少列表翻页的开销。
+///
+/// `name` 索引服务的是按文件名查/改记录的操作：
+/// `mark_dislike_by_name`（标记缺失）、`get_wallhaven_image_by_name`（图片详情）。
+/// 没有它这两个操作在大库上是全表扫描。
 fn ensure_created_at_index(conn: &Connection) -> SqlResult<()> {
     conn.execute_batch(
-        "CREATE INDEX IF NOT EXISTS idx_images_created_at ON images(created_at DESC, id DESC);",
+        "CREATE INDEX IF NOT EXISTS idx_images_created_at ON images(created_at DESC, id DESC);
+         CREATE INDEX IF NOT EXISTS idx_images_name ON images(name);",
     )
 }
 

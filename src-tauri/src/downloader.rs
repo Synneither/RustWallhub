@@ -82,7 +82,29 @@ pub fn file_is_image(path: &Path) -> bool {
 }
 
 /// 单张图片下载的硬上限，防止异常源或错误 Content-Type 把内存撑爆。
-pub const MAX_IMAGE_BYTES: usize = 256 * 1024 * 1024;
+///
+/// 这个值直接决定下载阶段的内存上界，改之前先算一遍账：
+/// `download_urls_concurrent` 会把**整批**的图片字节全部收进内存后才返回
+/// （调用方随后才逐张落盘），所以峰值驻留 ≈ `chunk_size * MAX_IMAGE_BYTES`，
+/// 而 `chunk_size` 就是并发数（见 `download_chunk_size`）。默认并发 6 → 约 6 张。
+///
+/// 64 MiB 的依据：8K JPEG 约 10–20 MiB，8K 无损 PNG 约 40–60 MiB，
+/// 已经覆盖真实壁纸场景；配合上面的账，最坏峰值约 384 MiB。
+/// 调太小会把合法的大图误判为超限，不要靠它压内存。
+pub const MAX_IMAGE_BYTES: usize = 64 * 1024 * 1024;
+
+/// 一批下载多少张——**必须恰好等于并发数，不要放大**。
+///
+/// 原因：`download_urls_concurrent` 会 `await` 到整批全部完成才返回，调用方拿到结果后
+/// 才逐张落盘。也就是说**批内所有图片的字节在落盘前会同时驻留内存**，
+/// 峰值 ≈ `chunk_size × 单张大小`。
+///
+/// 批大小取并发数时，同时在飞的最多就是这么多张，已经达到下界；
+/// 原来写成 `concurrency * 2` 并不能让下载与落盘流水线化（两者是串行的），
+/// 只是白白把峰值翻倍。
+pub fn download_chunk_size(concurrency: u32) -> usize {
+    concurrency.max(1) as usize
+}
 
 pub fn compute_md5(data: &[u8]) -> String {
     format!("{:x}", md5::compute(data))
@@ -127,7 +149,10 @@ pub async fn download_image_bytes(
         .content_length()
         .is_some_and(|len| len as usize > MAX_IMAGE_BYTES)
     {
-        return Err(format!("图片超过大小限制 ({MAX_IMAGE_BYTES} bytes)"));
+        return Err(format!(
+                "图片超过大小限制（上限 {} MiB）",
+                MAX_IMAGE_BYTES / (1024 * 1024)
+            ));
     }
 
     let content_type = resp
@@ -145,7 +170,10 @@ pub async fn download_image_bytes(
         .map_err(|e| format!("读取下载数据失败: {e}"))?
     {
         if bytes.len().saturating_add(chunk.len()) > MAX_IMAGE_BYTES {
-            return Err(format!("图片超过大小限制 ({MAX_IMAGE_BYTES} bytes)"));
+            return Err(format!(
+                "图片超过大小限制（上限 {} MiB）",
+                MAX_IMAGE_BYTES / (1024 * 1024)
+            ));
         }
         bytes.extend_from_slice(&chunk);
     }
@@ -241,6 +269,17 @@ pub async fn download_urls_concurrent(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_download_chunk_size_equals_concurrency() {
+        // 批大小必须恰好等于并发数：`download_urls_concurrent` 会等整批全部完成才返回，
+        // 批内所有字节在落盘前同时驻留内存。放大批大小只会把峰值翻倍，没有流水线收益。
+        assert_eq!(download_chunk_size(6), 6);
+        assert_eq!(download_chunk_size(1), 1);
+        assert_eq!(download_chunk_size(12), 12);
+        // 并发数为 0 时必须退化成 1：`chunks(0)` 会 panic。
+        assert_eq!(download_chunk_size(0), 1);
+    }
 
     #[test]
     fn test_file_is_image_valid_extensions() {
@@ -468,33 +507,26 @@ mod tests {
         let jpeg_data = body.clone();
         let barrier = std::sync::Arc::new(std::sync::Barrier::new(2));
         let b = barrier.clone();
+        // 用**阻塞** accept，而不是"非阻塞轮询 + sleep"：
+        // 轮询要求 accept 恰好在连接到达的窗口内被调用，高负载（并行跑 96 个测试）时
+        // 调度抖动会让它反复错过，客户端每次重试都连不上 → 偶发失败。
+        // 阻塞 accept 由内核挂起等待，连接到达必被唤醒，没有这个不确定性。
+        listener.set_nonblocking(false).unwrap();
         std::thread::spawn(move || {
+            use std::io::{Read, Write};
             b.wait();
-            // CI 环境调度慢，客户端可能需要重试才能连上 mock server。
-            // 让服务器非阻塞轮询监听一段时间，而不是只 accept 一次。
-            listener.set_nonblocking(true).unwrap();
-            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
-            while std::time::Instant::now() < deadline {
-                match listener.accept() {
-                    Ok((mut stream, _)) => {
-                        // 先读取客户端请求，避免"服务器先关闭连接、客户端随后写入被 RST(10054)"的时序竞争
-                        use std::io::Read;
-                        let mut req_buf = [0u8; 4096];
-                        let _ = stream.read(&mut req_buf);
-                        use std::io::Write;
-                        let response = format!(
-                            "HTTP/1.1 200 OK\r\nContent-Type: image/jpeg\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
-                            jpeg_data.len()
-                        );
-                        let _ = stream.write_all(response.as_bytes());
-                        let _ = stream.write_all(&jpeg_data);
-                        return;
-                    }
-                    Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
-                        std::thread::sleep(std::time::Duration::from_millis(10));
-                    }
-                    Err(_) => return,
-                }
+            while let Ok((mut stream, _)) = listener.accept() {
+                // 先读取客户端请求，避免"服务器先关闭连接、客户端随后写入被 RST(10054)"的时序竞争
+                let mut req_buf = [0u8; 4096];
+                let _ = stream.read(&mut req_buf);
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: image/jpeg\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    jpeg_data.len()
+                );
+                let _ = stream.write_all(response.as_bytes());
+                let _ = stream.write_all(&jpeg_data);
+                // 服务完一个请求就够；客户端成功后不会再连。
+                break;
             }
         });
         barrier.wait();
@@ -511,5 +543,117 @@ mod tests {
         let (bytes, content_type) = results[0].as_ref().expect("download should succeed");
         assert!(!bytes.is_empty(), "should get image bytes");
         assert_eq!(content_type, "image/jpeg");
+    }
+
+    /// 重试/退避路径此前完全没有覆盖——现有用例要么传 `max_retries=0`，要么首轮就成功，
+    /// 所以 `2u64.pow(attempt)` 的退避分支与「退避前归还信号量」从来没被执行过。
+    ///
+    /// 让 mock server 第一次返回 500、第二次返回 200，验证退避后确实重试且最终成功，
+    /// 并断言请求次数正好是 2（既没漏重试，也没多试）。
+    #[tokio::test]
+    async fn test_download_retries_after_failure_then_succeeds() {
+        // JPEG magic bytes 就够：is_valid_image 对 image/jpeg 只校验文件头。
+        const BODY: [u8; 6] = [0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x10];
+
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let hits = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let hits_srv = hits.clone();
+
+        // 在主线程就切非阻塞：放进子线程的话，bind 之后、切换之前的窗口里
+        // 阻塞 accept（理由同 test_download_urls_concurrent_success）：
+        // 非阻塞轮询要求 accept 恰好在连接到达的窗口内被调用，高负载下会反复错过。
+        listener.set_nonblocking(false).unwrap();
+
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(2));
+        let b = barrier.clone();
+        std::thread::spawn(move || {
+            use std::io::{Read, Write};
+            b.wait();
+            // 服务 2 个连接后自然退出：第 1 个返回 500 让客户端退避重试，第 2 个返回 200。
+            // 用固定次数而不是 deadline 循环，线程能干净退出，不会空转抢 CPU。
+            while let Ok((mut stream, _)) = listener.accept() {
+                let mut req_buf = [0u8; 4096];
+                let _ = stream.read(&mut req_buf);
+                let n = hits_srv.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                if n == 0 {
+                    let _ = stream.write_all(
+                        b"HTTP/1.1 500 Internal Server Error\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                    );
+                    continue;
+                }
+                let header = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: image/jpeg\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    BODY.len()
+                );
+                let _ = stream.write_all(header.as_bytes());
+                let _ = stream.write_all(&BODY);
+                break;
+            }
+        });
+        barrier.wait();
+        std::thread::sleep(std::time::Duration::from_millis(100));
+
+        let client = reqwest::Client::builder().no_proxy().build().unwrap();
+        let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let url = format!("http://127.0.0.1:{port}/retry.jpg");
+        // 给足重试预算（4 次尝试）而不是刚好 1 次：mock server 只在它「第一个成功 accept 的
+        // 连接」上返回 500，之后返回 200，所以无论前几次连接是否因机器负载抖动而失败，
+        // hits 最终都恰好是 2。预算给紧会让偶发的 TCP 抖动把唯一的重试机会吃掉 → 测试变 flaky。
+        let results = download_urls_concurrent(&client, &[url], cancel, 1, 3).await;
+
+        assert_eq!(results.len(), 1);
+        assert!(
+            results[0].is_ok(),
+            "退避重试后应当成功: {:?}",
+            results[0].as_ref().err()
+        );
+        assert_eq!(
+            hits.load(std::sync::atomic::Ordering::SeqCst),
+            2,
+            "应当正好有 2 个连接被处理（1 次 500 + 1 次 200），且成功后不再重试"
+        );
+    }
+
+    /// 一直失败时要耗尽重试次数并返回带次数说明的错误，且不 panic。
+    /// 用 max_retries=0 跑，避免退避 sleep 拖慢测试。
+    #[tokio::test]
+    async fn test_download_exhausts_retries_reports_count() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        listener.set_nonblocking(false).unwrap();
+
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(2));
+        let b = barrier.clone();
+        std::thread::spawn(move || {
+            use std::io::{Read, Write};
+            b.wait();
+            // 阻塞 accept，服务 1 个连接后退出：max_retries=0 意味着客户端只请求一次。
+            // 固定次数能让线程干净退出，不会像之前那样一直轮询空转抢 CPU。
+            while let Ok((mut stream, _)) = listener.accept() {
+                let mut req_buf = [0u8; 4096];
+                let _ = stream.read(&mut req_buf);
+                let _ = stream.write_all(
+                    b"HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                );
+                break;
+            }
+        });
+        barrier.wait();
+        std::thread::sleep(std::time::Duration::from_millis(100));
+
+        let client = reqwest::Client::builder().no_proxy().build().unwrap();
+        let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let url = format!("http://127.0.0.1:{port}/always-503.jpg");
+        let results = download_urls_concurrent(&client, &[url], cancel, 1, 0).await;
+
+        assert_eq!(results.len(), 1);
+        // 注意：即使连接层失败（而非拿到 503），错误信息同样带"已重试 0 次"，
+        // 因为 max_retries=0 时第一次失败就直接出循环。所以这个断言不依赖 mock server 是否可达。
+        let err = results[0].as_ref().expect_err("503 应当失败");
+        assert!(
+            err.contains("已重试 0 次"),
+            "错误信息应包含重试次数，实际: {err}"
+        );
     }
 }

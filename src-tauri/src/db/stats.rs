@@ -1,19 +1,32 @@
 //! 数据库统计：总数、love=1 数量、缺失数量，以及"标记缺失"类写操作。
 //!
-//! 统计结果有短缓存（写入操作会主动失效），外部改动最多 10 秒后可见。
+//! 统计结果有短缓存（写入操作会主动失效），外部改动最多 `STATS_CACHE_TTL_SECS` 秒后可见。
 
-use super::{invalidate_stats, with_cached_connection, DbStats, STATS_CACHE};
+use super::{
+    dir_listing, invalidate_stats, with_cached_connection, DbStats, DirListing, STATS_CACHE,
+    STATS_CACHE_TTL_SECS,
+};
 use rusqlite::Result as SqlResult;
-use std::collections::HashSet;
+use std::sync::Arc;
 use std::time::Instant;
 
+/// 批量 UPDATE 时每条语句绑定的最大参数个数。
+///
+/// SQLite 默认 `SQLITE_MAX_VARIABLE_NUMBER` 为 999（新版 32766），
+/// 250 既能一次覆盖绝大多数场景，又留足余量。
+const SQL_PARAM_CHUNK: usize = 250;
+
+/// 统计结果短缓存策略：**不依赖目录 mtime**。
+///
+/// 曾经用 `save_dir` 的 mtime 判断缓存是否新鲜，但下载是往 `save_dir` 的子目录里写文件，
+/// Windows 上子目录写入不一定更新父目录 mtime，导致缓存频繁误判失效、每次统计都全量扫盘。
+/// 现在只靠两条规则：TTL 到期，或写操作主动调用 `invalidate_stats`。
 pub fn get_db_stats(db_path: &str, save_dir: &str) -> SqlResult<DbStats> {
     let key = (db_path.to_string(), save_dir.to_string());
-    let current_modified = std::fs::metadata(save_dir).and_then(|m| m.modified()).ok();
     if let Some(cache) = STATS_CACHE.get() {
         if let Ok(cache) = cache.lock() {
-            if let Some((cached_at, cached_modified, stats)) = cache.get(&key) {
-                if *cached_modified == current_modified && cached_at.elapsed().as_secs() < 10 {
+            if let Some((cached_at, stats)) = cache.get(&key) {
+                if cached_at.elapsed().as_secs() < STATS_CACHE_TTL_SECS {
                     return Ok(stats.clone());
                 }
             }
@@ -35,7 +48,7 @@ pub fn get_db_stats(db_path: &str, save_dir: &str) -> SqlResult<DbStats> {
     };
     if let Some(cache) = STATS_CACHE.get() {
         if let Ok(mut cache) = cache.lock() {
-            cache.insert(key, (Instant::now(), current_modified, stats.clone()));
+            cache.insert(key, (Instant::now(), stats.clone()));
         }
     }
     log::info!(
@@ -46,16 +59,12 @@ pub fn get_db_stats(db_path: &str, save_dir: &str) -> SqlResult<DbStats> {
     Ok(stats)
 }
 
-/// 一次性扫描保存目录，把目录里的所有文件名放入 HashSet。
-/// 原来逐行 `Path::exists` 在大图库下会产生 N 次 syscall，这里改成 O(目录项) 的哈希查找。
-pub(crate) fn existing_file_names(save_dir: &str) -> HashSet<String> {
-    let mut names = HashSet::new();
-    if let Ok(entries) = std::fs::read_dir(save_dir) {
-        for entry in entries.flatten() {
-            names.insert(entry.file_name().to_string_lossy().to_string());
-        }
-    }
-    names
+/// 保存目录里**普通文件**的名字集合（带短缓存，见 `dir_listing`）。
+///
+/// 原来逐行 `Path::exists` 会产生 N 次 syscall；改成一次 `read_dir` 建表后按名查哈希。
+/// 再叠一层进程内缓存，让「缺失列表 / 孤儿列表 / 统计」三处共用同一次目录扫描。
+pub(crate) fn existing_file_names(save_dir: &str) -> Arc<DirListing> {
+    dir_listing(save_dir)
 }
 
 fn mark_missing_dislike(db_path: &str, save_dir: &str) -> SqlResult<u64> {
@@ -68,15 +77,22 @@ fn mark_missing_dislike(db_path: &str, save_dir: &str) -> SqlResult<u64> {
             let mapped = stmt.query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?;
             mapped.collect::<SqlResult<Vec<_>>>()?
         };
+        // 先挑出缺失的 id，再用一条 IN(...) 批量更新。
+        // 原来逐条 UPDATE，一库几千条缺失就是几千条语句（虽然在同一事务里，
+        // 但每条都要走一次语句执行 + 写 WAL）。
+        let missing: Vec<i64> = rows
+            .into_iter()
+            .filter(|(_, name)| !existing.contains_key(name))
+            .map(|(id, _)| id)
+            .collect();
+
         let mut updated = 0u64;
-        for (id, name) in rows {
-            if !existing.contains(&name) {
-                tx.execute(
-                    "UPDATE images SET love = 0 WHERE id = ?1",
-                    rusqlite::params![id],
-                )?;
-                updated += 1;
-            }
+        for chunk in missing.chunks(SQL_PARAM_CHUNK) {
+            // 占位符个数按块长生成（块长来自常量，不涉及注入）。
+            let placeholders = vec!["?"; chunk.len()].join(",");
+            let sql = format!("UPDATE images SET love = 0 WHERE id IN ({placeholders})");
+            let mut stmt = tx.prepare_cached(&sql)?;
+            updated += stmt.execute(rusqlite::params_from_iter(chunk.iter()))? as u64;
         }
         tx.commit()?;
         Ok(updated)
@@ -98,7 +114,7 @@ pub(crate) fn count_missing(db_path: &str, save_dir: &str) -> SqlResult<u64> {
     let existing = existing_file_names(save_dir);
     let missing = names
         .iter()
-        .filter(|name| !existing.contains(*name))
+        .filter(|name| !existing.contains_key(*name))
         .count() as u64;
     log::info!("[DB] count_missing: {} missing in {}", missing, save_dir);
     Ok(missing)
