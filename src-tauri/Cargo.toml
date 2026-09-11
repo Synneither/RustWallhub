@@ -20,12 +20,15 @@ tauri-build = { version = "2", features = [] }
 [dependencies]
 tauri = { version = "2", features = ["protocol-asset"] }
 tauri-plugin-opener = "2"
-tauri-plugin-fs = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 rusqlite = { version = "0.39.0", features = ["bundled"] }
 reqwest = { version = "0.12", features = ["json"] }
-tokio = { version = "1", features = ["full"] }
+# 只启用实际用到的 feature，不用 "full"：
+# rt-multi-thread/macros（运行时与 #[tokio::main]/spawn）、sync（Semaphore/Mutex）、
+# time（sleep/timeout）、fs（tokio::fs::write 等）、io-util（AsyncWriteExt）。
+# 少编译 fs 相关之外的 signal/process/net 等，可缩短构建时间。
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "fs", "io-util"] }
 md5 = "0.7"
 dirs = "6"
 thiserror = "2"
@@ -39,6 +42,11 @@ log = "0.4"
 env_logger = "0.11"
 tauri-plugin-dialog = "2"
 tauri-plugin-updater = "2"
+# 只为了 JPEG 的 DCT 域缩放解码（1/8、1/4、1/2）：image / zune-jpeg 不支持降采样解码，
+# 生成缩略图时只能整图解码（4K 约 31 MiB、占全链路 80% 时间）。
+# 关掉默认 feature（rayon）：单张内部再并行没意义，我们已在外层用线程池并行处理多张图，
+# 嵌套线程池只会增加调度开销。
+jpeg-decoder = { version = "0.3", default-features = false }
 
 [dev-dependencies]
 tempfile = "3"

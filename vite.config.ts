@@ -11,8 +11,17 @@ export default defineConfig(async () => ({
   build: {
     rollupOptions: {
       output: {
-        manualChunks: {
-          vuetify: ['vuetify'],
+        // 按依赖来源拆包：vuetify 体量最大（当前约 290KB / gzip 93KB），单独成块可与
+        // 业务代码分开缓存。桌面端资源都在本地磁盘，加载耗时可忽略，分块主要是为了
+        // 改业务代码时不必重新打包框架、构建更快。
+        // @tauri-apps/* 是稳定依赖，同理独立成块。
+        manualChunks(id: string) {
+          if (id.includes("node_modules")) {
+            if (id.includes("vuetify")) return "vuetify";
+            if (id.includes("@tauri-apps")) return "tauri";
+            return "vendor";
+          }
+          return undefined;
         },
       },
     },

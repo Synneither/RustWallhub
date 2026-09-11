@@ -147,6 +147,10 @@ export const restoreAllFiles = (source: Source) =>
 export const listMissingImages = (source: Source) =>
   invoke<ImageRecord[]>("list_missing_images", { source });
 
+/** 清空后端目录列表/统计缓存。刷新前调用，保证读到磁盘真实现状；
+ *  之后连发的多条命令仍共用同一次重新扫描。 */
+export const refreshFileCaches = () => invoke<void>("refresh_file_caches");
+
 /* ════════════ sync ════════════ */
 
 export const exportSnapshots = (dir: string) =>

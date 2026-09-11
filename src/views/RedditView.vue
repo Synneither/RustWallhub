@@ -1,9 +1,10 @@
 <script setup lang="ts">
 import { ref } from "vue";
 import { startRedditDownload } from "../utils/api";
-import { appState, clearNewImages, toast, toastError } from "../stores/app";
+import { appState, clearNewImages, toast } from "../stores/app";
 import { positiveInt, requiredRule } from "../utils/rules";
 import { useConfigDraft } from "../composables/useConfigDraft";
+import { useAsyncAction } from "../composables/useAsyncAction";
 import ProgressCard from "../components/ProgressCard.vue";
 import NewImagesStrip from "../components/NewImagesStrip.vue";
 
@@ -13,33 +14,24 @@ const REDDIT_DRAFT_KEYS = [
   "reddit_max_images",
 ] as const;
 
-const { draft, isDirty, saving, persist } = useConfigDraft(REDDIT_DRAFT_KEYS, {
+const { draft, saving, persist } = useConfigDraft(REDDIT_DRAFT_KEYS, {
   reddit_url: "",
   reddit_max_posts: 100,
   reddit_max_images: 100,
 });
 
-const starting = ref(false);
 const formValid = ref(false);
 
 async function onSave() {
   if (await persist()) toast("设置已保存", "success");
 }
 
-async function onStart() {
-  if (starting.value) return;
-  starting.value = true;
-  try {
-    if (!(await persist())) return;
-    const msg = await startRedditDownload();
-    clearNewImages("reddit");
-    toast(msg, "info");
-  } catch (e) {
-    toastError(e);
-  } finally {
-    starting.value = false;
-  }
-}
+const { run: onStart, loading: starting } = useAsyncAction(async () => {
+  if (!(await persist())) return;
+  const msg = await startRedditDownload();
+  clearNewImages("reddit");
+  toast(msg, "info");
+});
 </script>
 
 <template>

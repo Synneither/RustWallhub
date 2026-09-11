@@ -59,7 +59,12 @@ function thumbOf(name: string, path: string): string {
     </div>
     <div class="new-strip__row">
       <div v-for="img in shown" :key="img.name" class="new-strip__thumb">
-        <img :src="thumbOf(img.name, img.path)" :alt="img.name" loading="lazy" />
+        <img
+          :src="thumbOf(img.name, img.path)"
+          :alt="img.name"
+          loading="lazy"
+          decoding="async"
+        />
       </div>
       <div v-if="extra > 0" class="new-strip__more text-caption">+{{ extra }}</div>
     </div>

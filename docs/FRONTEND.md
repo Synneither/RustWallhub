@@ -1,7 +1,7 @@
 # RustWallhub 前端设计文档
 
 > 版本：2.0 · 2026-08-02
-> 本文档完全以后端 36 个 Tauri 命令、8 种事件为依据重新设计前端，不继承旧版界面结构。
+> 本文档完全以后端 40 个 Tauri 命令、10 种事件为依据重新设计前端，不继承旧版界面结构。
 > 技术栈：Vue 3.5 + Vuetify 4 + TypeScript（无 vue-router、无 pinia，视图切换与全局状态由 App 层与 reactive store 承担）。
 
 ---
@@ -85,14 +85,25 @@ confirm: { visible: boolean; title: string; text: string; danger: boolean; resol
 - `dislike` 字段语义 = "love=1 但文件缺失"（后端口径），UI 文案统一写 **"缺失"**，不写"不喜欢"。
 - 下载取消为全局单标志：任一任务进行中时 `cancel_downloads` 对所有任务生效，UI 上取消按钮作用于"当前所有进行中的任务"。
 
+### 4.1 复用 composable（`src/composables/`）
+
+页面之间重复的表单/异步样板收敛在这两个 composable 里，新增页面优先复用而不是重写：
+
+| composable | 用途 |
+|---|---|
+| `useConfigDraft(keys, defaults)` | 配置草稿：从 `appState.config` 拷贝出 `draft` + 计算 `isDirty` + `saving` + `persist()`。新增配置项只需改 `keys` 与 `defaults` 两处。 |
+| `useAsyncAction(fn)` | 异步按钮样板：返回 `{ run, loading }`，内置 `friendlyError` 提示与**同步** busy 去重（`loading` 是 ref，同一 tick 内连点两次都会读到 `false`）。支持参数透传，也可传 `{ onSuccess, onError, errorPrefix }`。 |
+| `useSelection()` | 图片卡片多选状态（`reactive(new Set())`，直接操作无需 `.value`），图库与 Wallhaven 页共用。 |
+
 ---
 
 ## 5. API 层（utils/api.ts）
 
-- 全部 36 个 `invoke` 的类型化封装，函数名与后端命令一致。
+- 全部 40 个 `invoke` 的类型化封装，函数名与后端命令一致。
 - 类型定义集中 `src/types.ts`，与后端 serde 结构一一对应（snake_case 字段名原样保留）。
-- 事件封装：`onDownloadProgress(cb)` 等 8 个 `listen` 包装，返回 unlisten 函数；App 层统一注册，页面级临时监听自行注册/卸载。
+- 事件封装：`onDownloadProgress(cb)` 等 10 个 `listen` 包装，返回 unlisten 函数；App 层统一注册，页面级临时监听自行注册/卸载。
 - `assetUrl(path)`：`convertFileSrc` 包装，统一处理 `http://asset.localhost` 前缀。
+  **注意**：asset 协议的静态白名单只有缩略图缓存目录（`$CACHE/rustwallhub/**`）。保存目录在启动与保存设置时由后端动态授权，自定义浏览目录在传入 `custom_dir` 时授权。新增任何"显示任意路径图片"的功能时，必须同时让后端授权该目录，否则 `<img>` 会静默加载失败。
 
 ### 关键调用约束（后端行为决定）
 
@@ -116,6 +127,8 @@ confirm: { visible: boolean; title: string; text: string; danger: boolean; resol
 | `update-progress` | 更新下载进度条（total 可能为 null，此时显示不确定态） |
 | `update-installing` | 全屏遮罩"正在安装更新，应用将自动重启" |
 | `slideshow-tick` | 更新 `slideshow.current`；图库页轮播指示器显示当前张数 |
+| `sync-completed` | 数据同步成功 → Toast 提示 + 刷新统计 |
+| `sync-failed` | 数据同步失败 → Toast 显示错误原因（error 类不自动消失） |
 
 ---
 
@@ -162,7 +175,7 @@ confirm: { visible: boolean; title: string; text: string; danger: boolean; resol
 
 1. **库状态卡**：`db_dir` 可编辑（保存后两个 db 文件路径强制派生为 `{db_dir}/*.db`，展示为只读文本）；每库存在状态徽标；缺失时提供"创建数据库"按钮（确认后 `init_databases`）。
 2. **统计卡**：两库 total / love=1 / 缺失。
-3. **缺失文件管理**：`count_missing_images` 计数 + `list_missing_images` 表格（名称、分辨率、入库时间、来源）；操作：`补下载选中`（`download_missing_images`）、`全部补下载`（`recover_database_files` × 两源，确认框）、`标记为不喜欢`（`mark_disliked_files`，确认框）。
+3. **缺失文件管理**：`list_missing_images` 返回列表（其长度即缺失计数，不必再单独查询）+ 表格（名称、分辨率、入库时间、来源）；操作：`补下载选中`（`download_missing_images`）、`全部补下载`（`recover_database_files` × 两源，确认框）、`标记为不喜欢`（`mark_disliked_files`，确认框）。
 4. **孤儿文件管理**：`list_orphan_files` 表格（名称、大小、来源）；操作：`收养入库`（`adopt_orphan_files`）、`删除`（确认框）。
 5. **维护区**：`清理孤儿缩略图`（`clean_thumbnails` 结果显示）、`恢复所有已标记`（`restore_all_files`，确认框）。
 6. **记录浏览**：`list_database_images` 分页表格（全部字段含 love 状态、source_url/permalink 外链）。
@@ -190,6 +203,7 @@ confirm: { visible: boolean; title: string; text: string; danger: boolean; resol
 | `ImageViewer.vue` | 全屏深色查看器（预览 + 元信息 + 键盘导航） |
 | `ProgressCard.vue` | 下载任务进度卡（仪表盘/源页复用） |
 | `NewImagesStrip.vue` | "本次新图"横向预览条（Wallhaven/Reddit 复用） |
+| `ImageDetailDrawer.vue` | 图片详情抽屉（分辨率、格式、来源、路径；见 §7.4.5） |
 
 ---
 

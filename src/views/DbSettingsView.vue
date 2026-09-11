@@ -14,6 +14,7 @@ import {
   listMissingImages,
   listOrphanFiles,
   markDislikedFiles,
+  refreshFileCaches,
   ossSyncDownload,
   ossSyncUpload,
   recoverDatabaseFiles,
@@ -22,6 +23,7 @@ import {
   testOssConfig,
 } from "../utils/api";
 import { appState, askConfirm, dbReady, ensureDatabases, refreshStats, toast, toastError } from "../stores/app";
+import { useAsyncAction } from "../composables/useAsyncAction";
 import { requiredRule } from "../utils/rules";
 import { formatBytes, formatDateTime } from "../utils/format";
 import StatPanel from "../components/StatPanel.vue";
@@ -37,6 +39,14 @@ const savingDir = ref(false);
 // 1) 每次切回本页都刷新；2) 本页可见时下载完成/补下载（galleryEpoch++）也会刷新。
 let viewActive = false;
 let hasActivated = false;
+
+// 「上次重载时看到的 galleryEpoch」。缺失/孤儿列表都是全盘扫描（listMissingImages +
+// listOrphanFiles），大图库下代价明显，所以只在数据真的变了时才重扫：
+// 切回本页时若 epoch 没变，就沿用已有列表，不再打一次全盘 IO。
+let lastLoadedEpoch = -1;
+// reloadAll 的竞态守卫：onMounted 与 onActivated 可能挨得极近，
+// 后发起的请求完成时可能覆盖先完成的结果，用序号保证只认最后一次。
+let reloadSeq = 0;
 
 onMounted(async () => {
   dbDir.value = appState.config?.db_dir ?? "";
@@ -54,8 +64,8 @@ onMounted(async () => {
 onActivated(() => {
   viewActive = true;
   // 首次挂载时 onActivated 紧跟 onMounted 触发，跳过那一次避免重复加载；
-  // 之后每次从其他页面切回来都刷新一遍缺失/孤儿列表。
-  if (hasActivated) reloadAll();
+  // 之后每次从其他页面切回来，仅在数据确实变化（epoch 不同）时才全量重扫。
+  if (hasActivated && lastLoadedEpoch !== appState.galleryEpoch) reloadAll();
   hasActivated = true;
 });
 onDeactivated(() => {
@@ -115,44 +125,115 @@ async function onInitDatabases() {
 
 /* ════ 数据加载 ════ */
 const loading = ref(false);
+
+// 表头定义提到模块级常量：写成内联字面量的话每次渲染都会生成新数组，
+// v-data-table 会当成 props 变化重新计算列。
+const MISSING_HEADERS = [
+  { title: "文件名", key: "name" },
+  { title: "来源", key: "source", width: 100 },
+  { title: "分辨率", key: "resolution", width: 110 },
+  { title: "入库时间", key: "created_at", width: 150 },
+];
+const ORPHAN_HEADERS = [
+  { title: "文件名", key: "name" },
+  { title: "来源", key: "source", width: 100 },
+  { title: "大小", key: "size", width: 100 },
+];
+const RECORD_HEADERS = [
+  { title: "文件名", key: "name" },
+  { title: "状态", key: "love", width: 80 },
+  { title: "分辨率", key: "resolution", width: 110 },
+  { title: "入库时间", key: "created_at", width: 150 },
+];
 const missingCount = ref(0);
 const missing = ref<ImageRecord[]>([]);
 const orphans = ref<OrphanFile[]>([]);
 
 async function reloadAll() {
   if (!dbReady.value) return;
+  const seq = ++reloadSeq;
   loading.value = true;
   try {
+    // 先让后端丢弃目录列表/统计缓存（它们有短 TTL，不清的话「刷新」可能返回
+    // 几秒前的旧结果）。清完后下面这几条命令仍然共用**同一次**重新扫描，
+    // 所以既拿到了新鲜数据，又不会像以前那样把目录扫 3 遍。
+    await refreshFileCaches();
     // 缺失列表与缺失计数来自同一次扫描，直接用列表长度，省掉一次重复 IPC + 磁盘扫描。
     const [m, o] = await Promise.all([listMissingImages("all"), listOrphanFiles("all")]);
+    if (seq !== reloadSeq) return; // 已有更新的重载在跑，丢弃这次结果
     missingCount.value = m.length;
     missing.value = m;
     orphans.value = o;
     await refreshStats();
     await loadRecords();
+    lastLoadedEpoch = appState.galleryEpoch;
   } catch (e) {
+    if (seq !== reloadSeq) return;
     toastError(e);
   } finally {
-    loading.value = false;
+    if (seq === reloadSeq) loading.value = false;
   }
 }
 
 /* ════ 缺失文件操作 ════ */
 const missingSelected = ref<ImageRecord[]>([]);
 
-async function onDownloadSelectedMissing() {
-  if (missingSelected.value.length === 0) return;
-  const bySource = groupBySource(missingSelected.value);
-  try {
+/** 补下载全部缺失（两个源各调一次；后端 recover 对 "all" 只处理 Reddit）。 */
+const { run: runRecoverAll, loading: recoveringAll } = useAsyncAction(async () => {
+  await recoverDatabaseFiles("wallhaven");
+  await recoverDatabaseFiles("reddit");
+  toast("补下载任务已启动（Wallhaven + Reddit）", "info");
+});
+
+/** 批量标记缺失记录为不喜欢（love=0），不删文件。 */
+const { run: runMarkDisliked, loading: markingDisliked } = useAsyncAction(async () => {
+  const n = await markDislikedFiles("all");
+  toast(`已标记 ${n} 条记录`, "success");
+  await reloadAll();
+});
+
+/** 批量补下载选中的缺失文件，按来源分组串行调用。 */
+const { run: onDownloadSelectedMissing, loading: downloadingMissing } = useAsyncAction(
+  async () => {
+    if (missingSelected.value.length === 0) return;
+    const bySource = groupBySource(missingSelected.value);
     for (const [source, records] of Object.entries(bySource)) {
       const msg = await downloadMissingImages(source as "wallhaven" | "reddit", records);
       toast(msg, "info");
     }
     missingSelected.value = [];
-  } catch (e) {
-    toastError(e);
+  },
+);
+
+/** 收养选中的孤儿文件入库。 */
+const { run: runAdopt, loading: adopting } = useAsyncAction(async () => {
+  const bySource = groupBySource(orphanSelected.value);
+  let total = 0;
+  for (const [source, files] of Object.entries(bySource)) {
+    total += await adoptOrphanFiles(
+      source as "wallhaven" | "reddit",
+      files.map((f) => f.name),
+    );
   }
-}
+  toast(`已收养 ${total} 个文件入库`, "success");
+  orphanSelected.value = [];
+  await reloadAll();
+});
+
+/** 永久删除选中的孤儿文件及其缩略图。 */
+const { run: runDeleteOrphans, loading: deletingOrphans } = useAsyncAction(async () => {
+  const bySource = groupBySource(orphanSelected.value);
+  let removed = 0;
+  for (const [src, files] of Object.entries(bySource)) {
+    removed += await deleteOrphanFiles(
+      src as "wallhaven" | "reddit",
+      files.map((f) => f.name),
+    );
+  }
+  toast(`已删除 ${removed} 个文件`, "success");
+  orphanSelected.value = [];
+  await reloadAll();
+});
 
 async function onRecoverAll() {
   const ok = await askConfirm(
@@ -161,14 +242,7 @@ async function onRecoverAll() {
     { confirmText: "开始补下载" },
   );
   if (!ok) return;
-  try {
-    // 后端 recover 对 "all" 只处理 Reddit，需两源分别调用
-    await recoverDatabaseFiles("wallhaven");
-    await recoverDatabaseFiles("reddit");
-    toast("补下载任务已启动（Wallhaven + Reddit）", "info");
-  } catch (e) {
-    toastError(e);
-  }
+  await runRecoverAll();
 }
 
 async function onMarkDisliked() {
@@ -178,13 +252,7 @@ async function onMarkDisliked() {
     { danger: true, confirmText: "标记" },
   );
   if (!ok) return;
-  try {
-    const n = await markDislikedFiles("all");
-    toast(`已标记 ${n} 条记录`, "success");
-    await reloadAll();
-  } catch (e) {
-    toastError(e);
-  }
+  await runMarkDisliked();
 }
 
 /* ════ 孤儿文件操作 ════ */
@@ -198,24 +266,10 @@ function groupBySource<T extends { source: string }>(items: T[]): Record<string,
   return out;
 }
 
-async function onAdopt() {
+const onAdopt = async () => {
   if (orphanSelected.value.length === 0) return;
-  const bySource = groupBySource(orphanSelected.value);
-  let total = 0;
-  try {
-    for (const [source, files] of Object.entries(bySource)) {
-      total += await adoptOrphanFiles(
-        source as "wallhaven" | "reddit",
-        files.map((f) => f.name),
-      );
-    }
-    toast(`已收养 ${total} 个文件入库`, "success");
-    orphanSelected.value = [];
-    await reloadAll();
-  } catch (e) {
-    toastError(e);
-  }
-}
+  await runAdopt();
+};
 
 async function onDeleteOrphans() {
   if (orphanSelected.value.length === 0) return;
@@ -225,32 +279,14 @@ async function onDeleteOrphans() {
     { danger: true, confirmText: "删除" },
   );
   if (!ok) return;
-  try {
-    const bySource = groupBySource(orphanSelected.value);
-    let removed = 0;
-    for (const [src, files] of Object.entries(bySource)) {
-      removed += await deleteOrphanFiles(
-        src as "wallhaven" | "reddit",
-        files.map((f) => f.name),
-      );
-    }
-    toast(`已删除 ${removed} 个文件`, "success");
-    orphanSelected.value = [];
-    await reloadAll();
-  } catch (e) {
-    toastError(e);
-  }
+  await runDeleteOrphans();
 }
 
 /* ════ 维护 ════ */
-async function onCleanThumbnails() {
-  try {
-    const r = await cleanThumbnails();
-    toast(`已清理孤儿缩略图：Wallhaven ${r.wallhaven} 个，Reddit ${r.reddit} 个`, "success");
-  } catch (e) {
-    toastError(e);
-  }
-}
+const { run: onCleanThumbnails, loading: cleaningThumbs } = useAsyncAction(async () => {
+  const r = await cleanThumbnails();
+  toast(`已清理孤儿缩略图：Wallhaven ${r.wallhaven} 个，Reddit ${r.reddit} 个`, "success");
+});
 
 /* ════ 数据同步（快照导出/导入 + OSS） ════ */
 const ossEndpoint = ref("");
@@ -554,13 +590,13 @@ const tab = ref<"missing" | "orphan" | "records">("missing");
             <div class="tab-actions">
               <v-btn size="small" variant="tonal" icon="mdi-refresh" :loading="loading" @click="reloadAll" />
               <v-spacer />
-              <v-btn size="small" variant="tonal" :disabled="missingSelected.length === 0" @click="onDownloadSelectedMissing">
+              <v-btn size="small" variant="tonal" :disabled="missingSelected.length === 0" @click="onDownloadSelectedMissing" :loading="downloadingMissing">
                 补下载选中（{{ missingSelected.length }}）
               </v-btn>
-              <v-btn size="small" variant="tonal" :disabled="missingCount === 0" @click="onRecoverAll">
+              <v-btn size="small" variant="tonal" :disabled="missingCount === 0" @click="onRecoverAll" :loading="recoveringAll">
                 全部补下载
               </v-btn>
-              <v-btn size="small" variant="tonal" color="error" :disabled="missingCount === 0" @click="onMarkDisliked">
+              <v-btn size="small" variant="tonal" color="error" :disabled="missingCount === 0" @click="onMarkDisliked" :loading="markingDisliked">
                 标记为不喜欢
               </v-btn>
             </div>
@@ -581,12 +617,7 @@ const tab = ref<"missing" | "orphan" | "records">("missing");
               return-object
               density="compact"
               class="db-table"
-              :headers="[
-                { title: '文件名', key: 'name' },
-                { title: '来源', key: 'source', width: 100 },
-                { title: '分辨率', key: 'resolution', width: 110 },
-                { title: '入库时间', key: 'created_at', width: 150 },
-              ]"
+              :headers="MISSING_HEADERS"
               :items-per-page="10"
             >
               <template #[`item.source`]="{ item }">
@@ -605,10 +636,10 @@ const tab = ref<"missing" | "orphan" | "records">("missing");
             <div class="tab-actions">
               <v-btn size="small" variant="tonal" icon="mdi-refresh" :loading="loading" @click="reloadAll" />
               <v-spacer />
-              <v-btn size="small" variant="tonal" :disabled="orphanSelected.length === 0" @click="onAdopt">
+              <v-btn size="small" variant="tonal" :disabled="orphanSelected.length === 0" @click="onAdopt" :loading="adopting">
                 收养入库（{{ orphanSelected.length }}）
               </v-btn>
-              <v-btn size="small" variant="tonal" color="error" :disabled="orphanSelected.length === 0" @click="onDeleteOrphans">
+              <v-btn size="small" variant="tonal" color="error" :disabled="orphanSelected.length === 0" @click="onDeleteOrphans" :loading="deletingOrphans">
                 删除（{{ orphanSelected.length }}）
               </v-btn>
             </div>
@@ -629,11 +660,7 @@ const tab = ref<"missing" | "orphan" | "records">("missing");
               return-object
               density="compact"
               class="db-table"
-              :headers="[
-                { title: '文件名', key: 'name' },
-                { title: '来源', key: 'source', width: 100 },
-                { title: '大小', key: 'size', width: 100 },
-              ]"
+              :headers="ORPHAN_HEADERS"
               :items-per-page="10"
             >
               <template #[`item.source`]="{ item }">
@@ -664,12 +691,7 @@ const tab = ref<"missing" | "orphan" | "records">("missing");
               :loading="recordsLoading"
               density="compact"
               class="db-table"
-              :headers="[
-                { title: '文件名', key: 'name' },
-                { title: '状态', key: 'love', width: 80 },
-                { title: '分辨率', key: 'resolution', width: 110 },
-                { title: '入库时间', key: 'created_at', width: 150 },
-              ]"
+              :headers="RECORD_HEADERS"
               :items-per-page="20"
               hide-default-footer
             >
@@ -690,7 +712,7 @@ const tab = ref<"missing" | "orphan" | "records">("missing");
       <div class="panel-card animate-in stagger-4">
         <div class="panel-card__title"><v-icon icon="mdi-wrench-outline" size="18" color="primary" />维护</div>
         <div class="maint-actions">
-          <v-btn variant="tonal" prepend-icon="mdi-image-off-outline" @click="onCleanThumbnails">
+          <v-btn variant="tonal" prepend-icon="mdi-image-off-outline" @click="onCleanThumbnails" :loading="cleaningThumbs">
             清理孤儿缩略图
           </v-btn>
           <v-btn variant="tonal" prepend-icon="mdi-restore" @click="onRestoreAll">

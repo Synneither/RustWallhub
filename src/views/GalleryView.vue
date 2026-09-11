@@ -33,6 +33,7 @@ import EmptyState from "../components/EmptyState.vue";
 import ImageViewer from "../components/ImageViewer.vue";
 import ImageDetailDrawer from "../components/ImageDetailDrawer.vue";
 import { useSelection } from "../composables/useSelection";
+import { useAsyncAction } from "../composables/useAsyncAction";
 import { openUrlSafe } from "../utils/openUrl";
 
 /* ════ 浏览状态 ════ */
@@ -79,8 +80,9 @@ const loading = ref(false);
 const loadError = ref("");
 const images = ref<LocalImageEntry[]>([]);
 const total = ref(0);
-/** 孤儿模式：全量孤儿列表，前端分页 */
-const orphanAll = ref<LocalImageEntry[]>([]);
+/** 孤儿模式：全量孤儿列表，前端分页。
+ * 用 shallowRef：这个数组可能有数千条 entry，整批替换即可，不需要逐项深度代理。 */
+const orphanAll = shallowRef<LocalImageEntry[]>([]);
 /** 缩略图 URL 缓存（文件名 → asset URL），上限见 THUMB_CACHE_MAX。
  * 用 shallowRef + Map：整批写入只替换一次引用、触发一次响应式更新。
  * 此前是 reactive<Record<string,string>>（600 个键会被深度代理），
@@ -91,8 +93,13 @@ const THUMB_CACHE_MAX = 600;
 /** 批量写入缩略图 URL：克隆一次、整体替换引用，只触发一次响应式更新。 */
 function cacheThumbs(entries: Iterable<readonly [string, string]>) {
   const next = new Map(thumbUrls.value);
-  for (const [name, url] of entries) next.set(name, url);
-  // Map 保持插入顺序，超限时从最早插入的条目开始丢弃
+  for (const [name, url] of entries) {
+    // 已存在的键先删再写，把它挪到 Map 末尾（最近使用），
+    // 这样淘汰顺序是 LRU 而不是插入顺序——翻回旧页时不会重复取缩略图。
+    next.delete(name);
+    next.set(name, url);
+  }
+  // Map 保持插入顺序，超限时从最久未使用的条目开始丢弃
   while (next.size > THUMB_CACHE_MAX) {
     const oldest = next.keys().next().value;
     if (oldest === undefined) break;
@@ -195,6 +202,9 @@ async function loadThumbs(seq = loadSeq) {
 }
 
 function thumbOf(img: LocalImageEntry): string {
+  // 只读，不在渲染期间改缓存：thumbOf 在模板里被调用，
+  // 若内部写 thumbUrls 会触发渲染中的响应式更新（Vue 会告警并可能死循环）。
+  // LRU 的位置更新交给 cacheThumbs（写入时挪到末尾）完成。
   return thumbUrls.value.get(img.name) ?? assetUrl(img.path);
 }
 
@@ -346,7 +356,6 @@ async function onOpenLink(url: string | null) {
 /* ════ 壁纸 ════ */
 const monitors = ref<MonitorInfo[]>([]);
 const monitorChoice = ref<string>("all");
-const settingWallpaper = ref(false);
 
 async function loadMonitors() {
   try {
@@ -364,18 +373,12 @@ const monitorItems = computed(() => [
   })),
 ]);
 
-async function onSetWallpaper(path: string, monitor?: string) {
-  if (settingWallpaper.value) return;
-  settingWallpaper.value = true;
-  try {
+const { run: onSetWallpaper, loading: settingWallpaper } = useAsyncAction(
+  async (path: string, monitor?: string) => {
     const msg = await setWallpaper(path, monitor && monitor !== "all" ? monitor : undefined);
     toast(msg, "success");
-  } catch (e) {
-    toastError(e);
-  } finally {
-    settingWallpaper.value = false;
-  }
-}
+  },
+);
 
 /* ════ 删除（单张） ════ */
 async function onDeleteSingle(img: LocalImageEntry) {
@@ -639,12 +642,14 @@ async function onStopSlideshow() {
         role="button"
         tabindex="0"
         :aria-label="img.name"
-        :aria-pressed="selectionMode ? selected.has(img.name) : null"
+        :aria-pressed="selectionMode ? selected.has(img.name) : undefined"
         @click="onCardClick(img)"
         @keydown.enter.prevent="onCardClick(img)"
         @keydown.space.prevent="onCardClick(img)"
       >
-        <img :src="thumbOf(img)" :alt="img.name" loading="lazy" />
+        <!-- decoding="async"：让浏览器把图片解码放到后台线程，滚动时不卡主线程
+             （一页最多 96 张，同步解码会造成明显掉帧）。 -->
+        <img :src="thumbOf(img)" :alt="img.name" loading="lazy" decoding="async" />
         <span v-if="img.is_orphan && !customDir" class="gallery-card__orphan">孤儿</span>
 
         <!-- 选择态角标 -->
@@ -756,6 +761,11 @@ async function onStopSlideshow() {
   border: 2px solid transparent;
   cursor: pointer;
   min-height: 96px;
+  /* 一页最多渲染 96 张卡片，每张含 img + 浮层 + 按钮，屏外卡片的布局与绘制是纯浪费。
+     content-visibility: auto 让浏览器跳过屏外卡片的渲染；
+     contain-intrinsic-size 提供占位尺寸，避免滚动条跳动。 */
+  content-visibility: auto;
+  contain-intrinsic-size: auto 120px;
 }
 .gallery-card img {
   width: 100%;

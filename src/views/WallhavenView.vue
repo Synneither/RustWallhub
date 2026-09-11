@@ -6,9 +6,10 @@ import {
   searchWallhaven,
   startWallhavenDownload,
 } from "../utils/api";
-import { appState, clearNewImages, toast, toastError } from "../stores/app";
+import { clearNewImages, toast } from "../stores/app";
 import { positiveInt } from "../utils/rules";
 import { useConfigDraft } from "../composables/useConfigDraft";
+import { useAsyncAction } from "../composables/useAsyncAction";
 import { useSelection } from "../composables/useSelection";
 import { openUrlSafe } from "../utils/openUrl";
 import ProgressCard from "../components/ProgressCard.vue";
@@ -29,7 +30,7 @@ const WALLHAVEN_DRAFT_KEYS = [
   "wallhaven_max_images",
 ] as const;
 
-const { draft, isDirty, saving, persist } = useConfigDraft(WALLHAVEN_DRAFT_KEYS, {
+const { draft, saving, persist } = useConfigDraft(WALLHAVEN_DRAFT_KEYS, {
   wallhaven_api_key: "",
   wallhaven_q: "",
   wallhaven_categories: "010",
@@ -188,93 +189,85 @@ function toggleSelectAll() {
   }
 }
 
-const startingSelected = ref(false);
-async function onDownloadSelected() {
-  if (selected.size === 0 || startingSelected.value) return;
-  startingSelected.value = true;
-  try {
-    if (!(await persist())) return;
-    const imgs = (result.value?.images ?? []).filter((i) => selected.has(i.id));
-    const payload: WallhavenSelected[] = imgs.map((i) => ({
-      id: i.id,
-      path: i.path,
-      resolution: i.resolution,
-      short_url: i.short_url,
-    }));
-    const msg = await downloadWallhavenSelected(payload);
-    clearNewImages("wallhaven");
-    toast(msg, "info");
-    selected.clear();
-  } catch (e) {
-    toastError(e);
-  } finally {
-    startingSelected.value = false;
-  }
-}
+const { run: onDownloadSelected, loading: startingSelected } = useAsyncAction(async () => {
+  if (selected.size === 0) return;
+  if (!(await persist())) return;
+  const imgs = (result.value?.images ?? []).filter((i) => selected.has(i.id));
+  const payload: WallhavenSelected[] = imgs.map((i) => ({
+    id: i.id,
+    path: i.path,
+    resolution: i.resolution,
+    short_url: i.short_url,
+  }));
+  const msg = await downloadWallhavenSelected(payload);
+  clearNewImages("wallhaven");
+  toast(msg, "info");
+  selected.clear();
+});
 
-const startingBatch = ref(false);
-async function onBatchDownload() {
-  if (startingBatch.value) return;
-  startingBatch.value = true;
-  try {
-    if (!(await persist())) return;
-    const msg = await startWallhavenDownload();
-    clearNewImages("wallhaven");
-    toast(msg, "info");
-  } catch (e) {
-    toastError(e);
-  } finally {
-    startingBatch.value = false;
-  }
-}
+const { run: onBatchDownload, loading: startingBatch } = useAsyncAction(async () => {
+  if (!(await persist())) return;
+  const msg = await startWallhavenDownload();
+  clearNewImages("wallhaven");
+  toast(msg, "info");
+});
 
 /* ── 大图预览 ── */
 const previewOpen = ref(false);
 const previewImage = ref<WallhavenImageEntry | null>(null);
 const previewLoading = ref(false);
 const previewError = ref("");
-const previewDownloading = ref(false);
+/** 预览图的加载竞态守卫：快速连点不同卡片时，旧图的 @error/@load 可能在新图之后才触发，
+ * 若不校验序号就会把错误状态错记到新图上。 */
+let previewSeq = 0;
 
 function openPreview(img: WallhavenImageEntry) {
+  previewSeq += 1;
   previewImage.value = img;
   previewLoading.value = true;
   previewError.value = "";
   previewOpen.value = true;
 }
 
+/** 图片加载完成回调。seq 不匹配说明用户已经切到别的图，直接忽略。 */
+function onPreviewLoaded(seq: number) {
+  if (seq !== previewSeq) return;
+  previewLoading.value = false;
+}
+
+function onPreviewErrored(seq: number) {
+  if (seq !== previewSeq) return;
+  previewLoading.value = false;
+  previewError.value = "大图加载失败，可能被服务器拒绝或图片已失效";
+}
+
+const { run: onDownloadPreview, loading: previewDownloading } = useAsyncAction(async () => {
+  const img = previewImage.value;
+  if (!img) return;
+  if (!(await persist())) return;
+  const payload: WallhavenSelected[] = [
+    {
+      id: img.id,
+      path: img.path,
+      resolution: img.resolution,
+      short_url: img.short_url,
+    },
+  ];
+  const msg = await downloadWallhavenSelected(payload);
+  clearNewImages("wallhaven");
+  toast(msg, "info");
+  previewOpen.value = false;
+});
+
 function closePreview() {
   if (previewDownloading.value) return;
+  previewSeq += 1; // 关闭后旧图的事件不应再影响状态
   previewOpen.value = false;
 }
 
 async function onOpenSource() {
   if (!previewImage.value) return;
   await openUrlSafe(previewImage.value.short_url);
-}
-
-async function onDownloadPreview() {
-  if (!previewImage.value || previewDownloading.value) return;
-  previewDownloading.value = true;
-  try {
-    if (!(await persist())) return;
-    const img = previewImage.value;
-    const payload: WallhavenSelected[] = [
-      {
-        id: img.id,
-        path: img.path,
-        resolution: img.resolution,
-        short_url: img.short_url,
-      },
-    ];
-    const msg = await downloadWallhavenSelected(payload);
-    clearNewImages("wallhaven");
-    toast(msg, "info");
-    previewOpen.value = false;
-  } catch (e) {
-    toastError(e);
-  } finally {
-    previewDownloading.value = false;
-  }
 }
 </script>
 
@@ -485,7 +478,7 @@ async function onDownloadPreview() {
           @keydown.enter.prevent="toggleSelect(img.id)"
           @keydown.space.prevent="toggleSelect(img.id)"
         >
-          <img :src="img.thumbnail_url" :alt="img.id" loading="lazy" />
+          <img :src="img.thumbnail_url" :alt="img.id" loading="lazy" decoding="async" />
           <button class="wh-cell__preview" title="预览大图" @click.stop="openPreview(img)">
             <v-icon icon="mdi-eye-outline" size="18" />
           </button>
@@ -537,14 +530,12 @@ async function onDownloadPreview() {
           />
           <img
             v-show="!previewLoading && !previewError"
+            :key="previewImage.path"
             :src="previewImage.path"
             :alt="previewImage.id"
             referrerpolicy="no-referrer"
-            @load="previewLoading = false"
-            @error="
-              previewLoading = false;
-              previewError = '大图加载失败，可能被服务器拒绝或图片已失效'
-            "
+            @load="onPreviewLoaded(previewSeq)"
+            @error="onPreviewErrored(previewSeq)"
           />
           <div v-if="previewError" class="wh-preview__error">
             <v-icon icon="mdi-image-off-outline" size="32" />
@@ -614,6 +605,10 @@ async function onDownloadPreview() {
   background: var(--surface-elevated);
   border: 2px solid transparent;
   min-height: 90px;
+  /* 一页可达 48 张卡片，屏外卡片的布局/绘制是纯浪费。
+     content-visibility: auto 让浏览器跳过它们；contain-intrinsic-size 提供占位尺寸防止滚动条跳动。 */
+  content-visibility: auto;
+  contain-intrinsic-size: auto 110px;
 }
 .wh-cell--clickable {
   cursor: pointer;

@@ -95,8 +95,9 @@ RustWallhub/
 │   │   ├── main.rs               # 二进制入口
 │   │   ├── lib.rs                # Tauri Builder、命令注册
 │   │   ├── config.rs             # 配置加载/保存/路径归一化
-│   │   ├── db.rs                 # SQLite schema、缓存连接、CRUD、统计
-│   │   ├── downloader.rs         # HTTP 下载、流式大小限制、重试、MD5
+│   │   ├── db/                   # SQLite schema、缓存连接、CRUD、统计、快照同步
+│   │   ├── downloader.rs         # HTTP 下载、流式大小限制、并发与退避重试
+│   │   ├── oss.rs                # 阿里云 OSS V1 签名（手写，无 SDK 依赖）
 │   │   ├── thumbnail.rs          # WebP 缩略图（DPR 1x/2x/3x）
 │   │   ├── wallhaven.rs          # Wallhaven API 客户端
 │   │   ├── reddit.rs             # Reddit JSON 客户端与 imgur 解析
@@ -106,8 +107,10 @@ RustWallhub/
 │   ├── capabilities/             # Tauri capability
 │   ├── tauri.conf.json           # CSP、asset scope、updater、窗口
 │   └── Cargo.toml
-├── public/fonts/                 # 自生成的 MDI 图标子集 woff2
-├── scripts/generate_mdi_subset.py # 重新生成图标子集
+├── public/fonts/                 # 自托管字体：MDI 图标子集 + UI 字体（Space Grotesk / Rajdhani）
+├── scripts/
+│   ├── generate_mdi_subset.py    # 重新生成 MDI 图标子集
+│   └── fetch_webfonts.py         # 重新拉取并自托管 UI 字体
 ├── vite.config.ts
 ├── deno.json                     # Deno 任务（dev/build/tauri）
 └── package.json
