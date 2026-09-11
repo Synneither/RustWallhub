@@ -182,6 +182,10 @@ fn test_get_db_stats() {
     assert_eq!(stats.dislike, 2);
     // 创建其中一个文件 → 缺失 = 1
     std::fs::write(img_dir.path().join("a.jpg"), b"fake").unwrap();
+    // 这里是直接写磁盘、不走任何 DB 写路径，所以不会触发 invalidate_stats。
+    // 显式清缓存，避免读到上一步缓存进去的旧统计（统计缓存有 10s TTL）。
+    clear_stats_caches();
+    clear_dir_listings();
     let stats = get_db_stats(db.path(), &img_dir.path().to_string_lossy()).unwrap();
     assert_eq!(stats.dislike, 1);
 }
@@ -289,6 +293,85 @@ fn test_get_wallhaven_images_pagination() {
     }
     assert_eq!(get_wallhaven_images(db.path(), 2, 0).unwrap().len(), 2);
     assert_eq!(get_wallhaven_images(db.path(), 10, 0).unwrap().len(), 5);
+}
+
+#[test]
+fn test_get_all_images_paged_merges_and_paginates() {
+    // 两个库放在同一个临时目录，模拟真实的 db_dir 布局
+    let dir = TempDir::new().unwrap();
+    let wh = dir
+        .path()
+        .join("wallhaven_images.db")
+        .to_string_lossy()
+        .to_string();
+    let rd = dir
+        .path()
+        .join("reddit_images.db")
+        .to_string_lossy()
+        .to_string();
+    init_wallhaven_db(&wh).unwrap();
+    init_reddit_db(&rd).unwrap();
+
+    for i in 0..4 {
+        insert_wallhaven_image(
+            &wh,
+            &format!("w{i}"),
+            &format!("w{i}.jpg"),
+            &format!("wh{i}"),
+            &format!("wu{i}"),
+            &format!("ws{i}"),
+            "1920x1080",
+        )
+        .unwrap();
+    }
+    for i in 0..3 {
+        insert_reddit_image(
+            &rd,
+            &format!("r{i}.jpg"),
+            &format!("rh{i}"),
+            &format!("ru{i}"),
+            &format!("rt{i}"),
+            &format!("rp{i}"),
+        )
+        .unwrap();
+    }
+
+    // 合并后共 7 条
+    let all = get_all_images_paged(&wh, &rd, 100, 0).unwrap();
+    assert_eq!(all.len(), 7);
+
+    // source 字段能区分两个库
+    let sources: std::collections::HashSet<String> =
+        all.iter().map(|r| r.source.clone()).collect();
+    assert!(sources.contains("wallhaven"));
+    assert!(sources.contains("reddit"));
+
+    // 分页结果不重叠、不遗漏
+    let p1 = get_all_images_paged(&wh, &rd, 3, 0).unwrap();
+    let p2 = get_all_images_paged(&wh, &rd, 3, 3).unwrap();
+    let p3 = get_all_images_paged(&wh, &rd, 3, 6).unwrap();
+    assert_eq!((p1.len(), p2.len(), p3.len()), (3, 3, 1));
+    let mut names: Vec<String> = p1
+        .iter()
+        .chain(p2.iter())
+        .chain(p3.iter())
+        .map(|r| r.name.clone())
+        .collect();
+    names.sort();
+    names.dedup();
+    assert_eq!(names.len(), 7, "分页存在重叠或遗漏: {names:?}");
+
+    // 深分页越界返回空
+    assert_eq!(get_all_images_paged(&wh, &rd, 10, 100).unwrap().len(), 0);
+
+    // reddit 库缺失时退化为单库查询
+    let nonexistent = dir.path().join("nope.db").to_string_lossy().to_string();
+    assert_eq!(get_all_images_paged(&wh, &nonexistent, 100, 0).unwrap().len(), 4);
+
+    // 反复调用不应因 ATTACH 残留而失败（连接是缓存的，靠 DETACH 收尾）
+    for _ in 0..3 {
+        assert_eq!(get_all_images_paged(&wh, &rd, 100, 0).unwrap().len(), 7);
+    }
 }
 
 #[test]
