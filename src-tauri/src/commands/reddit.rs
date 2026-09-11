@@ -7,9 +7,7 @@ use crate::config::Source;
 use crate::db;
 use crate::downloader;
 use crate::reddit;
-use crate::state::{
-    save_image, setup_cancel_flag, AppError, AppState, ProgressThrottle,
-};
+use crate::state::{save_image, setup_cancel_flag, AppError, AppState, ProgressThrottle};
 use std::collections::HashSet;
 use std::path::Path;
 use std::sync::atomic::Ordering;
@@ -144,7 +142,13 @@ pub async fn start_reddit_download(
                         success,
                         total
                     );
-                    emit_complete(&app_clone, "reddit", success, total, "下载已取消".to_string());
+                    emit_complete(
+                        &app_clone,
+                        "reddit",
+                        success,
+                        total,
+                        "下载已取消".to_string(),
+                    );
                     return;
                 }
 

@@ -101,8 +101,8 @@ fn decode_jpeg_scaled(src: &Path, target_width: u32) -> Option<image::DynamicIma
     }
     // 目标高度按原图宽高比折算，向上取整保证不低于目标宽度。
     let want_w = target_width.min(u16::MAX as u32);
-    let want_h = ((orig_h as u64 * want_w as u64 + orig_w as u64 - 1) / orig_w as u64)
-        .min(u16::MAX as u64);
+    let want_h =
+        ((orig_h as u64 * want_w as u64 + orig_w as u64 - 1) / orig_w as u64).min(u16::MAX as u64);
     let (out_w, out_h) = decoder.scale(want_w as u16, want_h as u16).ok()?;
 
     let pixels = decoder.decode().ok()?;
@@ -121,8 +121,9 @@ fn decode_jpeg_scaled(src: &Path, target_width: u32) -> Option<image::DynamicIma
     }
 
     match info.pixel_format {
-        PixelFormat::L8 => image::GrayImage::from_raw(w, h, pixels)
-            .map(image::DynamicImage::ImageLuma8),
+        PixelFormat::L8 => {
+            image::GrayImage::from_raw(w, h, pixels).map(image::DynamicImage::ImageLuma8)
+        }
         PixelFormat::RGB24 => {
             image::RgbImage::from_raw(w, h, pixels).map(image::DynamicImage::ImageRgb8)
         }
@@ -228,7 +229,10 @@ pub fn ensure_batch_thumbnails(
         return Vec::new();
     }
     if let Err(e) = std::fs::create_dir_all(thumb_dir) {
-        log::warn!("[thumbnail] 创建缩略图目录失败 {}: {e}", thumb_dir.display());
+        log::warn!(
+            "[thumbnail] 创建缩略图目录失败 {}: {e}",
+            thumb_dir.display()
+        );
     }
 
     thumbnail_pool().install(|| {
@@ -462,7 +466,8 @@ mod tests {
             let t = Instant::now();
             let decoded = image::ImageReader::open(&path).unwrap().decode().unwrap();
             let decode_ms = t.elapsed().as_millis();
-            let decoded_mib = (decoded.width() as u64 * decoded.height() as u64 * 4) / (1024 * 1024);
+            let decoded_mib =
+                (decoded.width() as u64 * decoded.height() as u64 * 4) / (1024 * 1024);
 
             // 2b) JPEG 快路径：DCT 域降采样解码
             let t = Instant::now();
@@ -492,7 +497,10 @@ mod tests {
             );
             assert_eq!(dims, (w, h));
             // 快路径必须真的更快，否则就没意义了
-            assert!(fast_ms <= decode_ms, "{label}: 快路径 {fast_ms}ms 竟慢于常规 {decode_ms}ms");
+            assert!(
+                fast_ms <= decode_ms,
+                "{label}: 快路径 {fast_ms}ms 竟慢于常规 {decode_ms}ms"
+            );
         }
     }
 }

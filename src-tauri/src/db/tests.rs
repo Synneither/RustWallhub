@@ -341,8 +341,7 @@ fn test_get_all_images_paged_merges_and_paginates() {
     assert_eq!(all.len(), 7);
 
     // source 字段能区分两个库
-    let sources: std::collections::HashSet<String> =
-        all.iter().map(|r| r.source.clone()).collect();
+    let sources: std::collections::HashSet<String> = all.iter().map(|r| r.source.clone()).collect();
     assert!(sources.contains("wallhaven"));
     assert!(sources.contains("reddit"));
 
@@ -366,7 +365,12 @@ fn test_get_all_images_paged_merges_and_paginates() {
 
     // reddit 库缺失时退化为单库查询
     let nonexistent = dir.path().join("nope.db").to_string_lossy().to_string();
-    assert_eq!(get_all_images_paged(&wh, &nonexistent, 100, 0).unwrap().len(), 4);
+    assert_eq!(
+        get_all_images_paged(&wh, &nonexistent, 100, 0)
+            .unwrap()
+            .len(),
+        4
+    );
 
     // 反复调用不应因 ATTACH 残留而失败（连接是缓存的，靠 DETACH 收尾）
     for _ in 0..3 {

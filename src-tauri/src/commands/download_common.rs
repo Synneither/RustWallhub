@@ -17,13 +17,7 @@ pub struct SavedFile {
 }
 
 /// 发一次下载进度事件。`done` 是已完成数量，`total` 是本轮总数。
-pub fn emit_progress(
-    app: &AppHandle,
-    source: &str,
-    done: u32,
-    total: u32,
-    message: String,
-) {
+pub fn emit_progress(app: &AppHandle, source: &str, done: u32, total: u32, message: String) {
     let _ = app.emit(
         "download-progress",
         DownloadProgress {

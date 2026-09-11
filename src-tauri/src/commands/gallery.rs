@@ -85,8 +85,7 @@ pub async fn list_filtered_image_paths(
     );
     // 复用 browse_image_files 的扫描/筛选/缓存逻辑，但只把路径返回给轮播使用，
     // 避免把整页 LocalImageEntry（含大小、时间、孤儿标记）序列化到前端。
-    let list =
-        browse_image_files(app, state, source, 0, usize::MAX, None, search, sort_by).await?;
+    let list = browse_image_files(app, state, source, 0, usize::MAX, None, search, sort_by).await?;
     Ok(list.images.into_iter().map(|img| img.path).collect())
 }
 

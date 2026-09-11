@@ -492,11 +492,15 @@ mod tests {
         assert!(joined.starts_with(base.canonicalize().unwrap()));
 
         // 各种穿越/非法形态都必须被拒（这些在所有平台都非法）
-        for evil in ["../escape.jpg", "..", ".", "sub/escape.jpg", "", "/etc/passwd"] {
-            assert!(
-                safe_join(base, evil).is_err(),
-                "应拒绝非法文件名: {evil:?}"
-            );
+        for evil in [
+            "../escape.jpg",
+            "..",
+            ".",
+            "sub/escape.jpg",
+            "",
+            "/etc/passwd",
+        ] {
+            assert!(safe_join(base, evil).is_err(), "应拒绝非法文件名: {evil:?}");
         }
 
         // 反斜杠只在 Windows 是分隔符；在 Linux/macOS 它是合法文件名字符，

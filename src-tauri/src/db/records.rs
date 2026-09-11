@@ -127,9 +127,14 @@ pub fn insert_wallhaven_images_batch_detailed(
                 "INSERT INTO images (wallhaven_id, name, hash, url, source_url, resolution) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
             )?;
             for (wallhaven_id, name, hash, url, source_url, resolution) in images {
-                match stmt.execute(
-                    rusqlite::params![wallhaven_id, name, hash, url, source_url, resolution],
-                ) {
+                match stmt.execute(rusqlite::params![
+                    wallhaven_id,
+                    name,
+                    hash,
+                    url,
+                    source_url,
+                    resolution
+                ]) {
                     Ok(_) => {
                         added += 1;
                         added_names.push(name.clone());

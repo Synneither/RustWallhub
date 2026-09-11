@@ -150,9 +150,9 @@ pub async fn download_image_bytes(
         .is_some_and(|len| len as usize > MAX_IMAGE_BYTES)
     {
         return Err(format!(
-                "图片超过大小限制（上限 {} MiB）",
-                MAX_IMAGE_BYTES / (1024 * 1024)
-            ));
+            "图片超过大小限制（上限 {} MiB）",
+            MAX_IMAGE_BYTES / (1024 * 1024)
+        ));
     }
 
     let content_type = resp

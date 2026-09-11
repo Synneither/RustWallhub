@@ -376,7 +376,8 @@ mod com_wallpaper {
             .map(|v| v.as_ptr())
             .unwrap_or(ptr::null());
 
-        let hr = unsafe { (vtbl.set_wallpaper)(p_wallpaper.as_ptr(), monitor_ptr, path_wide.as_ptr()) };
+        let hr =
+            unsafe { (vtbl.set_wallpaper)(p_wallpaper.as_ptr(), monitor_ptr, path_wide.as_ptr()) };
 
         if hr != S_OK {
             return Err(format!("SetWallpaper failed: 0x{:08X}", hr as u32));
@@ -409,14 +410,17 @@ mod com_wallpaper {
         let vtbl = p_wallpaper.vtbl();
 
         let mut count: u32 = 0;
-        if unsafe { (vtbl.get_monitor_device_path_count)(p_wallpaper.as_ptr(), &mut count) } != S_OK {
+        if unsafe { (vtbl.get_monitor_device_path_count)(p_wallpaper.as_ptr(), &mut count) } != S_OK
+        {
             return Vec::new();
         }
 
         let mut paths = Vec::new();
         for i in 0..count {
             let mut ptr_path: *mut u16 = ptr::null_mut();
-            let hr = unsafe { (vtbl.get_monitor_device_path_at)(p_wallpaper.as_ptr(), i, &mut ptr_path) };
+            let hr = unsafe {
+                (vtbl.get_monitor_device_path_at)(p_wallpaper.as_ptr(), i, &mut ptr_path)
+            };
             if hr == S_OK && !ptr_path.is_null() {
                 paths.push(from_wide(ptr_path));
                 unsafe { CoTaskMemFree(ptr_path as *const std::ffi::c_void) };

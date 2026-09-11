@@ -255,7 +255,13 @@ pub async fn start_wallhaven_download(
                         success,
                         total
                     );
-                    emit_complete(&app_clone, "wallhaven", success, total, "下载已取消".to_string());
+                    emit_complete(
+                        &app_clone,
+                        "wallhaven",
+                        success,
+                        total,
+                        "下载已取消".to_string(),
+                    );
                     return;
                 }
 

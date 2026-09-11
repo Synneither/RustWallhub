@@ -307,10 +307,7 @@ pub struct DbStats {
 /// 当前调用方传的都是编译期字面量，但裸 `&str` 参数一旦被误用就是注入口子，
 /// 这里用断言把风险挡在函数入口。
 fn assert_sql_identifier(ident: &str) -> SqlResult<()> {
-    let valid = !ident.is_empty()
-        && ident
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || c == '_');
+    let valid = !ident.is_empty() && ident.chars().all(|c| c.is_ascii_alphanumeric() || c == '_');
     if valid {
         Ok(())
     } else {
