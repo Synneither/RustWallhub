@@ -1,18 +1,17 @@
 //! Wallhaven commands: search_wallhaven, start_wallhaven_download, download_wallhaven_selected.
 
+use crate::commands::download_common::{
+    emit_complete, emit_downloaded_for_added, emit_progress, rollback_saved_files, SavedFile,
+};
 use crate::config::Source;
 use crate::db;
 use crate::downloader;
-use crate::state::{
-    save_image, setup_cancel_flag, AppError, AppState, DownloadComplete, DownloadProgress,
-    ImageDownloaded, ProgressThrottle,
-};
+use crate::state::{save_image, setup_cancel_flag, AppError, AppState, ProgressThrottle};
 use crate::wallhaven;
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::path::Path;
 use std::sync::atomic::Ordering;
-use tauri::Emitter;
 
 #[derive(Serialize)]
 pub struct WallhavenSearchResult {
@@ -98,8 +97,10 @@ pub async fn search_wallhaven(
                 .as_ref()
                 .map(|t| t.large.clone())
                 .unwrap_or_else(|| {
-                    // 空 id 时 `[..1]` 会字节越界 panic，用 min(2) 截断（空 id → 空前缀）。
-                    let prefix = &img.id[..img.id.len().min(2)];
+                    // 用字符而非字节截断：`&id[..2]` 在 id 以多字节字符开头时会 panic
+                    // （byte index 2 is not a char boundary）。id 来自外部 API 响应，
+                    // 不能假设一定是 ASCII，所以按 char 取前 2 个字符。
+                    let prefix: String = img.id.chars().take(2).collect();
                     format!("https://th.wallhaven.cc/small/{prefix}/{}.jpg", img.id)
                 });
             WallhavenImageEntry {
@@ -171,14 +172,12 @@ pub async fn start_wallhaven_download(
                 break;
             }
 
-            let _ = app_clone.emit(
-                "download-progress",
-                DownloadProgress {
-                    source: "wallhaven".into(),
-                    done: collected.len() as u32,
-                    total: target,
-                    message: format!("正在获取第 {page} 页..."),
-                },
+            emit_progress(
+                &app_clone,
+                "wallhaven",
+                collected.len() as u32,
+                target,
+                format!("正在获取第 {page} 页..."),
             );
 
             let resp = wh_client
@@ -210,14 +209,12 @@ pub async fn start_wallhaven_download(
                     }
                 }
                 Err(e) => {
-                    let _ = app_clone.emit(
-                        "download-progress",
-                        DownloadProgress {
-                            source: "wallhaven".into(),
-                            done: collected.len() as u32,
-                            total: target,
-                            message: format!("获取第 {page} 页失败: {e}"),
-                        },
+                    emit_progress(
+                        &app_clone,
+                        "wallhaven",
+                        collected.len() as u32,
+                        target,
+                        format!("获取第 {page} 页失败: {e}"),
                     );
                     break;
                 }
@@ -233,9 +230,7 @@ pub async fn start_wallhaven_download(
         let mut success = 0u32;
 
         // 分批下载，限制同时驻留内存的原图数量；每批落盘后统一事务入库。
-        let chunk_size = (config.download_concurrency.max(1) as usize)
-            .saturating_mul(2)
-            .max(1);
+        let chunk_size = downloader::download_chunk_size(config.download_concurrency);
         let mut progress_throttle = ProgressThrottle::new();
         let mut processed = 0usize;
         for chunk in collected.chunks(chunk_size) {
@@ -250,7 +245,7 @@ pub async fn start_wallhaven_download(
             .await;
 
             let mut db_batch: Vec<(String, String, String, String, String, String)> = Vec::new();
-            let mut saved_files: Vec<(String, String)> = Vec::new();
+            let mut saved_files: Vec<SavedFile> = Vec::new();
 
             for (local_i, img) in chunk.iter().enumerate() {
                 let i = processed + local_i;
@@ -260,27 +255,17 @@ pub async fn start_wallhaven_download(
                         success,
                         total
                     );
-                    let _ = app_clone.emit(
-                        "download-complete",
-                        DownloadComplete {
-                            source: "wallhaven".into(),
-                            success,
-                            total,
-                            message: "下载已取消".to_string(),
-                        },
-                    );
+                    emit_complete(&app_clone, "wallhaven", success, total, "下载已取消".to_string());
                     return;
                 }
 
                 if progress_throttle.should_emit(i + 1 == total as usize) {
-                    let _ = app_clone.emit(
-                        "download-progress",
-                        DownloadProgress {
-                            source: "wallhaven".into(),
-                            done: i as u32,
-                            total,
-                            message: format!("正在处理 {} ({}/{})", img.id, i + 1, total),
-                        },
+                    emit_progress(
+                        &app_clone,
+                        "wallhaven",
+                        i as u32,
+                        total,
+                        format!("正在处理 {} ({}/{})", img.id, i + 1, total),
                     );
                 }
 
@@ -306,10 +291,10 @@ pub async fn start_wallhaven_download(
                                     img.short_url.clone(),
                                     img.resolution.clone(),
                                 ));
-                                saved_files.push((
-                                    filename.clone(),
-                                    save_path.to_string_lossy().to_string(),
-                                ));
+                                saved_files.push(SavedFile {
+                                    name: filename.clone(),
+                                    path: save_path.to_string_lossy().to_string(),
+                                });
                             }
                             Err(e) => log::error!("[wallhaven] {}", e),
                         }
@@ -344,19 +329,7 @@ pub async fn start_wallhaven_download(
                 if skipped > 0 {
                     log::warn!("[wallhaven] 本批跳过重复记录 {} 条", skipped);
                 }
-                let added_names: HashSet<String> = added_names.into_iter().collect();
-                for (name, path) in saved_files {
-                    if added_names.contains(&name) {
-                        let _ = app_clone.emit(
-                            "image-downloaded",
-                            ImageDownloaded {
-                                source: "wallhaven".into(),
-                                name,
-                                path,
-                            },
-                        );
-                    }
-                }
+                emit_downloaded_for_added(&app_clone, "wallhaven", &saved_files, &added_names);
             }
 
             processed += chunk.len();
@@ -367,14 +340,12 @@ pub async fn start_wallhaven_download(
             success,
             total
         );
-        let _ = app_clone.emit(
-            "download-complete",
-            DownloadComplete {
-                source: "wallhaven".into(),
-                success,
-                total,
-                message: format!("Wallhaven 下载完成: 成功 {success}/{total}"),
-            },
+        emit_complete(
+            &app_clone,
+            "wallhaven",
+            success,
+            total,
+            format!("Wallhaven 下载完成: 成功 {success}/{total}"),
         );
     });
 
@@ -433,9 +404,7 @@ pub async fn download_wallhaven_selected(
         let total = pending.len() as u32;
         let mut success = 0u32;
 
-        let chunk_size = (config.download_concurrency.max(1) as usize)
-            .saturating_mul(2)
-            .max(1);
+        let chunk_size = downloader::download_chunk_size(config.download_concurrency);
         let mut progress_throttle = ProgressThrottle::new();
         let mut processed = 0usize;
         for chunk in pending.chunks(chunk_size) {
@@ -450,7 +419,7 @@ pub async fn download_wallhaven_selected(
             .await;
 
             let mut db_batch: Vec<(String, String, String, String, String, String)> = Vec::new();
-            let mut saved_files: Vec<(String, String)> = Vec::new();
+            let mut saved_files: Vec<SavedFile> = Vec::new();
 
             for (local_i, img) in chunk.iter().enumerate() {
                 let i = processed + local_i;
@@ -460,27 +429,23 @@ pub async fn download_wallhaven_selected(
                         success,
                         total
                     );
-                    let _ = app_clone.emit(
-                        "download-complete",
-                        DownloadComplete {
-                            source: "wallhaven".into(),
-                            success,
-                            total,
-                            message: "下载已取消".to_string(),
-                        },
+                    emit_complete(
+                        &app_clone,
+                        "wallhaven",
+                        success,
+                        total,
+                        "下载已取消".to_string(),
                     );
                     return;
                 }
 
                 if progress_throttle.should_emit(i + 1 == total as usize) {
-                    let _ = app_clone.emit(
-                        "download-progress",
-                        DownloadProgress {
-                            source: "wallhaven".into(),
-                            done: i as u32,
-                            total,
-                            message: format!("正在下载 {} ({}/{})", img.id, i + 1, total),
-                        },
+                    emit_progress(
+                        &app_clone,
+                        "wallhaven",
+                        i as u32,
+                        total,
+                        format!("正在下载 {} ({}/{})", img.id, i + 1, total),
                     );
                 }
 
@@ -501,8 +466,10 @@ pub async fn download_wallhaven_selected(
                                 img.short_url.clone(),
                                 img.resolution.clone(),
                             ));
-                            saved_files
-                                .push((filename.clone(), save_path.to_string_lossy().to_string()));
+                            saved_files.push(SavedFile {
+                                name: filename.clone(),
+                                path: save_path.to_string_lossy().to_string(),
+                            });
                         }
                         Err(e) => log::error!("[wallhaven] {}", e),
                     }
@@ -533,19 +500,7 @@ pub async fn download_wallhaven_selected(
                 if skipped > 0 {
                     log::warn!("[wallhaven] 本批跳过重复记录 {} 条", skipped);
                 }
-                let added_names: HashSet<String> = added_names.into_iter().collect();
-                for (name, path) in saved_files {
-                    if added_names.contains(&name) {
-                        let _ = app_clone.emit(
-                            "image-downloaded",
-                            ImageDownloaded {
-                                source: "wallhaven".into(),
-                                name,
-                                path,
-                            },
-                        );
-                    }
-                }
+                emit_downloaded_for_added(&app_clone, "wallhaven", &saved_files, &added_names);
             }
 
             processed += chunk.len();
@@ -556,29 +511,16 @@ pub async fn download_wallhaven_selected(
             success,
             total
         );
-        let _ = app_clone.emit(
-            "download-complete",
-            DownloadComplete {
-                source: "wallhaven".into(),
-                success,
-                total,
-                message: format!("Wallhaven 下载完成: 成功 {success}/{total}"),
-            },
+        emit_complete(
+            &app_clone,
+            "wallhaven",
+            success,
+            total,
+            format!("Wallhaven 下载完成: 成功 {success}/{total}"),
         );
     });
 
     Ok(format!("即将下载 {count} 张壁纸"))
-}
-
-/// DB 写入失败时回滚已落盘的文件，避免「磁盘有文件、库无记录」的孤儿状态。
-fn rollback_saved_files(saved_files: &[(String, String)]) {
-    for (name, path) in saved_files {
-        if let Err(e) = std::fs::remove_file(path) {
-            log::warn!("[wallhaven] 回滚文件失败 {name}: {e}");
-        } else {
-            log::warn!("[wallhaven] DB 写入失败，已回滚文件 {name}");
-        }
-    }
 }
 
 #[cfg(test)]

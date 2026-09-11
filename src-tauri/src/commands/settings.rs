@@ -79,7 +79,8 @@ pub async fn get_config(state: tauri::State<'_, AppState>) -> Result<AppConfig, 
         "[CMD] get_config {}",
         if result.is_ok() { "ok" } else { "failed" }
     );
-    result
+    // load_config 返回共享的 Arc，这里解引用出 AppConfig 给前端序列化。
+    result.map(|config| (*config).clone())
 }
 
 #[tauri::command]
@@ -121,6 +122,8 @@ pub async fn save_settings(
         crate::db::invalidate_connection(&config.reddit_db_path);
     }
     std::fs::create_dir_all(std::path::Path::new(&config.db_dir)).ok();
+    // 保存目录可能刚被改到新位置，补一次 asset 协议授权，否则图库里的图会加载失败。
+    crate::state::allow_config_asset_dirs(&app, &config);
     // 注意：这里不初始化数据库，由前端确认后调用 init_databases 显式创建
     rebuild_http_client(&state, config.request_timeout, &config.proxy_url)
         .map_err(AppError::Config)?;

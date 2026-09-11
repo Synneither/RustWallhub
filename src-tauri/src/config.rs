@@ -301,6 +301,43 @@ mod tests {
         assert!(cfg.reddit_thumb_dir().to_string_lossy().contains("reddit"));
     }
 
+    /// db_dir 是统一数据库目录；sync_db_dir 从它派生两个库的完整路径。
+    /// 回归会让应用静默指向错误的库文件（甚至空库），所以语义要钉住。
+    #[test]
+    fn test_sync_db_dir_derives_paths() {
+        let mut cfg = AppConfig::default();
+        cfg.db_dir = "/tmp/rustwall-db".to_string();
+        // 先故意把个体路径指到别处，确认确实被 db_dir 覆盖
+        cfg.wallhaven_db_path = "/somewhere/else.db".to_string();
+        cfg.reddit_db_path = "/another/place.db".to_string();
+
+        cfg.sync_db_dir();
+
+        let dir = PathBuf::from("/tmp/rustwall-db");
+        assert_eq!(
+            PathBuf::from(&cfg.wallhaven_db_path),
+            dir.join("wallhaven_images.db")
+        );
+        assert_eq!(
+            PathBuf::from(&cfg.reddit_db_path),
+            dir.join("reddit_images.db")
+        );
+    }
+
+    /// 旧配置没有 db_dir（为空）时必须沿用各自的路径，否则升级后会丢失原有库位置。
+    #[test]
+    fn test_sync_db_dir_keeps_individual_paths_when_db_dir_empty() {
+        let mut cfg = AppConfig::default();
+        cfg.db_dir = String::new();
+        cfg.wallhaven_db_path = "/legacy/wh.db".to_string();
+        cfg.reddit_db_path = "/legacy/rd.db".to_string();
+
+        cfg.sync_db_dir();
+
+        assert_eq!(cfg.wallhaven_db_path, "/legacy/wh.db");
+        assert_eq!(cfg.reddit_db_path, "/legacy/rd.db");
+    }
+
     #[test]
     fn test_save_and_load_config() {
         let dir = tempfile::tempdir().unwrap();

@@ -71,6 +71,7 @@ pub struct ImageInfo {
 
 #[tauri::command]
 pub async fn list_filtered_image_paths(
+    app: tauri::AppHandle,
     state: tauri::State<'_, AppState>,
     source: Source,
     search: Option<String>,
@@ -84,12 +85,14 @@ pub async fn list_filtered_image_paths(
     );
     // 复用 browse_image_files 的扫描/筛选/缓存逻辑，但只把路径返回给轮播使用，
     // 避免把整页 LocalImageEntry（含大小、时间、孤儿标记）序列化到前端。
-    let list = browse_image_files(state, source, 0, usize::MAX, None, search, sort_by).await?;
+    let list =
+        browse_image_files(app, state, source, 0, usize::MAX, None, search, sort_by).await?;
     Ok(list.images.into_iter().map(|img| img.path).collect())
 }
 
 #[tauri::command]
 pub async fn browse_image_files(
+    app: tauri::AppHandle,
     state: tauri::State<'_, AppState>,
     source: Source,
     offset: usize,
@@ -109,6 +112,9 @@ pub async fn browse_image_files(
     );
     let config = crate::state::load_config(&state)?;
     let dir = if let Some(ref custom) = custom_dir {
+        // 自定义浏览目录由用户当场选择，这时才授权给 asset 协议。
+        // 静态 scope 不含任意路径，否则等于把整个用户目录暴露给前端图片加载。
+        crate::state::allow_asset_dir(&app, custom);
         custom.clone()
     } else {
         config.save_dir_for(source).to_string()

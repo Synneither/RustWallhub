@@ -1,17 +1,18 @@
 //! Reddit commands: start_reddit_download.
 
+use crate::commands::download_common::{
+    emit_complete, emit_downloaded_for_added, emit_progress, rollback_saved_files, SavedFile,
+};
 use crate::config::Source;
 use crate::db;
 use crate::downloader;
 use crate::reddit;
 use crate::state::{
-    save_image, setup_cancel_flag, AppError, AppState, DownloadComplete, DownloadProgress,
-    ImageDownloaded, ProgressThrottle,
+    save_image, setup_cancel_flag, AppError, AppState, ProgressThrottle,
 };
 use std::collections::HashSet;
 use std::path::Path;
 use std::sync::atomic::Ordering;
-use tauri::Emitter;
 
 #[tauri::command]
 pub async fn start_reddit_download(
@@ -59,14 +60,12 @@ pub async fn start_reddit_download(
             if cancel.load(Ordering::Relaxed) {
                 break;
             }
-            let _ = app_clone.emit(
-                "download-progress",
-                DownloadProgress {
-                    source: "reddit".into(),
-                    done: collected.len() as u32,
-                    total: target,
-                    message: format!("正在获取帖子... (已找到 {} 张)", collected.len()),
-                },
+            emit_progress(
+                &app_clone,
+                "reddit",
+                collected.len() as u32,
+                target,
+                format!("正在获取帖子... (已找到 {} 张)", collected.len()),
             );
 
             let result = reddit_client
@@ -98,14 +97,12 @@ pub async fn start_reddit_download(
                     }
                 }
                 Err(e) => {
-                    let _ = app_clone.emit(
-                        "download-progress",
-                        DownloadProgress {
-                            source: "reddit".into(),
-                            done: collected.len() as u32,
-                            total: target,
-                            message: format!("获取帖子失败: {e}"),
-                        },
+                    emit_progress(
+                        &app_clone,
+                        "reddit",
+                        collected.len() as u32,
+                        target,
+                        format!("获取帖子失败: {e}"),
                     );
                     break;
                 }
@@ -122,9 +119,7 @@ pub async fn start_reddit_download(
         let mut success = 0u32;
 
         // 分批下载，避免 Reddit 大批量任务把所有图片 bytes 同时驻留内存。
-        let chunk_size = (config.download_concurrency.max(1) as usize)
-            .saturating_mul(2)
-            .max(1);
+        let chunk_size = downloader::download_chunk_size(config.download_concurrency);
         let mut progress_throttle = ProgressThrottle::new();
         let mut processed = 0usize;
         for chunk in collected.chunks(chunk_size) {
@@ -139,7 +134,7 @@ pub async fn start_reddit_download(
             .await;
 
             let mut db_batch: Vec<(String, String, String, String, String)> = Vec::new();
-            let mut saved_files: Vec<(String, String)> = Vec::new();
+            let mut saved_files: Vec<SavedFile> = Vec::new();
 
             for (local_i, img) in chunk.iter().enumerate() {
                 let i = processed + local_i;
@@ -149,27 +144,17 @@ pub async fn start_reddit_download(
                         success,
                         total
                     );
-                    let _ = app_clone.emit(
-                        "download-complete",
-                        DownloadComplete {
-                            source: "reddit".into(),
-                            success,
-                            total,
-                            message: "下载已取消".to_string(),
-                        },
-                    );
+                    emit_complete(&app_clone, "reddit", success, total, "下载已取消".to_string());
                     return;
                 }
 
                 if progress_throttle.should_emit(i + 1 == total as usize) {
-                    let _ = app_clone.emit(
-                        "download-progress",
-                        DownloadProgress {
-                            source: "reddit".into(),
-                            done: i as u32,
-                            total,
-                            message: format!("正在下载 ({}/{})", i + 1, total),
-                        },
+                    emit_progress(
+                        &app_clone,
+                        "reddit",
+                        i as u32,
+                        total,
+                        format!("正在下载 ({}/{})", i + 1, total),
                     );
                 }
 
@@ -189,10 +174,10 @@ pub async fn start_reddit_download(
                                     img.title.clone(),
                                     img.permalink.clone(),
                                 ));
-                                saved_files.push((
-                                    filename.clone(),
-                                    save_path.to_string_lossy().to_string(),
-                                ));
+                                saved_files.push(SavedFile {
+                                    name: filename.clone(),
+                                    path: save_path.to_string_lossy().to_string(),
+                                });
                             }
                             Err(e) => log::error!("[reddit] {}", e),
                         }
@@ -215,18 +200,12 @@ pub async fn start_reddit_download(
                     Ok(Err(e)) => {
                         log::error!("[reddit] 批量写入数据库失败: {e}");
                         // 回滚：删除已落盘文件，避免磁盘有文件但库无记录的孤儿状态。
-                        for (name, path) in &saved_files {
-                            let _ = std::fs::remove_file(path);
-                            log::warn!("[reddit] DB 写入失败，已回滚文件 {name}");
-                        }
+                        rollback_saved_files(&saved_files);
                         (0, batch_len, Vec::new())
                     }
                     Err(e) => {
                         log::error!("[reddit] 批量写入数据库任务异常: {e}");
-                        for (name, path) in &saved_files {
-                            let _ = std::fs::remove_file(path);
-                            log::warn!("[reddit] DB 写入失败，已回滚文件 {name}");
-                        }
+                        rollback_saved_files(&saved_files);
                         (0, batch_len, Vec::new())
                     }
                 };
@@ -234,33 +213,19 @@ pub async fn start_reddit_download(
                 if skipped > 0 {
                     log::warn!("[reddit] 本批跳过重复记录 {} 条", skipped);
                 }
-                let added_names: HashSet<String> = added_names.into_iter().collect();
-                for (name, path) in saved_files {
-                    if added_names.contains(&name) {
-                        let _ = app_clone.emit(
-                            "image-downloaded",
-                            ImageDownloaded {
-                                source: "reddit".into(),
-                                name,
-                                path,
-                            },
-                        );
-                    }
-                }
+                emit_downloaded_for_added(&app_clone, "reddit", &saved_files, &added_names);
             }
 
             processed += chunk.len();
         }
 
         log::info!("[reddit] download complete (success={}/{})", success, total);
-        let _ = app_clone.emit(
-            "download-complete",
-            DownloadComplete {
-                source: "reddit".into(),
-                success,
-                total,
-                message: format!("Reddit 下载完成: 成功 {success}/{total}"),
-            },
+        emit_complete(
+            &app_clone,
+            "reddit",
+            success,
+            total,
+            format!("Reddit 下载完成: 成功 {success}/{total}"),
         );
     });
 

@@ -102,7 +102,9 @@ pub struct AppState {
     /// 并发下载时后启动者会覆盖前者，导致 cancel 只能取消最后一个任务。
     pub cancel_flag: Mutex<HashMap<String, Arc<AtomicBool>>>,
     pub http_client: Mutex<reqwest::Client>,
-    pub config_cache: Mutex<Option<AppConfig>>,
+    /// 配置缓存。用 `Arc` 而不是直接存 `AppConfig`：`load_config` 是每个命令都会走的
+    /// 热路径，配置有 30+ 个 String 字段，按值返回等于每次命令都深拷贝一遍。
+    pub config_cache: Mutex<Option<Arc<AppConfig>>>,
     pub slideshow_cancel: Mutex<Option<Arc<AtomicBool>>>,
 }
 
@@ -308,18 +310,20 @@ pub fn normalize_config_path(base_dir: &std::path::Path, value: String) -> Strin
 
 /// 读取配置。参数用 `&AppState`：传入 `&tauri::State<'_, AppState>` 时靠 Deref 自动转换，
 /// 这样命令与后台钩子（拿到的可能是 `State` 也可能是 `&AppState`）都能复用。
-pub fn load_config(state: &AppState) -> Result<AppConfig, AppError> {
+///
+/// 返回 `Arc<AppConfig>`：调用方拿到的是一份共享引用，不需要为每次命令深拷贝配置。
+pub fn load_config(state: &AppState) -> Result<Arc<AppConfig>, AppError> {
+    if let Ok(guard) = state.config_cache.lock() {
+        if let Some(ref cached) = *guard {
+            return Ok(Arc::clone(cached));
+        }
+    }
+
     let path = state
         .config_path
         .lock()
         .map_err(|e| AppError::Config(format!("锁定配置失败: {e}")))?
         .clone();
-
-    if let Ok(guard) = state.config_cache.lock() {
-        if let Some(ref cached) = *guard {
-            return Ok(cached.clone());
-        }
-    }
 
     let mut config = AppConfig::load(&path).map_err(AppError::Config)?;
     config.sync_db_dir();
@@ -329,10 +333,14 @@ pub fn load_config(state: &AppState) -> Result<AppConfig, AppError> {
         config.db_dir = normalize_config_path(base_dir, config.db_dir);
         config.wallhaven_save_dir = normalize_config_path(base_dir, config.wallhaven_save_dir);
         config.reddit_save_dir = normalize_config_path(base_dir, config.reddit_save_dir);
+        // 缩略图目录同样要归一化：它会被拿去授权 asset 协议与生成缩略图路径，
+        // 相对路径在不同工作目录下会解析到不同位置。
+        config.thumbnails_dir = normalize_config_path(base_dir, config.thumbnails_dir);
     }
 
+    let config = Arc::new(config);
     if let Ok(mut guard) = state.config_cache.lock() {
-        *guard = Some(config.clone());
+        *guard = Some(Arc::clone(&config));
     }
 
     Ok(config)
@@ -346,7 +354,7 @@ pub fn save_config(state: &tauri::State<'_, AppState>, config: &AppConfig) -> Re
         .clone();
     config.save(&path).map_err(AppError::Config)?;
     if let Ok(mut guard) = state.config_cache.lock() {
-        *guard = Some(config.clone());
+        *guard = Some(Arc::new(config.clone()));
     }
     Ok(())
 }
@@ -402,9 +410,60 @@ pub async fn save_image(
         .map_err(|e| format!("重命名文件失败 {}: {e}", save_path.display()))
 }
 
+/// 把目录加进 asset 协议白名单，让前端能通过 `convertFileSrc` 显示其中的图片。
+///
+/// `tauri.conf.json` 的静态 scope 只保留缩略图缓存目录，其余目录在运行时按需授权：
+/// 用户配置的保存目录在启动/保存设置时加入，自定义浏览目录在用户主动选择时加入。
+/// 这样既保证图片能显示，又不必把整个 `$HOME` 暴露给 asset 协议。
+///
+/// 授权失败只记日志不中断流程——最坏情况是图片显示不出来，不该让启动或保存失败。
+pub fn allow_asset_dir(app: &tauri::AppHandle, dir: &str) {
+    use tauri::Manager;
+
+    if dir.is_empty() {
+        return;
+    }
+    // 注意：目录还不存在时也必须授权。首启时默认保存目录通常尚未创建，而
+    // `allow_directory` 只是登记一条 glob 规则（不校验路径存在），文件随后下载进来就能命中。
+    // 若在这里用 `is_dir()` 提前返回，首次下载的图片会因为目录"当时不存在"而永远显示不出来。
+    match app
+        .asset_protocol_scope()
+        .allow_directory(std::path::Path::new(dir), true)
+    {
+        Ok(()) => log::info!("[asset] 已授权目录: {dir}"),
+        Err(e) => log::warn!("[asset] 授权目录失败 {dir}: {e}"),
+    }
+}
+
+/// 按当前配置授权所有需要给前端读取的图片目录。
+pub fn allow_config_asset_dirs(app: &tauri::AppHandle, config: &AppConfig) {
+    allow_asset_dir(app, &config.wallhaven_save_dir);
+    allow_asset_dir(app, &config.reddit_save_dir);
+    allow_asset_dir(app, &config.thumbnails_dir);
+}
+
+/// 把**单个文件**加进 asset 协议白名单。
+///
+/// 用于路径不受本应用配置管辖、但确实要显示出来的图片（目前是系统当前的壁纸文件）。
+/// 只授权这一个文件而不是它所在的目录，避免为了显示一张图就放开整个目录。
+pub fn allow_asset_file(app: &tauri::AppHandle, path: &str) {
+    use tauri::Manager;
+
+    if path.is_empty() {
+        return;
+    }
+    if let Err(e) = app
+        .asset_protocol_scope()
+        .allow_file(std::path::Path::new(path))
+    {
+        log::warn!("[asset] 授权文件失败 {path}: {e}");
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tempfile::TempDir;
 
     #[test]
     fn test_ensure_plain_filename() {
@@ -419,5 +478,103 @@ mod tests {
         #[cfg(not(windows))]
         assert!(ensure_plain_filename("sub\\a.jpg").is_ok());
         assert!(ensure_plain_filename("").is_err());
+    }
+
+    /// safe_join 是唯一的安全边界：IPC 传来的文件名都要过这里才能拼成磁盘路径。
+    /// 它一旦回归，任何前端输入都能变成任意文件读写/删除。
+    #[test]
+    fn test_safe_join_rejects_traversal() {
+        let dir = TempDir::new().unwrap();
+        let base = dir.path();
+
+        // 合法文件名：解析结果必须落在 base 内
+        let joined = safe_join(base, "photo.jpg").expect("普通文件名应被接受");
+        assert!(joined.starts_with(base.canonicalize().unwrap()));
+
+        // 各种穿越/非法形态都必须被拒（这些在所有平台都非法）
+        for evil in ["../escape.jpg", "..", ".", "sub/escape.jpg", "", "/etc/passwd"] {
+            assert!(
+                safe_join(base, evil).is_err(),
+                "应拒绝非法文件名: {evil:?}"
+            );
+        }
+
+        // 反斜杠只在 Windows 是分隔符；在 Linux/macOS 它是合法文件名字符，
+        // 拼出来仍落在 base 内，所以那两种平台下应当接受（与 ensure_plain_filename 的约定一致）。
+        #[cfg(windows)]
+        for evil in [
+            "sub\\escape.jpg",
+            "C:\\Windows\\System32\\drivers\\etc\\hosts",
+        ] {
+            assert!(
+                safe_join(base, evil).is_err(),
+                "Windows 上应拒绝含反斜杠的文件名: {evil:?}"
+            );
+        }
+        #[cfg(not(windows))]
+        for legal in ["sub\\name.jpg"] {
+            assert!(
+                safe_join(base, legal).is_ok(),
+                "非 Windows 平台反斜杠是合法文件名字符: {legal:?}"
+            );
+        }
+    }
+
+    /// 已存在的文件走 canonicalize 分支，未存在的走 base_canonical.join 分支，两条都要正确。
+    #[test]
+    fn test_safe_join_handles_existing_and_missing() {
+        let dir = TempDir::new().unwrap();
+        let base = dir.path();
+
+        std::fs::write(base.join("real.jpg"), b"x").unwrap();
+        let existing = safe_join(base, "real.jpg").expect("已存在文件应可解析");
+        assert!(existing.is_file());
+        assert!(existing.starts_with(base.canonicalize().unwrap()));
+
+        let missing = safe_join(base, "not-yet.jpg").expect("未存在文件也应可解析");
+        assert!(missing.starts_with(base.canonicalize().unwrap()));
+    }
+
+    /// base 不存在时 safe_join 应报错而不是 panic。
+    #[test]
+    fn test_safe_join_missing_base_errors() {
+        let dir = TempDir::new().unwrap();
+        let ghost = dir.path().join("nope");
+        assert!(safe_join(&ghost, "a.jpg").is_err());
+    }
+
+    /// 批量解析的关键语义：单个非法名不能中断整批，否则「删除选中的 20 个」里
+    /// 只要混进一个坏名字，剩下 19 个就都删不掉。
+    #[test]
+    fn test_safe_join_all_skips_invalid_without_aborting() {
+        let dir = TempDir::new().unwrap();
+        let base = dir.path();
+
+        let names = vec![
+            "ok1.jpg".to_string(),
+            "../evil.jpg".to_string(),
+            "ok2.jpg".to_string(),
+            "sub/evil.jpg".to_string(),
+            "ok3.jpg".to_string(),
+        ];
+        let resolved = safe_join_all(base, &names);
+
+        assert_eq!(resolved.len(), 3, "应保留 3 个合法项");
+        let kept: Vec<&str> = resolved.iter().map(|(n, _)| *n).collect();
+        assert_eq!(kept, vec!["ok1.jpg", "ok2.jpg", "ok3.jpg"]);
+        // 顺序应与输入一致，且路径都落在 base 内
+        let base_canonical = base.canonicalize().unwrap();
+        for (_, path) in &resolved {
+            assert!(path.starts_with(&base_canonical));
+        }
+    }
+
+    /// base 无法解析时返回空列表（调用方据此走"没有任何文件可处理"的分支）。
+    #[test]
+    fn test_safe_join_all_missing_base_returns_empty() {
+        let dir = TempDir::new().unwrap();
+        let ghost = dir.path().join("nope");
+        let names = vec!["a.jpg".to_string()];
+        assert!(safe_join_all(&ghost, &names).is_empty());
     }
 }

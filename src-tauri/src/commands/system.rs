@@ -10,12 +10,20 @@ pub struct ActiveWallpaper {
 }
 
 /// 获取当前桌面壁纸路径（从 noctalia 缓存）
+///
+/// 该路径通常不在本应用的保存目录内，所以要单独授权给 asset 协议，
+/// 否则仪表盘的「当前壁纸」缩略图在 asset scope 收紧后会加载失败。
 #[tauri::command]
-pub async fn get_active_wallpaper() -> Result<ActiveWallpaper, AppError> {
+pub async fn get_active_wallpaper(app: tauri::AppHandle) -> Result<ActiveWallpaper, AppError> {
     // 读取文件 + gsettings 都是阻塞操作。
-    tokio::task::spawn_blocking(get_active_wallpaper_sync)
+    let result = tokio::task::spawn_blocking(get_active_wallpaper_sync)
         .await
-        .map_err(|e| AppError::Other(format!("获取当前壁纸失败: {e}")))?
+        .map_err(|e| AppError::Other(format!("获取当前壁纸失败: {e}")))??;
+
+    if let Some(ref path) = result.path {
+        crate::state::allow_asset_file(&app, path);
+    }
+    Ok(result)
 }
 
 fn get_active_wallpaper_sync() -> Result<ActiveWallpaper, AppError> {

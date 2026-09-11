@@ -12,6 +12,24 @@ use tauri::{Emitter, Manager};
 /// 同步用的临时目录名（放在系统临时目录下，退出时清理）
 const TEMP_DIR_NAME: &str = "rustwallhub-sync";
 
+/// 临时快照目录的 RAII 守卫：离开作用域时删掉整个目录。
+///
+/// 快照是**明文的完整图库数据**（全部 URL / hash / 文件名 / permalink），所以任何提前
+/// `return` 或 panic 都不该把它留在盘上。之前只在退出流程里清一次，导致每次手动上传/拉取
+/// 都残留一份并持续累积；用 Drop 保证所有退出路径都被覆盖。
+struct TempSnapshotGuard(std::path::PathBuf);
+
+impl Drop for TempSnapshotGuard {
+    fn drop(&mut self) {
+        if let Err(e) = std::fs::remove_dir_all(&self.0) {
+            // 目录本就不存在（没写过文件）不算异常，只有真的残留才值得告警。
+            if self.0.exists() {
+                log::warn!("[sync] 清理临时快照目录失败 {}: {e}", self.0.display());
+            }
+        }
+    }
+}
+
 /// 数据库命令统一放到阻塞线程池，避免 rusqlite 占用 tokio worker。
 async fn run_blocking<F, T>(f: F) -> Result<T, AppError>
 where
@@ -43,6 +61,10 @@ struct SnapshotBytes {
 }
 
 /// 导出单个库的快照到临时目录并读回字节；库不存在时返回 Ok(None)。
+///
+/// 中转文件用完即删：`export_snapshot` 先把快照写成文件、这里立刻读回内存，之后文件就没用了。
+/// 之前只在退出流程里清理整个临时目录，导致**每次手动上传都在 `%TEMP%` 留下一份明文的
+/// 完整图库快照**（含全部 URL / hash / 文件名 / permalink），且持续累积占盘。
 fn export_snapshot_bytes(
     db_path: &str,
     file_name: &str,
@@ -52,11 +74,18 @@ fn export_snapshot_bytes(
         return Ok(None);
     }
     let path = temp_dir.join(file_name);
-    db::export_snapshot(db_path, &path.to_string_lossy())
-        .map_err(|e| AppError::Other(format!("导出快照失败 ({file_name}): {e}")))?;
-    let bytes = std::fs::read(&path)
-        .map_err(|e| AppError::Other(format!("读取快照失败 ({file_name}): {e}")))?;
-    Ok(Some(bytes))
+    let result = (|| -> Result<Option<Vec<u8>>, AppError> {
+        db::export_snapshot(db_path, &path.to_string_lossy())
+            .map_err(|e| AppError::Other(format!("导出快照失败 ({file_name}): {e}")))?;
+        let bytes = std::fs::read(&path)
+            .map_err(|e| AppError::Other(format!("读取快照失败 ({file_name}): {e}")))?;
+        Ok(Some(bytes))
+    })();
+    // 成败都清：读取失败时同样不该把明文快照留在盘上。
+    if let Err(e) = std::fs::remove_file(&path) {
+        log::warn!("[sync] 清理临时快照失败 {}: {e}", path.display());
+    }
+    result
 }
 
 /// 导出两个数据库的快照到指定目录。
@@ -181,6 +210,8 @@ pub async fn run_oss_upload(state: &AppState) -> Result<String, AppError> {
     let snapshots = run_blocking(move || {
         std::fs::create_dir_all(&temp_dir)
             .map_err(|e| AppError::Other(format!("创建临时目录失败: {e}")))?;
+        // 兜底清理：export_snapshot_bytes 已经删掉了快照文件本身，这里负责收掉空目录。
+        let _snapshot_guard = TempSnapshotGuard(temp_dir.clone());
         let wallhaven = export_snapshot_bytes(&wh_db, "wallhaven_images.db", &temp_dir)?;
         let reddit = export_snapshot_bytes(&rd_db, "reddit_images.db", &temp_dir)?;
         if wallhaven.is_none() && reddit.is_none() {
@@ -249,6 +280,8 @@ pub async fn run_oss_download(state: &AppState) -> Result<SyncImportResult, AppE
     run_blocking(move || {
         std::fs::create_dir_all(&temp_dir)
             .map_err(|e| AppError::Other(format!("创建临时目录失败: {e}")))?;
+        // 快照用完即清（guard 在离开作用域时删目录）
+        let _snapshot_guard = TempSnapshotGuard(temp_dir.clone());
 
         let wallhaven = match wh_bytes {
             Some(bytes) if db::db_exists(&wh_db) => {

@@ -271,111 +271,159 @@ mod com_wallpaper {
             .collect()
     }
 
+    /// 从 COM 返回的宽字符串指针读出 String。
+    ///
+    /// 用 `OsString::from_wide` 而不是手写指针遍历数 NUL：手写版本没有任何长度上限，
+    /// 一旦 COM 实现返回的指针未按约定以 NUL 结尾，就会无限越界读导致崩溃。
+    /// `from_wide` 是 std 提供的安全 API，内部有边界保护。
     fn from_wide(ptr: *const u16) -> String {
         if ptr.is_null() {
             return String::new();
         }
-        let mut len = 0;
-        unsafe {
-            while *ptr.add(len) != 0 {
-                len += 1;
+        let wide: &[u16] = unsafe { std::slice::from_raw_parts(ptr, MAX_COM_STRING_LEN) };
+        let end = wide.iter().position(|&c| c == 0).unwrap_or(wide.len());
+        String::from_utf16_lossy(&wide[..end])
+    }
+
+    /// COM 宽字符串的扫描上限。正常显示器设备路径不到 200 字符，
+    /// 留足余量的同时保证即使未正确 NUL 结尾也不会越界读到进程外。
+    const MAX_COM_STRING_LEN: usize = 4096;
+
+    /// `CoUninitialize` 的 RAII 守卫。放到结构体里，任何提前 return 或 panic
+    /// 都会在栈展开时配对调用，不会漏掉。
+    struct ComInitGuard {
+        should_uninit: bool,
+    }
+
+    impl ComInitGuard {
+        /// 成功初始化 COM 时返回 `Some(guard)`；失败返回 `None`。
+        fn new() -> Option<Self> {
+            let hr = unsafe { CoInitializeEx(ptr::null(), COINIT_APARTMENTTHREADED) };
+            // S_OK = 首次初始化，S_FALSE = 之前已初始化，两者都可用
+            if hr != S_OK && hr != 1 {
+                return None;
             }
-            String::from_utf16_lossy(std::slice::from_raw_parts(ptr, len))
+            Some(Self {
+                should_uninit: true,
+            })
+        }
+    }
+
+    impl Drop for ComInitGuard {
+        fn drop(&mut self) {
+            if self.should_uninit {
+                unsafe { CoUninitialize() };
+            }
+        }
+    }
+
+    /// COM 接口指针的 RAII 守卫，保证 `Release` 一定被调用。
+    struct ComPtrGuard(*mut std::ffi::c_void);
+
+    impl ComPtrGuard {
+        fn vtbl(&self) -> &ComVtbl {
+            unsafe { &*(self.0 as *const *const ComVtbl).read() }
+        }
+
+        fn as_ptr(&self) -> *mut std::ffi::c_void {
+            self.0
+        }
+    }
+
+    impl Drop for ComPtrGuard {
+        fn drop(&mut self) {
+            if !self.0.is_null() {
+                unsafe {
+                    let vtbl = &*(self.0 as *const *const ComVtbl).read();
+                    (vtbl.release)(self.0);
+                }
+            }
         }
     }
 
     /// Set wallpaper on a specific monitor (or all monitors if monitor_id is empty).
     /// Uses the IDesktopWallpaper COM interface.
     pub fn set_wallpaper_for_monitor(path: &str, monitor_id: &str) -> Result<(), String> {
-        unsafe {
-            let hr = CoInitializeEx(ptr::null(), COINIT_APARTMENTTHREADED);
-            // S_OK = first init, S_FALSE = already initialized — both are fine
-            if hr != S_OK && hr != 1 {
-                return Err(format!("CoInitializeEx failed: 0x{:08X}", hr as u32));
-            }
+        let _com = match ComInitGuard::new() {
+            Some(guard) => guard,
+            None => return Err("CoInitializeEx failed".to_string()),
+        };
 
-            let mut p_wallpaper: *mut std::ffi::c_void = ptr::null_mut();
+        let p_wallpaper = unsafe {
+            let mut ptr: *mut std::ffi::c_void = ptr::null_mut();
             let hr = CoCreateInstance(
                 &CLSID_DESKTOP_WALLPAPER,
                 ptr::null(),
                 CLSCTX_ALL,
                 &IID_IDESKTOP_WALLPAPER,
-                &mut p_wallpaper,
+                &mut ptr,
             );
             if hr != S_OK {
-                CoUninitialize();
                 return Err(format!("CoCreateInstance failed: 0x{:08X}", hr as u32));
             }
+            ComPtrGuard(ptr)
+        };
 
-            let vtbl = &*(p_wallpaper as *const *const ComVtbl).read();
-            let path_wide = to_wide(path);
-            let monitor_wide_vec = if monitor_id.is_empty() {
-                None
-            } else {
-                Some(to_wide(monitor_id))
-            };
-            let monitor_ptr = monitor_wide_vec
-                .as_ref()
-                .map(|v| v.as_ptr())
-                .unwrap_or(ptr::null());
+        let vtbl = p_wallpaper.vtbl();
+        let path_wide = to_wide(path);
+        let monitor_wide_vec = if monitor_id.is_empty() {
+            None
+        } else {
+            Some(to_wide(monitor_id))
+        };
+        let monitor_ptr = monitor_wide_vec
+            .as_ref()
+            .map(|v| v.as_ptr())
+            .unwrap_or(ptr::null());
 
-            let hr = (vtbl.set_wallpaper)(p_wallpaper, monitor_ptr, path_wide.as_ptr());
+        let hr = unsafe { (vtbl.set_wallpaper)(p_wallpaper.as_ptr(), monitor_ptr, path_wide.as_ptr()) };
 
-            (vtbl.release)(p_wallpaper);
-            CoUninitialize();
-
-            if hr != S_OK {
-                return Err(format!("SetWallpaper failed: 0x{:08X}", hr as u32));
-            }
+        if hr != S_OK {
+            return Err(format!("SetWallpaper failed: 0x{:08X}", hr as u32));
         }
         Ok(())
     }
 
     /// Get the number of monitor device paths and each path.
     pub fn get_monitor_device_paths() -> Vec<String> {
-        unsafe {
-            let hr = CoInitializeEx(ptr::null(), COINIT_APARTMENTTHREADED);
-            if hr != S_OK && hr != 1 {
-                return Vec::new();
-            }
+        let _com = match ComInitGuard::new() {
+            Some(guard) => guard,
+            None => return Vec::new(),
+        };
 
-            let mut p_wallpaper: *mut std::ffi::c_void = ptr::null_mut();
+        let p_wallpaper = unsafe {
+            let mut ptr: *mut std::ffi::c_void = ptr::null_mut();
             let hr = CoCreateInstance(
                 &CLSID_DESKTOP_WALLPAPER,
                 ptr::null(),
                 CLSCTX_ALL,
                 &IID_IDESKTOP_WALLPAPER,
-                &mut p_wallpaper,
+                &mut ptr,
             );
             if hr != S_OK {
-                CoUninitialize();
                 return Vec::new();
             }
+            ComPtrGuard(ptr)
+        };
 
-            let vtbl = &*(p_wallpaper as *const *const ComVtbl).read();
+        let vtbl = p_wallpaper.vtbl();
 
-            let mut count: u32 = 0;
-            let hr = (vtbl.get_monitor_device_path_count)(p_wallpaper, &mut count);
-            if hr != S_OK {
-                (vtbl.release)(p_wallpaper);
-                CoUninitialize();
-                return Vec::new();
-            }
-
-            let mut paths = Vec::new();
-            for i in 0..count {
-                let mut ptr_path: *mut u16 = ptr::null_mut();
-                let hr = (vtbl.get_monitor_device_path_at)(p_wallpaper, i, &mut ptr_path);
-                if hr == S_OK && !ptr_path.is_null() {
-                    paths.push(from_wide(ptr_path));
-                    CoTaskMemFree(ptr_path as *const std::ffi::c_void);
-                }
-            }
-
-            (vtbl.release)(p_wallpaper);
-            CoUninitialize();
-            paths
+        let mut count: u32 = 0;
+        if unsafe { (vtbl.get_monitor_device_path_count)(p_wallpaper.as_ptr(), &mut count) } != S_OK {
+            return Vec::new();
         }
+
+        let mut paths = Vec::new();
+        for i in 0..count {
+            let mut ptr_path: *mut u16 = ptr::null_mut();
+            let hr = unsafe { (vtbl.get_monitor_device_path_at)(p_wallpaper.as_ptr(), i, &mut ptr_path) };
+            if hr == S_OK && !ptr_path.is_null() {
+                paths.push(from_wide(ptr_path));
+                unsafe { CoTaskMemFree(ptr_path as *const std::ffi::c_void) };
+            }
+        }
+
+        paths
     }
 }
 

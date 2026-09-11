@@ -30,7 +30,6 @@ pub fn run() {
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
-        .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .setup(|app| {
             let config_dir = app
@@ -100,17 +99,31 @@ pub fn run() {
                     log::warn!("[startup] 代理设置失败: {}", config.proxy_url);
                 }
             }
-            let client = client_builder.build().expect("创建 HTTP client 失败");
+            // 不 expect：代理配置等极端情况下 build 可能失败，此时降级为默认 client，
+            // 让应用能起来并给出提示，而不是启动即 panic。
+            let client = match client_builder.build() {
+                Ok(client) => client,
+                Err(e) => {
+                    log::error!("[startup] 创建 HTTP client 失败，回退到默认配置: {e}");
+                    reqwest::Client::builder()
+                        .build()
+                        .expect("默认 HTTP client 构建失败")
+                }
+            };
 
             let auto_update = config.auto_update;
             let auto_sync_start = config.oss_auto_download_on_start;
+
+            // asset 协议白名单：静态 scope 只含缩略图缓存目录，用户配置的保存目录
+            // 在这里按实际路径授权，避免为了显示图片而把整个 $HOME 暴露给 asset 协议。
+            crate::state::allow_config_asset_dirs(app.handle(), &config);
 
             app.manage(AppState {
                 config_path: Mutex::new(config_path),
                 file_cache: Mutex::new(None),
                 cancel_flag: Mutex::new(std::collections::HashMap::new()),
                 http_client: Mutex::new(client),
-                config_cache: Mutex::new(Some(config)),
+                config_cache: Mutex::new(Some(std::sync::Arc::new(config))),
                 slideshow_cancel: Mutex::new(None),
             });
 
@@ -169,6 +182,7 @@ pub fn run() {
             mark_disliked_files,
             restore_all_files,
             list_missing_images,
+            refresh_file_caches,
             // sync
             export_snapshots,
             import_snapshots,
