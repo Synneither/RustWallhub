@@ -101,8 +101,9 @@ fn decode_jpeg_scaled(src: &Path, target_width: u32) -> Option<image::DynamicIma
     }
     // 目标高度按原图宽高比折算，向上取整保证不低于目标宽度。
     let want_w = target_width.min(u16::MAX as u32);
-    let want_h =
-        ((orig_h as u64 * want_w as u64 + orig_w as u64 - 1) / orig_w as u64).min(u16::MAX as u64);
+    let want_h = (orig_h as u64 * want_w as u64)
+        .div_ceil(orig_w as u64)
+        .min(u16::MAX as u64);
     let (out_w, out_h) = decoder.scale(want_w as u16, want_h as u16).ok()?;
 
     let pixels = decoder.decode().ok()?;

@@ -89,6 +89,9 @@ pub async fn list_filtered_image_paths(
     Ok(list.images.into_iter().map(|img| img.path).collect())
 }
 
+// 参数个数由前端 IPC 契约决定（source/offset/limit/custom_dir/search/sort_by + app/state），
+// 拆结构体会同时改动前端调用点，收益不抵成本。
+#[allow(clippy::too_many_arguments)]
 #[tauri::command]
 pub async fn browse_image_files(
     app: tauri::AppHandle,

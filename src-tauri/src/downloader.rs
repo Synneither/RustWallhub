@@ -515,7 +515,7 @@ mod tests {
         std::thread::spawn(move || {
             use std::io::{Read, Write};
             b.wait();
-            while let Ok((mut stream, _)) = listener.accept() {
+            if let Ok((mut stream, _)) = listener.accept() {
                 // 先读取客户端请求，避免"服务器先关闭连接、客户端随后写入被 RST(10054)"的时序竞争
                 let mut req_buf = [0u8; 4096];
                 let _ = stream.read(&mut req_buf);
@@ -525,8 +525,7 @@ mod tests {
                 );
                 let _ = stream.write_all(response.as_bytes());
                 let _ = stream.write_all(&jpeg_data);
-                // 服务完一个请求就够；客户端成功后不会再连。
-                break;
+                // 服务完这一个请求即可；客户端成功后不会再连。
             }
         });
         barrier.wait();
@@ -630,13 +629,12 @@ mod tests {
             b.wait();
             // 阻塞 accept，服务 1 个连接后退出：max_retries=0 意味着客户端只请求一次。
             // 固定次数能让线程干净退出，不会像之前那样一直轮询空转抢 CPU。
-            while let Ok((mut stream, _)) = listener.accept() {
+            if let Ok((mut stream, _)) = listener.accept() {
                 let mut req_buf = [0u8; 4096];
                 let _ = stream.read(&mut req_buf);
                 let _ = stream.write_all(
                     b"HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
                 );
-                break;
             }
         });
         barrier.wait();

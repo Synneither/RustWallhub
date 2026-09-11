@@ -305,11 +305,13 @@ mod tests {
     /// 回归会让应用静默指向错误的库文件（甚至空库），所以语义要钉住。
     #[test]
     fn test_sync_db_dir_derives_paths() {
-        let mut cfg = AppConfig::default();
-        cfg.db_dir = "/tmp/rustwall-db".to_string();
         // 先故意把个体路径指到别处，确认确实被 db_dir 覆盖
-        cfg.wallhaven_db_path = "/somewhere/else.db".to_string();
-        cfg.reddit_db_path = "/another/place.db".to_string();
+        let mut cfg = AppConfig {
+            db_dir: "/tmp/rustwall-db".to_string(),
+            wallhaven_db_path: "/somewhere/else.db".to_string(),
+            reddit_db_path: "/another/place.db".to_string(),
+            ..AppConfig::default()
+        };
 
         cfg.sync_db_dir();
 
@@ -327,10 +329,12 @@ mod tests {
     /// 旧配置没有 db_dir（为空）时必须沿用各自的路径，否则升级后会丢失原有库位置。
     #[test]
     fn test_sync_db_dir_keeps_individual_paths_when_db_dir_empty() {
-        let mut cfg = AppConfig::default();
-        cfg.db_dir = String::new();
-        cfg.wallhaven_db_path = "/legacy/wh.db".to_string();
-        cfg.reddit_db_path = "/legacy/rd.db".to_string();
+        let mut cfg = AppConfig {
+            db_dir: String::new(),
+            wallhaven_db_path: "/legacy/wh.db".to_string(),
+            reddit_db_path: "/legacy/rd.db".to_string(),
+            ..AppConfig::default()
+        };
 
         cfg.sync_db_dir();
 
