@@ -343,10 +343,11 @@ async function onTestOss() {
 async function onExport() {
   if (exporting.value) return;
   try {
+    // 刻意不把默认目录设成 db_dir：快照文件名与数据库同名，选到那里会覆盖数据库
+    // （后端会拒绝，这里只是不把用户往坑里带）。
     const dir = await openDialog({
       directory: true,
-      title: "选择快照导出目录",
-      defaultPath: appState.config?.db_dir || undefined,
+      title: "选择快照导出目录（请勿选择数据库所在目录）",
     });
     if (typeof dir !== "string") return;
     exporting.value = true;

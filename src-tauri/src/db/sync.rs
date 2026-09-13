@@ -48,7 +48,10 @@ pub fn export_snapshot(db_path: &str, snapshot_path: &str) -> SqlResult<()> {
 pub fn import_wallhaven_snapshot(db_path: &str, snapshot_path: &str) -> SqlResult<ImportStats> {
     with_cached_connection(db_path, |conn| {
         attach_guard(conn, snapshot_path, |conn| {
-            let loved = conn.execute(
+            // 两条语句必须原子完成：中途失败若留下"只恢复了 love、没插入新记录"的半成品，
+            // 用户看到的统计与实际数据就对不上了。ATTACH 不能在事务里做，所以事务开在它之后。
+            let tx = conn.transaction()?;
+            let loved = tx.execute(
                 "UPDATE main.images SET love = 1
                  WHERE love = 0
                    AND EXISTS (SELECT 1 FROM incoming.images i
@@ -56,13 +59,14 @@ pub fn import_wallhaven_snapshot(db_path: &str, snapshot_path: &str) -> SqlResul
                                  AND i.love = 1)",
                 [],
             )? as i64;
-            let inserted = conn.execute(
+            let inserted = tx.execute(
                 "INSERT OR IGNORE INTO main.images
                     (wallhaven_id, name, hash, url, source_url, resolution, love, created_at)
                  SELECT wallhaven_id, name, hash, url, source_url, resolution, love, created_at
                  FROM incoming.images",
                 [],
             )? as i64;
+            tx.commit()?;
             Ok(ImportStats { inserted, loved })
         })
     })
@@ -72,7 +76,9 @@ pub fn import_wallhaven_snapshot(db_path: &str, snapshot_path: &str) -> SqlResul
 pub fn import_reddit_snapshot(db_path: &str, snapshot_path: &str) -> SqlResult<ImportStats> {
     with_cached_connection(db_path, |conn| {
         attach_guard(conn, snapshot_path, |conn| {
-            let loved = conn.execute(
+            // 同 import_wallhaven_snapshot：两条语句包在一个事务里。
+            let tx = conn.transaction()?;
+            let loved = tx.execute(
                 "UPDATE main.images SET love = 1
                  WHERE love = 0
                    AND EXISTS (SELECT 1 FROM incoming.images i
@@ -80,13 +86,14 @@ pub fn import_reddit_snapshot(db_path: &str, snapshot_path: &str) -> SqlResult<I
                                  AND i.love = 1)",
                 [],
             )? as i64;
-            let inserted = conn.execute(
+            let inserted = tx.execute(
                 "INSERT OR IGNORE INTO main.images
                     (name, hash, url, title, permalink, love, created_at)
                  SELECT name, hash, url, title, permalink, love, created_at
                  FROM incoming.images",
                 [],
             )? as i64;
+            tx.commit()?;
             Ok(ImportStats { inserted, loved })
         })
     })

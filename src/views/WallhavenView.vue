@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref } from "vue";
+import { computed, ref, watch, onMounted, onBeforeUnmount } from "vue";
 import type { WallhavenImageEntry, WallhavenSearchResult, WallhavenSelected } from "../types";
 import {
   downloadWallhavenSelected,
@@ -11,10 +11,12 @@ import { positiveInt } from "../utils/rules";
 import { useConfigDraft } from "../composables/useConfigDraft";
 import { useAsyncAction } from "../composables/useAsyncAction";
 import { useSelection } from "../composables/useSelection";
+import { useGridDensity } from "../composables/useGridDensity";
 import { openUrlSafe } from "../utils/openUrl";
 import ProgressCard from "../components/ProgressCard.vue";
 import NewImagesStrip from "../components/NewImagesStrip.vue";
 import EmptyState from "../components/EmptyState.vue";
+import ImageViewer from "../components/ImageViewer.vue";
 
 /* ── 搜索条件（= wallhaven_* 配置，需保存后生效） ── */
 const WALLHAVEN_DRAFT_KEYS = [
@@ -111,6 +113,18 @@ async function onSaveOnly() {
   if (await persist()) toast("设置已保存", "success");
 }
 
+/* ── 结果网格密度 ──
+ * 缩略图是 Wallhaven 的 large 档（约 500px 宽），所以最大档可以放到 330px 仍清晰。
+ * 偏好存 localStorage（key 见下），不进 config.json。 */
+const { density: cellSize, items: SIZE_ITEMS, gridStyle: cellStyle } = useGridDensity(
+  "rustwallhub-wallhaven-cell-size",
+  [
+    { value: "compact", label: "紧凑", min: "170px", ph: "110px" },
+    { value: "normal", label: "标准", min: "240px", ph: "155px" },
+    { value: "large", label: "大图", min: "330px", ph: "215px" },
+  ],
+);
+
 /* ── 搜索 ── */
 const searching = ref(false);
 const result = ref<WallhavenSearchResult | null>(null);
@@ -126,6 +140,10 @@ async function doSearch(page: number) {
     if (seq !== searchSeq) return;
     result.value = next;
     selected.clear();
+    // 换页后旧索引可能越界，收起预览并丢弃续接缓冲
+    previewIndex.value = -1;
+    previewItems.value = [];
+    previewExhausted.value = false;
   } catch (e) {
     if (seq !== searchSeq) return;
     searchError.value = String(e);
@@ -159,18 +177,28 @@ function ratioOf(resolution: string): string {
 }
 
 /* 单击选择 / 双击预览：同一元素上直接绑 click+dblclick 会让双击先触发两次选择切换（闪烁）。
- * 这里用 250ms 延迟判定：短时间内第二次点击视为双击，取消选择、改为预览。 */
+ * 这里用 250ms 延迟判定；并且必须记住计时器对应的卡片 id —— 否则在 250ms 内从 A 换到 B
+ * 会被当成"对 B 的双击"直接弹预览，用户想连选两张时就会误触。 */
 let cellClickTimer: ReturnType<typeof setTimeout> | null = null;
+let cellClickId: string | null = null;
 
 function onCellClick(img: WallhavenImageEntry) {
   if (cellClickTimer) {
     clearTimeout(cellClickTimer);
     cellClickTimer = null;
-    openPreview(img);
-    return;
+    const prevId = cellClickId;
+    cellClickId = null;
+    if (prevId === img.id) {
+      openPreview(img); // 同一张连续两次点击 = 双击 → 预览
+      return;
+    }
+    // 换了一张卡片：上一张按单击结算，避免这次点击既丢失选择又误开预览
+    if (prevId) toggleSelect(prevId);
   }
+  cellClickId = img.id;
   cellClickTimer = setTimeout(() => {
     cellClickTimer = null;
+    cellClickId = null;
     toggleSelect(img.id);
   }, 250);
 }
@@ -212,33 +240,102 @@ const { run: onBatchDownload, loading: startingBatch } = useAsyncAction(async ()
   toast(msg, "info");
 });
 
-/* ── 大图预览 ── */
-const previewOpen = ref(false);
-const previewImage = ref<WallhavenImageEntry | null>(null);
-const previewLoading = ref(false);
-const previewError = ref("");
-/** 预览图的加载竞态守卫：快速连点不同卡片时，旧图的 @error/@load 可能在新图之后才触发，
- * 若不校验序号就会把错误状态错记到新图上。 */
-let previewSeq = 0;
+/* ── 大图预览：复用全屏查看器，可左右连续翻页 ──
+ * 预览列表 = 当前页 + 已续接的后续页（滚动缓冲），索引由查看器内部维护并回传
+ * （v-model:index），这样"下载当前图/选入下载"始终作用在正在看的那一张上。
+ * 注意：不要直接拿 result.images 当预览列表——续接时会往后追加，一旦它跟着
+ * 结果页重置，索引就会错位。 */
+const previewIndex = ref(-1); // -1 = 未打开
+const previewOpen = computed(() => previewIndex.value >= 0);
+const previewItems = ref<WallhavenImageEntry[]>([]);
+/** 续接加载中（底部提示用） */
+const loadingMore = ref(false);
+/** 后续页已取尽/取失败，不再尝试，避免反复请求同一页 */
+const previewExhausted = ref(false);
+/** 用户已要求前进、但缓冲刚好到边界时的补位标记（见 advancePreview） */
+let pendingAdvance = false;
+
+const previewList = computed(() =>
+  previewItems.value.map((i) => ({
+    name: i.id,
+    path: i.path,
+    rawUrl: i.path, // 远程原图，不能走 asset 协议
+    placeholderUrl: i.thumbnail_url, // 网格里已加载过，秒开
+  })),
+);
+const previewImage = computed<WallhavenImageEntry | null>(
+  () => previewItems.value[previewIndex.value] ?? null,
+);
 
 function openPreview(img: WallhavenImageEntry) {
-  previewSeq += 1;
-  previewImage.value = img;
-  previewLoading.value = true;
-  previewError.value = "";
-  previewOpen.value = true;
+  pendingAdvance = false; // 清掉上一轮遗留的补位标记
+  let i = previewItems.value.findIndex((x) => x.id === img.id);
+  if (i < 0) {
+    // 不在缓冲里（如刚翻过页）：以当前页重建，索引按新表算
+    previewItems.value = [...(result.value?.images ?? [])];
+    previewExhausted.value = false;
+    i = previewItems.value.findIndex((x) => x.id === img.id);
+  }
+  if (i < 0) return;
+  previewIndex.value = i;
 }
 
-/** 图片加载完成回调。seq 不匹配说明用户已经切到别的图，直接忽略。 */
-function onPreviewLoaded(seq: number) {
-  if (seq !== previewSeq) return;
-  previewLoading.value = false;
+function closePreview() {
+  if (previewDownloading.value) return;
+  previewIndex.value = -1;
 }
 
-function onPreviewErrored(seq: number) {
-  if (seq !== previewSeq) return;
-  previewLoading.value = false;
-  previewError.value = "大图加载失败，可能被服务器拒绝或图片已失效";
+/** 距离末尾还剩几张时就预取下一页，做到无缝续接 */
+const PREFETCH_AHEAD = 2;
+
+/** 追加下一页到预览缓冲；网格也一并翻到该页，保持两边一致 */
+async function extendPreview() {
+  const cur = result.value;
+  if (!cur || loadingMore.value || previewExhausted.value) return;
+  if (cur.page >= cur.total_pages) {
+    previewExhausted.value = true;
+    return;
+  }
+  const seq = searchSeq; // 期间用户重新搜索则丢弃本次结果
+  loadingMore.value = true;
+  try {
+    const next = await searchWallhaven(cur.page + 1);
+    if (seq !== searchSeq) return;
+    if (next.images.length === 0) {
+      previewExhausted.value = true;
+      return;
+    }
+    previewItems.value = [...previewItems.value, ...next.images];
+    result.value = next;
+    // 只有用户先前明确要求前进（下载后自动跳下一张）才补位；
+    // 单纯预取完不能自动翻页，否则会把用户正在看的那张顶掉。
+    if (pendingAdvance) {
+      pendingAdvance = false;
+      previewIndex.value = Math.min(previewIndex.value + 1, previewItems.value.length - 1);
+    }
+  } catch {
+    // 静默失败：网格与分页按钮仍可正常用，这里只是不再自动续接
+    previewExhausted.value = true;
+  } finally {
+    loadingMore.value = false;
+  }
+}
+
+/* 索引变化即检查是否接近末尾 */
+watch(previewIndex, (i) => {
+  if (i < 0 || previewExhausted.value) return;
+  if (i < previewItems.value.length - PREFETCH_AHEAD) return;
+  void extendPreview();
+});
+
+/** 下载完自动跳下一张，连续挑图时不用手动翻 */
+function advancePreview() {
+  if (previewIndex.value < previewItems.value.length - 1) {
+    previewIndex.value += 1;
+  } else if (!previewExhausted.value) {
+    // 正好卡在已加载的末尾：等续接取回下一页后由 extendPreview 补位
+    pendingAdvance = true;
+  }
 }
 
 const { run: onDownloadPreview, loading: previewDownloading } = useAsyncAction(async () => {
@@ -256,19 +353,25 @@ const { run: onDownloadPreview, loading: previewDownloading } = useAsyncAction(a
   const msg = await downloadWallhavenSelected(payload);
   clearNewImages("wallhaven");
   toast(msg, "info");
-  previewOpen.value = false;
+  advancePreview();
 });
-
-function closePreview() {
-  if (previewDownloading.value) return;
-  previewSeq += 1; // 关闭后旧图的事件不应再影响状态
-  previewOpen.value = false;
-}
 
 async function onOpenSource() {
   if (!previewImage.value) return;
   await openUrlSafe(previewImage.value.short_url);
 }
+
+/** 预览中按空格把当前图加入/移出下载选择 */
+function onPreviewKey(e: KeyboardEvent) {
+  if (!previewOpen.value) return;
+  if (e.key !== " " && e.code !== "Space") return;
+  const img = previewImage.value;
+  if (!img) return;
+  e.preventDefault();
+  toggleSelect(img.id);
+}
+onMounted(() => window.addEventListener("keydown", onPreviewKey));
+onBeforeUnmount(() => window.removeEventListener("keydown", onPreviewKey));
 </script>
 
 <template>
@@ -425,6 +528,18 @@ async function onOpenSource() {
           <template v-if="selected.size > 0"> · 已选 {{ selected.size }}</template>
         </span>
         <v-spacer />
+        <div class="wh-size">
+          <v-btn
+            v-for="s in SIZE_ITEMS"
+            :key="s.value"
+            size="x-small"
+            :variant="cellSize === s.value ? 'tonal' : 'text'"
+            :color="cellSize === s.value ? 'primary' : undefined"
+            @click="cellSize = s.value"
+          >
+            {{ s.label }}
+          </v-btn>
+        </div>
         <v-btn size="small" variant="text" @click="toggleSelectAll">
           {{ allPageSelected ? "取消全选" : "全选本页" }}
         </v-btn>
@@ -462,7 +577,7 @@ async function onOpenSource() {
         </v-btn>
       </div>
 
-      <div class="wh-grid">
+      <div class="wh-grid" :style="cellStyle">
         <div
           v-for="img in result.images"
           :key="img.id"
@@ -510,54 +625,60 @@ async function onOpenSource() {
 
     <NewImagesStrip source="wallhaven" />
 
-    <!-- 大图预览 -->
-    <v-dialog v-model="previewOpen" max-width="1100">
-      <v-card v-if="previewImage" class="wh-preview">
-        <div class="wh-preview__bar">
-          <span class="text-heading wh-preview__name">{{ previewImage.id }}</span>
-          <span class="text-caption">{{ previewImage.resolution }}</span>
-          <v-spacer />
-          <v-btn size="small" variant="text" prepend-icon="mdi-open-in-new" @click="onOpenSource">来源</v-btn>
-          <v-btn size="small" variant="text" icon="mdi-close" @click="closePreview" />
-        </div>
+    <!-- 大图预览：全屏，← → 翻页，空格选入下载 -->
+    <ImageViewer
+      v-if="previewOpen"
+      :images="previewList"
+      :start-index="previewIndex"
+      @update:index="previewIndex = $event"
+      @close="closePreview"
+    >
+      <template #topbar>
+        <span style="color: rgba(255, 255, 255, 0.65)" class="text-caption">
+          {{ previewImage?.resolution }}
+        </span>
+      </template>
 
-        <div class="wh-preview__stage">
-          <v-progress-circular
-            v-if="previewLoading"
-            indeterminate
-            color="primary"
-            size="40"
-          />
-          <img
-            v-show="!previewLoading && !previewError"
-            :key="previewImage.path"
-            :src="previewImage.path"
-            :alt="previewImage.id"
-            referrerpolicy="no-referrer"
-            @load="onPreviewLoaded(previewSeq)"
-            @error="onPreviewErrored(previewSeq)"
-          />
-          <div v-if="previewError" class="wh-preview__error">
-            <v-icon icon="mdi-image-off-outline" size="32" />
-            <span class="text-caption">{{ previewError }}</span>
-          </div>
-        </div>
-
-        <div class="wh-preview__actions">
-          <span class="text-caption">双击卡片可快速预览，单击选择用于批量下载</span>
-          <v-spacer />
-          <v-btn
-            color="primary"
-            variant="flat"
-            prepend-icon="mdi-download-outline"
-            :loading="previewDownloading"
-            @click="onDownloadPreview"
-          >
-            下载大图
-          </v-btn>
-        </div>
-      </v-card>
-    </v-dialog>
+      <template #actions>
+        <span v-if="loadingMore" class="wh-loading-more">
+          <v-progress-circular indeterminate size="14" width="2" color="white" />
+          正在加载下一页…
+        </span>
+        <span v-else style="color: rgba(255, 255, 255, 0.65)" class="text-caption">
+          ← → 切换 · 空格选入下载 · Esc 关闭
+        </span>
+        <v-spacer />
+        <v-btn
+          v-if="previewImage"
+          size="small"
+          variant="text"
+          color="white"
+          :prepend-icon="selected.has(previewImage.id) ? 'mdi-check' : 'mdi-plus'"
+          @click="toggleSelect(previewImage.id)"
+        >
+          {{ selected.has(previewImage.id) ? "已选入" : "选入下载" }}
+        </v-btn>
+        <v-btn
+          size="small"
+          variant="text"
+          color="white"
+          prepend-icon="mdi-open-in-new"
+          @click="onOpenSource"
+        >
+          来源
+        </v-btn>
+        <v-btn
+          size="small"
+          color="primary"
+          variant="flat"
+          prepend-icon="mdi-download-outline"
+          :loading="previewDownloading"
+          @click="onDownloadPreview"
+        >
+          下载大图
+        </v-btn>
+      </template>
+    </ImageViewer>
   </div>
 </template>
 
@@ -591,10 +712,21 @@ async function onOpenSource() {
   gap: var(--space-2);
   flex-wrap: wrap;
 }
+.wh-size {
+  display: flex;
+  align-items: center;
+}
+.wh-loading-more {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-size: 0.75rem;
+  color: rgba(255, 255, 255, 0.85);
+}
 .wh-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
-  gap: var(--space-2);
+  grid-template-columns: repeat(auto-fill, minmax(var(--grid-cell-min, 240px), 1fr));
+  gap: var(--space-3);
   align-items: start;
 }
 .wh-cell {
@@ -608,7 +740,7 @@ async function onOpenSource() {
   /* 一页可达 48 张卡片，屏外卡片的布局/绘制是纯浪费。
      content-visibility: auto 让浏览器跳过它们；contain-intrinsic-size 提供占位尺寸防止滚动条跳动。 */
   content-visibility: auto;
-  contain-intrinsic-size: auto 110px;
+  contain-intrinsic-size: auto var(--grid-cell-ph, 155px);
 }
 .wh-cell--clickable {
   cursor: pointer;
@@ -665,51 +797,5 @@ async function onOpenSource() {
 }
 .wh-cell__preview:hover {
   background: var(--accent-primary);
-}
-.wh-preview {
-  background: var(--surface-elevated) !important;
-  border: var(--border-card);
-  border-radius: var(--radius-xl);
-  overflow: hidden;
-}
-.wh-preview__bar {
-  display: flex;
-  align-items: center;
-  gap: var(--space-3);
-  padding: var(--space-3) var(--space-4);
-  border-bottom: 1px solid var(--border-subtle);
-}
-.wh-preview__name {
-  font-size: 0.9375rem;
-}
-.wh-preview__stage {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  min-height: 320px;
-  max-height: 76vh;
-  overflow: hidden;
-  background: var(--preview-bg);
-}
-.wh-preview__stage img {
-  display: block;
-  max-width: 100%;
-  max-height: 76vh;
-  object-fit: contain;
-}
-.wh-preview__error {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: var(--space-2);
-  padding: var(--space-8);
-  color: var(--text-tertiary);
-}
-.wh-preview__actions {
-  display: flex;
-  align-items: center;
-  gap: var(--space-3);
-  padding: var(--space-3) var(--space-4);
-  border-top: 1px solid var(--border-subtle);
 }
 </style>

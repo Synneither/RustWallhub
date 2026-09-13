@@ -33,6 +33,7 @@ import EmptyState from "../components/EmptyState.vue";
 import ImageViewer from "../components/ImageViewer.vue";
 import ImageDetailDrawer from "../components/ImageDetailDrawer.vue";
 import { useSelection } from "../composables/useSelection";
+import { useGridDensity } from "../composables/useGridDensity";
 import { useAsyncAction } from "../composables/useAsyncAction";
 import { openUrlSafe } from "../utils/openUrl";
 
@@ -75,6 +76,20 @@ const SORT_ITEMS = [
   { title: "日期 ↑", value: "date_asc" },
 ];
 const PAGE_SIZE_ITEMS = [24, 48, 96];
+
+/* ── 网格密度 ──
+ * 上限 240px 是刻意的：后端缩略图基准宽度就是 240（× DPR，见 thumbnail.rs 的
+ * THUMB_BASE_WIDTH），卡片再大就只能把 240px 的图拉伸，1x 屏上会明显发糊。
+ * 想要更大的卡片得先让后端生成更大的缩略图。 */
+const { density: cellSize, items: SIZE_ITEMS, gridStyle } = useGridDensity(
+  "rustwallhub-gallery-cell-size",
+  [
+    // 85px 会让紧凑档偏小：卡片有 min-height 96px 兜底，占位高度要对齐它
+    { value: "compact", label: "紧凑", min: "120px", ph: "96px" },
+    { value: "normal", label: "标准", min: "170px", ph: "115px" },
+    { value: "large", label: "大图", min: "240px", ph: "155px" },
+  ],
+);
 
 const loading = ref(false);
 const loadError = ref("");
@@ -564,6 +579,18 @@ async function onStopSlideshow() {
         </v-chip>
       </template>
       <v-spacer />
+      <div class="gallery-size">
+        <v-btn
+          v-for="s in SIZE_ITEMS"
+          :key="s.value"
+          size="x-small"
+          :variant="cellSize === s.value ? 'tonal' : 'text'"
+          :color="cellSize === s.value ? 'primary' : undefined"
+          @click="cellSize = s.value"
+        >
+          {{ s.label }}
+        </v-btn>
+      </div>
       <v-btn
         v-if="!customDir"
         size="x-small"
@@ -617,7 +644,7 @@ async function onStopSlideshow() {
     >
       <v-btn variant="tonal" @click="load">重试</v-btn>
     </EmptyState>
-    <div v-else-if="loading && images.length === 0" class="gallery-grid">
+    <div v-else-if="loading && images.length === 0" class="gallery-grid" :style="gridStyle">
       <div v-for="i in pageSize" :key="i" class="gallery-card shimmer" />
     </div>
     <EmptyState
@@ -633,7 +660,13 @@ async function onStopSlideshow() {
       :desc="customDir ? '该目录下没有可识别的图片文件' : orphanOnly ? '保存目录中的文件都已在数据库中登记' : '前往 Wallhaven 或 Reddit 页面下载图片'"
     />
 
-    <div v-else class="gallery-grid" :aria-busy="loading" :class="{ 'gallery-grid--loading': loading }">
+    <div
+      v-else
+      class="gallery-grid"
+      :class="{ 'gallery-grid--loading': loading }"
+      :style="gridStyle"
+      :aria-busy="loading"
+    >
       <div
         v-for="img in images"
         :key="img.name"
@@ -739,9 +772,13 @@ async function onStopSlideshow() {
   background: var(--accent-primary-dim);
   border: var(--border-active);
 }
+.gallery-size {
+  display: flex;
+  align-items: center;
+}
 .gallery-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(var(--grid-cell-min, 170px), 1fr));
   gap: var(--space-2);
   align-content: start;
   padding-bottom: var(--space-4);
@@ -765,7 +802,7 @@ async function onStopSlideshow() {
      content-visibility: auto 让浏览器跳过屏外卡片的渲染；
      contain-intrinsic-size 提供占位尺寸，避免滚动条跳动。 */
   content-visibility: auto;
-  contain-intrinsic-size: auto 120px;
+  contain-intrinsic-size: auto var(--grid-cell-ph, 115px);
 }
 .gallery-card img {
   width: 100%;

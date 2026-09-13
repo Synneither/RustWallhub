@@ -27,7 +27,26 @@ impl Drop for TempSnapshotGuard {
                 log::warn!("[sync] 清理临时快照目录失败 {}: {e}", self.0.display());
             }
         }
+        // 顺手收掉空的父目录（并发时它非空，remove_dir 失败即可，忽略）。
+        if let Some(parent) = self.0.parent() {
+            if parent.file_name().is_some_and(|n| n == TEMP_DIR_NAME) {
+                let _ = std::fs::remove_dir(parent);
+            }
+        }
     }
+}
+
+/// 本次同步操作专属的临时目录。
+///
+/// 上传与下载若共用同一个固定目录，一方的 `TempSnapshotGuard` 结束时 `remove_dir_all`
+/// 会把另一方正在读写的快照删掉（连点两次同步按钮即可触发）。用 pid + 自增序号隔离。
+fn temp_snapshot_dir() -> std::path::PathBuf {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static SEQ: AtomicU64 = AtomicU64::new(0);
+    let n = SEQ.fetch_add(1, Ordering::Relaxed);
+    std::env::temp_dir()
+        .join(TEMP_DIR_NAME)
+        .join(format!("{}-{}", std::process::id(), n))
 }
 
 /// 数据库命令统一放到阻塞线程池，避免 rusqlite 占用 tokio worker。
@@ -88,6 +107,32 @@ fn export_snapshot_bytes(
     result
 }
 
+/// 判断导出目标是否就是本地数据库文件本身。
+///
+/// 快照文件名固定为 `wallhaven_images.db` / `reddit_images.db`，与数据库同名，
+/// 而前端导出对话框的默认目录正是 `db_dir` —— 用户一路确认就会命中同一路径。
+/// 那时 `export_snapshot` 会先删掉目标文件（= 本地数据库），数据直接丢失。
+///
+/// 目标文件通常尚不存在，`canonicalize` 会失败，所以规范化**父目录**后再与文件名拼接比较；
+/// 父目录也规范化不了时退化为字符串比较（Windows 路径大小写不敏感）。
+fn is_same_db_file(db_path: &str, target: &std::path::Path) -> bool {
+    fn normalize(p: &std::path::Path) -> Option<std::path::PathBuf> {
+        let name = p.file_name()?;
+        let parent = p.parent()?;
+        let base = if parent.as_os_str().is_empty() {
+            std::env::current_dir().ok()?
+        } else {
+            parent.canonicalize().ok()?
+        };
+        Some(base.join(name))
+    }
+    let db = std::path::Path::new(db_path);
+    match (normalize(db), normalize(target)) {
+        (Some(a), Some(b)) => a == b,
+        _ => db_path.to_lowercase() == target.to_string_lossy().to_lowercase(),
+    }
+}
+
 /// 导出两个数据库的快照到指定目录。
 /// 文件名固定为 `wallhaven_images.db` / `reddit_images.db`（导入端按同名配对）。
 #[tauri::command]
@@ -103,6 +148,14 @@ pub async fn export_snapshots(
     run_blocking(move || {
         let wh_target = std::path::Path::new(&dir).join("wallhaven_images.db");
         let rd_target = std::path::Path::new(&dir).join("reddit_images.db");
+
+        for (db, target) in [(&wh_db, &wh_target), (&rd_db, &rd_target)] {
+            if db::db_exists(db) && is_same_db_file(db, target) {
+                return Err(AppError::Other(
+                    "导出目录不能是本地数据库所在目录（快照文件名与数据库同名，会覆盖数据库文件），请换一个目录".into(),
+                ));
+            }
+        }
 
         let wallhaven = if db::db_exists(&wh_db) {
             db::export_snapshot(&wh_db, &wh_target.to_string_lossy())
@@ -206,7 +259,7 @@ pub async fn run_oss_upload(state: &AppState) -> Result<String, AppError> {
 
     let wh_db = config.wallhaven_db_path.clone();
     let rd_db = config.reddit_db_path.clone();
-    let temp_dir = std::env::temp_dir().join(TEMP_DIR_NAME);
+    let temp_dir = temp_snapshot_dir();
     let snapshots = run_blocking(move || {
         std::fs::create_dir_all(&temp_dir)
             .map_err(|e| AppError::Other(format!("创建临时目录失败: {e}")))?;
@@ -276,7 +329,7 @@ pub async fn run_oss_download(state: &AppState) -> Result<SyncImportResult, AppE
 
     let wh_db = config.wallhaven_db_path.clone();
     let rd_db = config.reddit_db_path.clone();
-    let temp_dir = std::env::temp_dir().join(TEMP_DIR_NAME);
+    let temp_dir = temp_snapshot_dir();
     run_blocking(move || {
         std::fs::create_dir_all(&temp_dir)
             .map_err(|e| AppError::Other(format!("创建临时目录失败: {e}")))?;
@@ -467,5 +520,30 @@ pub async fn auto_sync_on_startup(handle: &tauri::AppHandle) {
             log::warn!("[sync] 启动自动拉取失败：{e}");
             let _ = handle.emit("sync-failed", e.to_string());
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_same_db_file;
+
+    /// 同目录 + 同文件名必须被识别出来（这正是"导出到 db_dir 会覆盖数据库"的场景）。
+    /// 目标路径写法刻意与 db 路径不同，用来验证走的不是字符串比较而是规范化比较。
+    #[test]
+    fn detects_target_pointing_at_the_same_db_file() {
+        let base = std::env::temp_dir().join("rustwallhub-sync-guard");
+        std::fs::create_dir_all(&base).expect("创建临时目录失败");
+        let db = base.join("wallhaven_images.db");
+        let target = base.join(".").join("wallhaven_images.db");
+        assert!(is_same_db_file(&db.to_string_lossy(), &target));
+    }
+
+    /// 另一个目录下的同名文件不能被误判（否则正常的跨目录导出会被拒绝）。
+    #[test]
+    fn other_directory_is_not_flagged() {
+        let base = std::env::temp_dir();
+        let db = base.join("rustwallhub-guard-a").join("wallhaven_images.db");
+        let target = base.join("rustwallhub-guard-b").join("wallhaven_images.db");
+        assert!(!is_same_db_file(&db.to_string_lossy(), &target));
     }
 }

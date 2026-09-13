@@ -103,6 +103,7 @@ async function onCheckUpdate() {
 
 async function onInstall() {
   installing.value = true;
+  appState.update.installing = false; // 清掉上一次失败可能残留的安装遮罩
   appState.update.downloading = true;
   appState.update.downloaded = 0;
   appState.update.total = null;
@@ -112,6 +113,9 @@ async function onInstall() {
   } catch (e) {
     toastError(e);
     appState.update.downloading = false;
+    // 遮罩是 persistent 的，且 installing 只由 update-installing 事件置位，
+    // 这里不复位的话安装失败后整个界面会被永久挡住。
+    appState.update.installing = false;
     installing.value = false;
   }
 }

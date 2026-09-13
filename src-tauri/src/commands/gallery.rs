@@ -727,10 +727,30 @@ pub async fn get_image_info(
         }
     };
 
-    let save_dir = if db_record.as_ref().is_some_and(|r| r.source == "wallhaven") {
-        config.wallhaven_save_dir.clone()
-    } else {
-        config.save_dir_for(source).to_string()
+    // 决定文件所在目录：
+    // - 有数据库记录时按记录来源（wallhaven 记录在 wallhaven 目录，其余在 reddit 目录）
+    // - 孤儿文件（无记录）且 source = All 时，`save_dir_for(All)` 固定返回 reddit 目录，
+    //   会把 wallhaven 目录下的孤儿文件拼错路径，导致 size/尺寸恒为空。
+    //   这里两个目录各探一次，取真实存在的那个。
+    let save_dir = match db_record.as_ref().map(|r| r.source.as_str()) {
+        Some("wallhaven") => config.wallhaven_save_dir.clone(),
+        Some(_) => config.reddit_save_dir.clone(),
+        None if matches!(source, Source::All) => {
+            let wh_dir = config.wallhaven_save_dir.clone();
+            let rd_dir = config.reddit_save_dir.clone();
+            let probe = |dir: &str| {
+                state::safe_join(std::path::Path::new(dir), &name)
+                    .ok()
+                    .filter(|p| p.exists())
+            };
+            if probe(&wh_dir).is_some() {
+                wh_dir
+            } else {
+                // 都不存在时退回 reddit 目录，保持"报错信息指向一个具体路径"的旧行为
+                rd_dir
+            }
+        }
+        None => config.save_dir_for(source).to_string(),
     };
     let file_path = state::safe_join(std::path::Path::new(&save_dir), &name)?;
     let file_path_for_task = file_path.clone();

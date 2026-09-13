@@ -168,8 +168,31 @@ pub async fn download_missing_images(
             "补下载请分别按 wallhaven / reddit 调用".into(),
         ));
     }
-    for img in &images {
-        crate::state::ensure_plain_filename(&img.name)?;
+    // 单个非法文件名不该让整批补下载失败：过滤掉并记日志，与其它批量入口的"跳过坏项"一致。
+    let requested = images.len();
+    let images: Vec<db::ImageRecord> = images
+        .into_iter()
+        .filter(|img| match crate::state::ensure_plain_filename(&img.name) {
+            Ok(()) => true,
+            Err(e) => {
+                log::warn!(
+                    "[download_missing_images] 跳过非法文件名 {:?}: {e}",
+                    img.name
+                );
+                false
+            }
+        })
+        .collect();
+    if images.is_empty() {
+        return Err(AppError::Other(format!(
+            "{requested} 个待补下载文件名全部非法，已跳过"
+        )));
+    }
+    if images.len() < requested {
+        log::warn!(
+            "[download_missing_images] 已跳过 {} 个非法文件名",
+            requested - images.len()
+        );
     }
     let config = crate::state::load_config(&state)?;
     let cancel = setup_cancel_flag(&state, source);

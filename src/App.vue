@@ -185,6 +185,7 @@ onMounted(async () => {
         <v-progress-circular indeterminate color="primary" size="44" />
         <p class="text-heading mt-4">正在安装更新</p>
         <p class="text-caption">安装完成后应用将自动重启</p>
+        <p class="text-caption">若长时间没有反应，请手动结束并重新打开应用</p>
       </div>
     </v-overlay>
   </v-app>

@@ -273,16 +273,27 @@ mod com_wallpaper {
 
     /// 从 COM 返回的宽字符串指针读出 String。
     ///
-    /// 用 `OsString::from_wide` 而不是手写指针遍历数 NUL：手写版本没有任何长度上限，
-    /// 一旦 COM 实现返回的指针未按约定以 NUL 结尾，就会无限越界读导致崩溃。
-    /// `from_wide` 是 std 提供的安全 API，内部有边界保护。
+    /// `IDesktopWallpaper::GetMonitorDevicePathAt` 通过 `CoTaskMemAlloc` 返回 LPWSTR，
+    /// 按 API 契约以 NUL 结尾，但**分配长度只有 `len + 1`**。所以不能先
+    /// `from_raw_parts(ptr, MAX_COM_STRING_LEN)` 声称有 4096 个元素再找 NUL ——
+    /// 那是在构造一个越界切片（UB），即使实际只读到第一个 NUL 也已经是未定义行为。
+    ///
+    /// 这里逐字符读到 NUL，再按**实际长度**构造切片；`MAX_COM_STRING_LEN` 仅作为
+    /// 万一未按约定结尾时的兜底上限，避免无限越界。`std::ffi::OsString::from_wide`
+    /// 同样需要一个已确定长度的切片，无法直接用在裸指针上。
     fn from_wide(ptr: *const u16) -> String {
         if ptr.is_null() {
             return String::new();
         }
-        let wide: &[u16] = unsafe { std::slice::from_raw_parts(ptr, MAX_COM_STRING_LEN) };
-        let end = wide.iter().position(|&c| c == 0).unwrap_or(wide.len());
-        String::from_utf16_lossy(&wide[..end])
+        let mut len = 0usize;
+        // SAFETY: 调用方保证 ptr 指向契约上以 NUL 结尾的宽字符串，循环会在 NUL 处终止；
+        // 上限只是防御性兜底。
+        while len < MAX_COM_STRING_LEN && unsafe { ptr.add(len).read() } != 0 {
+            len += 1;
+        }
+        // SAFETY: 上面已逐字符确认 [0, len) 可读，且未越过分配范围。
+        let wide: &[u16] = unsafe { std::slice::from_raw_parts(ptr, len) };
+        String::from_utf16_lossy(wide)
     }
 
     /// COM 宽字符串的扫描上限。正常显示器设备路径不到 200 字符，

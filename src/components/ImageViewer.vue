@@ -6,30 +6,78 @@ import { assetUrl } from "../utils/api";
 export interface ViewerImage {
   name: string;
   path: string;
+  /** 远程图片（如 Wallhaven 原图 URL）走原始地址，不能经过 asset 协议转换 */
+  rawUrl?: string;
+  /** 快速占位图（如 Wallhaven 的 large 缩略图，已在网格里加载过、命中缓存），
+   *  原图在后台加载完再替换，翻页时不会白屏干等 */
+  placeholderUrl?: string;
 }
 
 const props = defineProps<{
   images: ViewerImage[];
   startIndex: number;
 }>();
-const emit = defineEmits<{ close: [] }>();
+const emit = defineEmits<{ close: []; "update:index": [value: number] }>();
 
 const index = ref(props.startIndex);
 const loading = ref(true);
+const error = ref(false);
+/** 原图是否已就绪（有 placeholder 时先用占位图顶上） */
+const hiResReady = ref(false);
+let preload: HTMLImageElement | null = null;
+let preloadToken = 0;
 
 const current = computed(() => props.images[index.value] ?? null);
-const src = computed(() => (current.value ? assetUrl(current.value.path) : ""));
+const src = computed(() => {
+  const img = current.value;
+  if (!img) return "";
+  if (img.rawUrl) return hiResReady.value ? img.rawUrl : img.placeholderUrl || img.rawUrl;
+  return assetUrl(img.path);
+});
+/** 有占位图时它已经可见，不必再转圈 */
+const showLoading = computed(() => loading.value && !current.value?.placeholderUrl);
+
+/** 后台预载原图；token 防止快速翻页时旧图的回调盖掉新图状态 */
+function startPreload(img: (typeof props.images)[number] | null) {
+  if (preload) {
+    preload.onload = null;
+    preload.onerror = null;
+    preload = null;
+  }
+  const token = ++preloadToken;
+  if (!img?.rawUrl || img.rawUrl === img.placeholderUrl) {
+    hiResReady.value = true;
+    return;
+  }
+  hiResReady.value = false;
+  const el = new Image();
+  preload = el;
+  el.referrerPolicy = "no-referrer";
+  el.onload = () => {
+    if (token === preloadToken) hiResReady.value = true;
+  };
+  el.onerror = () => {
+    // 原图失败但占位图还在：静默降级，不弹错误覆盖层
+    if (token === preloadToken && !img.placeholderUrl) {
+      loading.value = false;
+      error.value = true;
+    }
+  };
+  el.src = img.rawUrl;
+}
 
 function prev() {
   if (index.value > 0) {
     index.value--;
     loading.value = true;
+    error.value = false;
   }
 }
 function next() {
   if (index.value < props.images.length - 1) {
     index.value++;
     loading.value = true;
+    error.value = false;
   }
 }
 
@@ -39,16 +87,46 @@ function onKey(e: KeyboardEvent) {
   else if (e.key === "ArrowRight") next();
 }
 
+function onImgError() {
+  loading.value = false;
+  // 占位图也挂了才报错，否则等原图结论
+  if (!current.value?.placeholderUrl || hiResReady.value) error.value = true;
+}
+
+/** 占位图自身加载失败（原图还未就绪）→ 确实无图可看，报错 */
+function onPlaceholderError() {
+  if (!hiResReady.value) {
+    loading.value = false;
+    error.value = true;
+  }
+}
+
+/* 翻页状态回传给父组件：预览里有"下载当前图/选入下载"这类操作，
+ * 外部必须知道现在停在第几张，否则会作用到打开时的那一张上。 */
+watch(index, (v) => emit("update:index", v));
+
+/* 换图即换原图预载 */
+watch(current, (img) => startPreload(img), { immediate: true });
+
 watch(
   () => props.startIndex,
   (v) => {
+    if (v === index.value) return;
     index.value = v;
     loading.value = true;
+    error.value = false;
   },
 );
 
 onMounted(() => window.addEventListener("keydown", onKey));
-onBeforeUnmount(() => window.removeEventListener("keydown", onKey));
+onBeforeUnmount(() => {
+  window.removeEventListener("keydown", onKey);
+  if (preload) {
+    preload.onload = null;
+    preload.onerror = null;
+    preload = null;
+  }
+});
 </script>
 
 <template>
@@ -57,6 +135,7 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onKey));
       <span class="viewer__name">{{ current?.name }}</span>
       <span class="viewer__count">{{ index + 1 }} / {{ images.length }}</span>
       <v-spacer />
+      <slot name="topbar" :image="current" :index="index" />
       <v-btn icon="mdi-close" variant="text" color="white" @click="emit('close')" />
     </div>
 
@@ -65,19 +144,38 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onKey));
     </button>
 
     <div class="viewer__stage" @click.self="emit('close')">
-      <div v-if="loading" class="viewer__loading">
+      <div v-if="showLoading" class="viewer__loading">
         <v-progress-circular indeterminate color="white" size="40" />
       </div>
-      <img
-        v-if="current"
-        :key="current.path"
-        :src="src"
-        :alt="current.name"
-        class="viewer__img"
-        @load="loading = false"
-        @error="loading = false"
-        @click.stop
-      />
+      <div v-else-if="error" class="viewer__error">
+        <v-icon icon="mdi-image-off-outline" size="36" />
+        <span>大图加载失败，可能已被服务器拒绝或图片已失效</span>
+      </div>
+      <template v-if="current">
+        <!-- 占位图与原图叠在同一格：原图就绪后直接盖上去，中间不会闪白 -->
+        <img
+          v-if="current.placeholderUrl && !hiResReady"
+          :key="`ph-${index}`"
+          :src="current.placeholderUrl"
+          :alt="current.name"
+          class="viewer__img"
+          referrerpolicy="no-referrer"
+          @load="loading = false"
+          @error="onPlaceholderError"
+          @click.stop
+        />
+        <img
+          v-if="hiResReady || !current.placeholderUrl"
+          :key="`hi-${index}`"
+          :src="src"
+          :alt="current.name"
+          class="viewer__img"
+          referrerpolicy="no-referrer"
+          @load="loading = false"
+          @error="onImgError"
+          @click.stop
+        />
+      </template>
     </div>
 
     <button
@@ -88,6 +186,11 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onKey));
     >
       <v-icon icon="mdi-chevron-right" size="36" />
     </button>
+
+    <!-- 底部操作区：可选，无内容时不渲染底栏 -->
+    <div v-if="$slots.actions" class="viewer__actions">
+      <slot name="actions" :image="current" :index="index" />
+    </div>
   </div>
 </template>
 
@@ -128,12 +231,14 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onKey));
 .viewer__stage {
   width: 100%;
   height: 100%;
-  display: flex;
-  align-items: center;
-  justify-content: center;
+  /* 用 grid 单格叠加：占位图和原图占同一格，居中且互不挤压 */
+  display: grid;
+  grid-template-areas: "pic";
+  place-items: center;
   padding: 56px 72px;
 }
 .viewer__img {
+  grid-area: pic;
   max-width: 100%;
   max-height: 100%;
   object-fit: contain;
@@ -142,6 +247,34 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onKey));
 }
 .viewer__loading {
   position: absolute;
+}
+.viewer__error {
+  position: absolute;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-8);
+  color: rgba(255, 255, 255, 0.7);
+  font-size: 0.8125rem;
+  text-align: center;
+}
+.viewer__actions {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-3) var(--space-4);
+  background: linear-gradient(to top, rgba(0, 0, 0, 0.55), transparent);
+  color: #fff;
+  z-index: 2;
+}
+/* 有底栏时给图片留出空间，避免被挡住 */
+.viewer:has(.viewer__actions) .viewer__stage {
+  padding-bottom: 92px;
 }
 .viewer__nav {
   position: absolute;
