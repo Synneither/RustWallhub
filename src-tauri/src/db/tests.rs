@@ -372,10 +372,28 @@ fn test_get_all_images_paged_merges_and_paginates() {
         4
     );
 
-    // 反复调用不应因 ATTACH 残留而失败（连接是缓存的，靠 DETACH 收尾）
+    // 重复调用次序必须完全一致（归并是纯函数式的，不依赖连接上的挂载状态）
+    let baseline: Vec<String> = all.iter().map(|r| r.name.clone()).collect();
     for _ in 0..3 {
-        assert_eq!(get_all_images_paged(&wh, &rd, 100, 0).unwrap().len(), 7);
+        let again: Vec<String> = get_all_images_paged(&wh, &rd, 100, 0)
+            .unwrap()
+            .iter()
+            .map(|r| r.name.clone())
+            .collect();
+        assert_eq!(again, baseline, "同一查询重复调用结果次序应稳定");
     }
+
+    // 逐条翻页必须恰好覆盖全部 7 条、不重不漏，且次序与整页查询一致。
+    // 两库的 id 都从 1 自增、created_at 精度只到秒，(created_at, id) 跨库必然出现并列；
+    // 归并若缺一个确定性的 tiebreaker，这里就会出现重复行或漏行。
+    let mut stepped: Vec<String> = Vec::new();
+    for off in 0..7 {
+        let page = get_all_images_paged(&wh, &rd, 1, off).unwrap();
+        assert_eq!(page.len(), 1, "offset={off} 应恰好返回一条");
+        stepped.push(page[0].name.clone());
+    }
+    assert_eq!(stepped, baseline, "逐条翻页的次序应与整页查询一致");
+    assert!(get_all_images_paged(&wh, &rd, 1, 7).unwrap().is_empty());
 }
 
 #[test]

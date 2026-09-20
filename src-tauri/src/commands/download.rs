@@ -285,13 +285,32 @@ pub async fn download_missing_images(
     Ok(format!("补下载已启动，共 {} 张", total_images))
 }
 
+/// 取消下载。
+///
+/// `source` 为 `Some` 时只取消该来源；为 `None` 时取消全部。
+///
+/// 以前这个命令没有参数、无条件置位**所有**来源的标志，而前端是按来源分卡片展示的
+/// （卡片标题写着「Wallhaven 下载」），于是用户在一张卡上点「取消」会把同时在跑的
+/// 另一个来源的任务一起杀掉。
 #[tauri::command]
-pub async fn cancel_downloads(state: tauri::State<'_, AppState>) -> Result<(), AppError> {
-    log::info!("[CMD] cancel_downloads called");
+pub async fn cancel_downloads(
+    state: tauri::State<'_, AppState>,
+    source: Option<Source>,
+) -> Result<(), AppError> {
+    log::info!("[CMD] cancel_downloads called: source={:?}", source);
     if let Ok(guard) = state.cancel_flag.lock() {
-        // 置位所有 source 的取消标志，保证并发下载全部能取消。
-        for flag in guard.values() {
-            flag.store(true, Ordering::Relaxed);
+        match source {
+            Some(src) => {
+                if let Some(flag) = guard.get(&src.to_string()) {
+                    flag.store(true, Ordering::Relaxed);
+                }
+            }
+            // 未指定来源 = 取消全部（侧栏的「取消全部下载」用这条路径）
+            None => {
+                for flag in guard.values() {
+                    flag.store(true, Ordering::Relaxed);
+                }
+            }
         }
     }
     Ok(())
