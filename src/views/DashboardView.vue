@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, inject, onActivated, onMounted, ref } from "vue";
-import { appState, dbReady, refreshStats, toast, toastError } from "../stores/app";
-import { assetUrl, getActiveWallpaper, startWallhavenDownload, startRedditDownload, stopSlideshow } from "../utils/api";
+import { appState, activeDownloadSources, dbReady, refreshStats, toast, toastError } from "../stores/app";
+import { assetUrl, getActiveWallpaper, resolveThumbnails, startWallhavenDownload, startRedditDownload, stopSlideshow } from "../utils/api";
 import StatPanel from "../components/StatPanel.vue";
 import ProgressCard from "../components/ProgressCard.vue";
 import EmptyState from "../components/EmptyState.vue";
@@ -12,18 +12,6 @@ const starting = ref<"" | "wallhaven" | "reddit">("");
 
 const slideshow = computed(() => appState.slideshow);
 const updateInfo = computed(() => appState.update.info);
-
-const activeSources = computed(() =>
-  Object.entries(appState.downloads)
-    .filter(([, t]) => t.active || t.lastComplete)
-    .map(([s]) => s),
-);
-
-const SOURCE_LABEL: Record<string, string> = {
-  wallhaven: "Wallhaven 下载",
-  reddit: "Reddit 下载",
-  all: "补下载任务",
-};
 
 async function quickDownload(source: "wallhaven" | "reddit") {
   if (starting.value) return;
@@ -65,6 +53,8 @@ onActivated(() => {
 /* ── 当前壁纸 ── */
 const wallpaperPath = ref<string | null>(null);
 const wallpaperImgError = ref(false);
+/** 壁纸缩略图地址；解析不到时留空，由模板退回原图。 */
+const wallpaperThumb = ref("");
 
 const wallpaperName = computed(() => {
   const p = wallpaperPath.value;
@@ -72,13 +62,40 @@ const wallpaperName = computed(() => {
   return p.split(/[\\/]/).pop() ?? p;
 });
 
+/** 128px 的格子不值得为 4K 原图付出约 33MB 的驻留内存，优先用库里的缩略图。
+ *  后端在源文件缺失/非 JPEG 时会把原图路径原样返回（缩略图文件名则是 name__w480.webp），
+ *  所以用「返回的文件名与原名不同」判断是否真的拿到了缩略图。 */
+async function resolveWallpaperThumb(name: string) {
+  wallpaperThumb.value = "";
+  if (!name) return;
+  const dpr = appState.config?.thumbnail_dpr ?? 2;
+  for (const source of ["wallhaven", "reddit"] as const) {
+    try {
+      const res = await resolveThumbnails(source, [name], dpr);
+      const hit = res.items.find((it) => {
+        if (it.name !== name) return false;
+        const base = it.thumb_path.split(/[\\/]/).pop() ?? "";
+        return base !== name;
+      });
+      if (hit) {
+        wallpaperThumb.value = assetUrl(hit.thumb_path);
+        return;
+      }
+    } catch {
+      // 该来源里没有这张图，继续试下一个来源
+    }
+  }
+}
+
 async function loadActiveWallpaper() {
   try {
     const res = await getActiveWallpaper();
     wallpaperPath.value = res.path;
     wallpaperImgError.value = false;
+    await resolveWallpaperThumb(wallpaperName.value);
   } catch {
     wallpaperPath.value = null;
+    wallpaperThumb.value = "";
   }
 }
 </script>
@@ -127,7 +144,7 @@ async function loadActiveWallpaper() {
         <div class="wallpaper-card__thumb">
           <img
             v-if="!wallpaperImgError"
-            :src="assetUrl(wallpaperPath)"
+            :src="wallpaperThumb || assetUrl(wallpaperPath)"
             :alt="wallpaperName"
             @error="wallpaperImgError = true"
           />
@@ -145,12 +162,11 @@ async function loadActiveWallpaper() {
       </div>
 
       <!-- 活动任务 -->
-      <div v-if="activeSources.length > 0 || slideshow.running" class="dash-activity">
+      <div v-if="activeDownloadSources.length > 0 || slideshow.running" class="dash-activity">
         <ProgressCard
-          v-for="s in activeSources"
+          v-for="s in activeDownloadSources"
           :key="s"
           :source="s"
-          :title="SOURCE_LABEL[s] ?? `${s} 下载`"
           class="animate-in"
         />
 

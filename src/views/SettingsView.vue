@@ -3,7 +3,8 @@ import { computed, ref } from "vue";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import type { AppConfig } from "../types";
 import { checkUpdate, installUpdate, saveSettings } from "../utils/api";
-import { appState, askConfirm, dbReady, ensureDatabases, toast, toastError } from "../stores/app";
+import { appState, activeDownloadSources, askConfirm, dbReady, ensureDatabases, toast, toastError } from "../stores/app";
+import ProgressCard from "../components/ProgressCard.vue";
 import { positiveInt, requiredRule } from "../utils/rules";
 import { useTheme, type Theme } from "../stores/theme";
 import { formatBytes } from "../utils/format";
@@ -37,7 +38,29 @@ const { draft, saving } = useConfigDraft(SETTINGS_DRAFT_KEYS, {
   auto_update: true,
 });
 
-async function pickDir(field: "wallhaven_save_dir" | "reddit_save_dir" | "thumbnails_dir") {
+/* ── 静态选项 ──
+ * 提到模块级：写在模板里的字面量数组每次渲染都会重新创建，VSelect/按钮组会把它当成新 props。 */
+type DirFieldKey = "wallhaven_save_dir" | "reddit_save_dir" | "thumbnails_dir";
+const DIR_FIELDS: readonly { key: DirFieldKey; label: string }[] = [
+  { key: "wallhaven_save_dir", label: "Wallhaven 保存目录" },
+  { key: "reddit_save_dir", label: "Reddit 保存目录" },
+  { key: "thumbnails_dir", label: "缩略图目录" },
+];
+
+const DPR_ITEMS = [
+  { title: "1x（240px）", value: 1 },
+  { title: "2x（480px）", value: 2 },
+  { title: "3x（720px）", value: 3 },
+];
+
+type ThemeChoiceKey = "system" | Theme;
+const THEME_ITEMS: readonly { key: ThemeChoiceKey; label: string; icon: string }[] = [
+  { key: "system", label: "跟随系统", icon: "mdi-monitor" },
+  { key: "dim", label: "深色", icon: "mdi-weather-night" },
+  { key: "light", label: "浅色", icon: "mdi-white-balance-sunny" },
+];
+
+async function pickDir(field: DirFieldKey) {
   try {
     const selected = await openDialog({ directory: true, defaultPath: draft[field] || undefined });
     if (typeof selected === "string") draft[field] = selected;
@@ -48,9 +71,19 @@ async function pickDir(field: "wallhaven_save_dir" | "reddit_save_dir" | "thumbn
 
 /* ── 保存 ── */
 const savedFlash = ref(false);
+/** v-form 实例句柄，只用到 validate()。 */
+const formRef = ref<{ validate: () => Promise<{ valid: boolean }> } | null>(null);
 
 async function onSave() {
   if (!appState.config || saving.value) return;
+  // 先过表单校验再提交：此前字段下面标红也照样能保存，最后只看到后端返回的错误，
+  // 而清空数字框时 v-model.number 会给出空串，报的还是 serde 的英文原始信息。
+  const res = await formRef.value?.validate();
+  if (res && !res.valid) {
+    toast("有字段不合法，请按标红提示修正后再保存", "error");
+    return;
+  }
+  if (saving.value) return;
   saving.value = true;
   try {
     const next: AppConfig = { ...appState.config, ...draft };
@@ -133,28 +166,32 @@ function onThemeChange(v: "system" | Theme) {
       <span class="view-header__sub">存储、下载、网络与更新</span>
     </div>
 
-    <v-form class="settings-form" @submit.prevent>
+    <!-- 下载进度：改设置时往往正有下载在跑，以前这一页既看不到进度也不能取消 -->
+    <ProgressCard
+      v-for="s in activeDownloadSources"
+      :key="s"
+      :source="s"
+      class="animate-in"
+    />
+
+    <v-form ref="formRef" class="settings-form" @submit.prevent>
       <!-- 存储 -->
       <div class="panel-card animate-in">
         <div class="panel-card__title"><v-icon icon="mdi-folder-outline" size="18" color="primary" />存储</div>
         <div
-          v-for="f in [
-            { key: 'wallhaven_save_dir', label: 'Wallhaven 保存目录' },
-            { key: 'reddit_save_dir', label: 'Reddit 保存目录' },
-            { key: 'thumbnails_dir', label: '缩略图目录' },
-          ]"
+          v-for="f in DIR_FIELDS"
           :key="f.key"
           class="dir-field"
         >
           <v-text-field
-            v-model="draft[f.key as keyof typeof draft]"
+            v-model="draft[f.key]"
             :label="f.label"
             :rules="[requiredRule]"
             hide-details
             class="settings-field"
             readonly
           />
-          <v-btn variant="tonal" @click="pickDir(f.key as 'wallhaven_save_dir' | 'reddit_save_dir' | 'thumbnails_dir')">
+          <v-btn variant="tonal" @click="pickDir(f.key)">
             选择
           </v-btn>
         </div>
@@ -184,11 +221,7 @@ function onThemeChange(v: "system" | Theme) {
           />
           <v-select
             v-model.number="draft.thumbnail_dpr"
-            :items="[
-              { title: '1x（240px）', value: 1 },
-              { title: '2x（480px）', value: 2 },
-              { title: '3x（720px）', value: 3 },
-            ]"
+            :items="DPR_ITEMS"
             label="缩略图清晰度"
             hint="越高越清晰，占用空间越大"
             persistent-hint
@@ -264,17 +297,13 @@ function onThemeChange(v: "system" | Theme) {
         <div class="panel-card__title"><v-icon icon="mdi-palette-outline" size="18" color="primary" />外观</div>
         <div class="theme-row">
           <v-btn
-            v-for="t in [
-              { key: 'system', label: '跟随系统', icon: 'mdi-monitor' },
-              { key: 'dim', label: '深色', icon: 'mdi-weather-night' },
-              { key: 'light', label: '浅色', icon: 'mdi-white-balance-sunny' },
-            ]"
+            v-for="t in THEME_ITEMS"
             :key="t.key"
             :variant="(t.key === 'system' ? themeChoice === 'system' : theme === t.key && themeChoice !== 'system') ? 'flat' : 'outlined'"
             :color="(t.key === 'system' ? themeChoice === 'system' : theme === t.key && themeChoice !== 'system') ? 'primary' : undefined"
             :prepend-icon="t.icon"
             size="small"
-            @click="onThemeChange(t.key as 'system' | Theme)"
+            @click="onThemeChange(t.key)"
           >
             {{ t.label }}
           </v-btn>

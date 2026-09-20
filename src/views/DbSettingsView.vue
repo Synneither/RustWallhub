@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onActivated, onDeactivated, onMounted, ref, watch } from "vue";
+import { computed, onActivated, onDeactivated, onMounted, ref, shallowRef, watch } from "vue";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import type { AppConfig, ImageRecord, OrphanFile, SyncImportResult } from "../types";
 import {
@@ -146,8 +146,11 @@ const RECORD_HEADERS = [
   { title: "入库时间", key: "created_at", width: 150 },
 ];
 const missingCount = ref(0);
-const missing = ref<ImageRecord[]>([]);
-const orphans = ref<OrphanFile[]>([]);
+/* 这两个列表大图库下可能上千条（含 hash/url/title），且只有整批替换、没有原地改动，
+ * 所以用 shallowRef：避免逐字段深度代理。下面的 xxxSelected 会被 v-data-table 原地增删，
+ * 必须保持 ref。 */
+const missing = shallowRef<ImageRecord[]>([]);
+const orphans = shallowRef<OrphanFile[]>([]);
 
 async function reloadAll() {
   if (!dbReady.value) return;

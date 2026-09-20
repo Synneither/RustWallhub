@@ -16,6 +16,9 @@ const props = defineProps<{
   /** 选中的显示器（v-model） */
   monitor: string;
   settingWallpaper: boolean;
+  /** 可选：小尺寸预览地址（缩略图）。抽屉里的预览最高只有 240px，
+   *  不传的话会退回原图，为一个小方块付整张 4K 图的解码代价。 */
+  previewSrc?: string;
 }>();
 
 const emit = defineEmits<{
@@ -35,21 +38,34 @@ const monitor = computed({
   get: () => props.monitor,
   set: (v) => emit("update:monitor", v),
 });
+/** 预览优先用缩略图；`previewSrc` 未提供时退回原图，
+ *  detail 还没回来之前先用 entry.path，这样抽屉一打开就能看到图。 */
+const previewImage = computed(() => {
+  if (props.previewSrc) return props.previewSrc;
+  if (props.detail) return assetUrl(props.detail.path);
+  return props.entry ? assetUrl(props.entry.path) : "";
+});
 </script>
 
 <template>
   <v-navigation-drawer v-model="detailOpen" location="right" width="360" temporary class="detail-drawer">
-    <div v-if="loading" class="async-state"><v-progress-circular indeterminate color="primary" /></div>
-    <div v-else-if="detail && entry" class="detail-body">
+    <!-- 只有连 entry 都还没有时才整屏转圈：entry 里已经有 name/path，预览可以立刻显示，
+         之前用全屏 spinner 盖住整块，等于让用户白等一次 IPC。 -->
+    <div v-if="!entry" class="async-state"><v-progress-circular indeterminate color="primary" /></div>
+    <div v-else class="detail-body">
       <div class="detail-head">
-        <span class="text-heading detail-head__name">{{ detail.name }}</span>
+        <span class="text-heading detail-head__name">{{ detail?.name ?? entry.name }}</span>
         <v-spacer />
         <v-btn icon="mdi-close" variant="text" size="small" aria-label="关闭详情" @click="detailOpen = false" />
       </div>
       <div class="detail-preview">
-        <img :src="assetUrl(detail.path)" :alt="detail.name" @click="emit('openViewer', entry)" />
+        <img :src="previewImage" :alt="detail?.name ?? entry.name" @click="emit('openViewer', entry)" />
       </div>
-      <div class="detail-rows">
+      <div v-if="loading && !detail" class="detail-loading">
+        <v-progress-linear indeterminate height="2" color="primary" />
+        <span class="text-caption">正在读取详情…</span>
+      </div>
+      <div v-else-if="detail" class="detail-rows">
         <div class="detail-row"><span class="stat-label">分辨率</span><span class="text-body">{{ detail.resolution ?? (detail.width && detail.height ? `${detail.width}×${detail.height}` : "-") }}</span></div>
         <div class="detail-row"><span class="stat-label">格式</span><span class="text-body">{{ detail.format ?? "-" }}</span></div>
         <div class="detail-row"><span class="stat-label">大小</span><span class="text-body">{{ formatBytes(detail.size) }}</span></div>
@@ -79,7 +95,7 @@ const monitor = computed({
           variant="flat"
           prepend-icon="mdi-monitor"
           :loading="settingWallpaper"
-          @click="emit('setWallpaper', detail.path, monitor)"
+          @click="emit('setWallpaper', entry.path, monitor)"
         >
           设为壁纸
         </v-btn>
@@ -90,3 +106,77 @@ const monitor = computed({
     </div>
   </v-navigation-drawer>
 </template>
+
+<!-- 这些 .detail-* 样式原先写在 GalleryView 的 <style scoped> 里，但作用元素都在本组件
+     内部：scoped 只会把作用域标记加到自己的模板元素和子组件根节点上，所以那边一条都没命中
+     （抽屉的内部布局和预览图的 max-height 一直没生效）。放到这里才是正确的归属。 -->
+<style scoped>
+.detail-drawer {
+  background: var(--surface-card) !important;
+  border-left: 1px solid var(--border-subtle);
+}
+.detail-body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  padding: var(--space-4);
+  height: 100%;
+  overflow-y: auto;
+}
+.detail-head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+.detail-head__name {
+  font-size: 0.9375rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.detail-preview {
+  border-radius: var(--radius-md);
+  overflow: hidden;
+  background: var(--preview-bg);
+  cursor: zoom-in;
+}
+.detail-preview img {
+  width: 100%;
+  display: block;
+  object-fit: contain;
+  max-height: 240px;
+}
+.detail-loading {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  color: var(--text-tertiary);
+}
+.detail-rows {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+.detail-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+}
+.detail-row--col {
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+}
+.detail-links {
+  display: flex;
+  gap: var(--space-1);
+  flex-wrap: wrap;
+}
+.detail-actions {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  margin-top: auto;
+}
+</style>

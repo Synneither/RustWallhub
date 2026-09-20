@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, shallowRef, watch } from "vue";
+import { computed, onBeforeUnmount, ref, shallowRef, watch } from "vue";
 import { appState } from "../stores/app";
 import type { Source } from "../types";
 import { assetUrl, resolveThumbnails } from "../utils/api";
@@ -20,36 +20,82 @@ const extra = computed(() => Math.max(0, images.value.length - MAX_SHOW));
 const thumbUrls = shallowRef<Map<string, string>>(new Map());
 const THUMB_CACHE_MAX = 200;
 let thumbSeq = 0;
+let thumbTimer: ReturnType<typeof setTimeout> | null = null;
+/** 是否已经问过后端一次。在拿到结果前不拿原图兜底，否则 96px 格子会先拉 4K 原图。 */
+const thumbsResolved = ref(false);
 
+/** 只请求缓存里没有的名字：下载过程中窗口会持续滚动，否则同几个名字会被反复请求。 */
+async function loadThumbs() {
+  const cache = thumbUrls.value;
+  const names = shown.value.map((i) => i.name).filter((n) => !cache.has(n));
+  if (names.length === 0) {
+    thumbsResolved.value = true;
+    return;
+  }
+  const seq = ++thumbSeq;
+  try {
+    const dpr = appState.config?.thumbnail_dpr ?? 2;
+    const batch = await resolveThumbnails(props.source, names, dpr);
+    if (seq !== thumbSeq) return;
+    const next = new Map(thumbUrls.value);
+    for (const it of batch.items) {
+      // 已存在的键先删再写，挪到末尾 → 淘汰顺序是 LRU 而不是插入顺序，
+      // 与 GalleryView 的 cacheThumbs 保持一致。
+      next.delete(it.name);
+      next.set(it.name, assetUrl(it.thumb_path));
+    }
+    while (next.size > THUMB_CACHE_MAX) {
+      const oldest = next.keys().next().value;
+      if (oldest === undefined) break;
+      next.delete(oldest);
+    }
+    thumbUrls.value = next;
+  } catch {
+    // 失败时退回到原图，保证预览条可用
+  } finally {
+    if (seq === thumbSeq) thumbsResolved.value = true;
+  }
+}
+
+/* 每下载完一张图，store 都会不可变替换 appState.newImages，而窗口一滚动 watch 键就变。
+ * 直接发请求的话批量下载 500 张就是 500 次 IPC，所以合并到 300ms 后只发一次，
+ * 并在真正发起前再查一遍缓存。 */
 watch(
   () => shown.value.map((i) => i.name).join("\n"),
-  async () => {
-    const seq = ++thumbSeq;
-    const names = shown.value.map((i) => i.name);
-    if (names.length === 0) return;
-    try {
-      const dpr = appState.config?.thumbnail_dpr ?? 2;
-      const batch = await resolveThumbnails(props.source, names, dpr);
-      if (seq !== thumbSeq) return;
-      const next = new Map(thumbUrls.value);
-      for (const it of batch.items) next.set(it.name, assetUrl(it.thumb_path));
-      // Map 保持插入顺序，超限时丢弃最早写入的条目
-      while (next.size > THUMB_CACHE_MAX) {
-        const oldest = next.keys().next().value;
-        if (oldest === undefined) break;
-        next.delete(oldest);
-      }
-      thumbUrls.value = next;
-    } catch {
-      // 失败时退回到原图，保证预览条可用
-    }
+  () => {
+    if (thumbTimer) clearTimeout(thumbTimer);
+    thumbTimer = setTimeout(() => {
+      thumbTimer = null;
+      void loadThumbs();
+    }, 300);
   },
   { immediate: true },
 );
 
+/* 切换来源后旧缩略图不能跨源复用（文件名可能重名）。 */
+watch(
+  () => props.source,
+  () => {
+    thumbUrls.value = new Map();
+    thumbsResolved.value = false;
+  },
+);
+
+onBeforeUnmount(() => {
+  if (thumbTimer) clearTimeout(thumbTimer);
+});
+
 function thumbOf(name: string, path: string): string {
-  return thumbUrls.value.get(name) ?? assetUrl(path);
+  const cached = thumbUrls.value.get(name);
+  if (cached) return cached;
+  // 还没问过后端就先给空串，让格子保持占位样式，避免为 96px 拉整张原图。
+  return thumbsResolved.value ? assetUrl(path) : "";
 }
+
+/** 把已解析到的 src 一起算好，避免模板里重复调用 thumbOf。 */
+const tiles = computed(() =>
+  shown.value.map((i) => ({ name: i.name, src: thumbOf(i.name, i.path) })),
+);
 </script>
 
 <template>
@@ -58,10 +104,11 @@ function thumbOf(name: string, path: string): string {
       本次新图 · {{ images.length }}
     </div>
     <div class="new-strip__row">
-      <div v-for="img in shown" :key="img.name" class="new-strip__thumb">
+      <div v-for="t in tiles" :key="t.name" class="new-strip__thumb">
         <img
-          :src="thumbOf(img.name, img.path)"
-          :alt="img.name"
+          v-if="t.src"
+          :src="t.src"
+          :alt="t.name"
           loading="lazy"
           decoding="async"
         />

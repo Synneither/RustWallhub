@@ -13,6 +13,9 @@ import {
   toast,
 } from "./stores/app";
 import ConfirmDialog from "./components/ConfirmDialog.vue";
+import { logger } from "./utils/logger";
+import { cancelDownloads } from "./utils/api";
+import { useAsyncAction } from "./composables/useAsyncAction";
 
 /* 视图懒加载 */
 const DashboardView = defineAsyncComponent(() => import("./views/DashboardView.vue"));
@@ -66,11 +69,33 @@ watch(
   { immediate: true },
 );
 
+/* ── 全局下载状态 ── */
+/** 全部在跑任务的合计进度；总数为 0（还没拿到总数）时返回 null，表示用不定态圈。 */
+const downloadPercent = computed(() => {
+  const tasks = Object.values(appState.downloads).filter((t) => t.active);
+  const total = tasks.reduce((n, t) => n + t.total, 0);
+  if (total <= 0) return null;
+  const done = tasks.reduce((n, t) => n + t.done, 0);
+  return Math.min(100, Math.round((done / total) * 100));
+});
+
+/** 侧栏这里是"全部取消"：它把多个来源合并显示了，一个参数表达不了。
+ *  只想取消某一个来源时用对应页面上的进度卡。 */
+const { run: onCancelAll, loading: cancellingAll } = useAsyncAction(async () => {
+  await cancelDownloads();
+  toast("已请求取消全部下载", "info");
+});
+
 /* ── 启动 ── */
 const dbPromptShown = ref(false);
 
 onMounted(async () => {
-  await registerGlobalListeners();
+  // 监听器注册即使抛错也不能拦住启动：bootstrap 不执行会让应用永远停在 loading。
+  try {
+    await registerGlobalListeners();
+  } catch (e) {
+    logger.error("App", "注册全局监听器失败", e);
+  }
   await bootstrap();
 
   const s = appState.dbStatus;
@@ -135,8 +160,24 @@ onMounted(async () => {
           <v-spacer />
           <transition name="view-fade">
             <div v-if="anyDownloadActive" class="app-nav__busy">
-              <v-progress-circular indeterminate size="14" width="2" color="primary" />
-              <span class="text-small">下载中</span>
+              <v-progress-circular
+                v-if="downloadPercent === null"
+                indeterminate
+                size="14"
+                width="2"
+                color="primary"
+              />
+              <span class="text-small">
+                下载中{{ downloadPercent === null ? "" : ` ${downloadPercent}%` }}
+              </span>
+              <v-btn
+                icon="mdi-close"
+                variant="text"
+                size="x-small"
+                title="取消全部下载"
+                :loading="cancellingAll"
+                @click="onCancelAll"
+              />
             </div>
           </transition>
         </div>

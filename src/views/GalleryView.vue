@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import {
   computed,
+  nextTick,
   onActivated,
   onBeforeUnmount,
   onDeactivated,
@@ -28,14 +29,18 @@ import {
   startSlideshow,
   stopSlideshow,
 } from "../utils/api";
-import { appState, askConfirm, dbReady, toast, toastError } from "../stores/app";
+import { appState, activeDownloadSources, askConfirm, dbReady, toast, toastError } from "../stores/app";
 import EmptyState from "../components/EmptyState.vue";
+import ProgressCard from "../components/ProgressCard.vue";
 import ImageViewer from "../components/ImageViewer.vue";
 import ImageDetailDrawer from "../components/ImageDetailDrawer.vue";
 import { useSelection } from "../composables/useSelection";
 import { useGridDensity } from "../composables/useGridDensity";
 import { useAsyncAction } from "../composables/useAsyncAction";
+import { useDeviceDpr } from "../composables/useDeviceDpr";
 import { openUrlSafe } from "../utils/openUrl";
+import { friendlyError } from "../utils/errors";
+import { pickThumbDpr, maxCoveredWidth, THUMB_MAX_DPR } from "../utils/thumbSize";
 
 /* ════ 浏览状态 ════ */
 type SourceTab = "wallhaven" | "reddit";
@@ -78,9 +83,20 @@ const SORT_ITEMS = [
 const PAGE_SIZE_ITEMS = [24, 48, 96];
 
 /* ── 网格密度 ──
- * 上限 240px 是刻意的：后端缩略图基准宽度就是 240（× DPR，见 thumbnail.rs 的
- * THUMB_BASE_WIDTH），卡片再大就只能把 240px 的图拉伸，1x 屏上会明显发糊。
- * 想要更大的卡片得先让后端生成更大的缩略图。 */
+ * 档位表里的 min 是「参考宽度（内容宽 1168px，约等于 1440 宽窗口）下的列宽」，
+ * 实际列宽按容器宽度等比缩放（见 useGridDensity 的说明）。
+ * 上限由缩略图能覆盖的最大绘制宽度决定：本地缩略图 240px × 最高 3 档 = 720px，
+ * 再宽的卡片就只是把图放大，所以到顶后转为增加列数。 */
+
+/** 网格元素：既是真正的滚动容器，也是量列宽的对象。 */
+const gridEl = ref<HTMLElement | null>(null);
+/** 网格容器的内容宽度。网格铺满容器内容盒，所以直接取它的 clientWidth。 */
+const containerWidth = ref(0);
+/** 屏幕像素比（响应变化：拖到别的显示器 / 改系统缩放时要重算档位） */
+const deviceDpr = useDeviceDpr();
+/** 卡片宽度上限：超过它，缩略图就会被放大显示 */
+const maxCell = computed(() => maxCoveredWidth(THUMB_MAX_DPR, deviceDpr.value));
+
 const { density: cellSize, items: SIZE_ITEMS, gridStyle } = useGridDensity(
   "rustwallhub-gallery-cell-size",
   [
@@ -89,6 +105,8 @@ const { density: cellSize, items: SIZE_ITEMS, gridStyle } = useGridDensity(
     { value: "normal", label: "标准", min: "170px", ph: "115px" },
     { value: "large", label: "大图", min: "240px", ph: "155px" },
   ],
+  "normal",
+  { containerWidth, maxCell },
 );
 
 const loading = ref(false);
@@ -138,6 +156,85 @@ let loadSeq = 0;
 let reloadTimer: ReturnType<typeof setTimeout> | null = null;
 let viewActive = false;
 
+/** 翻页后把滚动位置带回顶部。
+ *  注意**真正的滚动容器是网格本身**（`.gallery-view > .gallery-grid` 上有 `flex:1;
+ *  overflow-y:auto`），不是根节点 `.view` —— 只重置 .view 是不生效的。
+ *  两个都重置：外层万一在某些布局下也溢出了，也同样该回顶部。 */
+const viewRoot = ref<HTMLElement | null>(null);
+// gridEl 声明在上方「网格密度」处（useGridDensity 需要它）
+
+function scrollToTop() {
+  viewRoot.value?.scrollTo({ top: 0 });
+  gridEl.value?.scrollTo({ top: 0 });
+}
+
+/* ════ 布局测量 ════
+ * 两件事都靠这里的实测值：
+ *  1. 容器宽度 → 决定卡片尺寸（gridStyle 按它缩放）
+ *  2. 实际列宽 → 决定缩略图档位（见 utils/thumbSize.ts） */
+/** 实测的网格列宽（CSS px）；0 表示还没量到。 */
+const cellCssWidth = ref(0);
+
+/** 量解析后的列宽：`gridTemplateColumns` 形如 "286.4px 286.4px 286.4px"。 */
+function measureCellWidth() {
+  const el = gridEl.value;
+  if (!el) return;
+  const first = getComputedStyle(el).gridTemplateColumns.split(" ")[0];
+  const w = Number.parseFloat(first);
+  // 取整后再比较：亚像素抖动不该触发重新解析缩略图
+  if (Number.isFinite(w) && w > 0) cellCssWidth.value = Math.round(w);
+}
+
+/** 量容器宽度 + 列宽。列宽要在新的 --grid-cell-min 生效、网格重排之后才读得到，
+ *  所以量完容器宽度要让出一拍再量列宽。 */
+async function syncLayout() {
+  const el = gridEl.value;
+  if (!el) return;
+  const cw = el.clientWidth;
+  if (cw > 0) containerWidth.value = Math.round(cw);
+  await nextTick();
+  measureCellWidth();
+}
+
+let gridRo: ResizeObserver | null = null;
+function observeGrid() {
+  gridRo?.disconnect();
+  const el = gridEl.value;
+  if (!el || typeof ResizeObserver === "undefined") return;
+  // 观察网格自身的尺寸：它铺满容器内容盒，所以窗口缩放会在这里体现。
+  // 改 --grid-cell-min 只改变列数、不改变网格自身尺寸，因此不会自激成死循环。
+  gridRo = new ResizeObserver(() => void syncLayout());
+  gridRo.observe(el);
+}
+
+// 模板里 v-if 切换会让网格元素被替换，元素一换就要重新挂 observer
+watch(gridEl, () => {
+  observeGrid();
+  void syncLayout();
+});
+
+/** 该用哪一档缩略图。cellCssWidth 还没量到时退回 170（标准档的参考列宽），
+ *  在 floorDpr=2 的默认设置下与改动前一致。 */
+const thumbDpr = computed(() =>
+  pickThumbDpr(cellCssWidth.value || 170, deviceDpr.value, appState.config?.thumbnail_dpr ?? 2),
+);
+
+/** 改密度后列宽会变，但网格自身尺寸没变、ResizeObserver 不会触发，要显式再量一次。 */
+watch(cellSize, () => void syncLayout());
+
+/** 档位变化（窗口缩放 / 改密度 / 拖到另一块屏）：缓存里的 URL 指向的是另一个分辨率的
+ *  缩略图，必须整批丢弃重新解析，否则会继续用旧档位显示。 */
+watch(thumbDpr, () => {
+  if (thumbUrls.value.size === 0) return;
+  thumbUrls.value = new Map();
+  void loadThumbs();
+});
+
+/** 上次成功加载完成时的 galleryEpoch。
+ *  用它判断"切回本页时数据到底变没变"，避免每次切页都无条件重载 ——
+ *  重载会让整页网格走一遍 .gallery-grid--loading 的置灰，而数据通常没变。 */
+let loadedEpoch = -1;
+
 function scheduleLoad() {
   if (reloadTimer) clearTimeout(reloadTimer);
   reloadTimer = setTimeout(() => {
@@ -171,6 +268,8 @@ async function load() {
       total.value = all.length;
       const start = (page.value - 1) * pageSize.value;
       images.value = all.slice(start, start + pageSize.value);
+      // 等网格真正渲染出来再量尺寸：档位与缩略图都要按实际显示尺寸选
+      await syncLayout();
       await loadThumbs(seq);
     } else {
       const res = await browseImageFiles(source.value, {
@@ -187,12 +286,17 @@ async function load() {
         // 自定义目录无缩略图管线，直接用原图；同时避免同名文件命中旧缩略图缓存
         cacheThumbs(res.images.map((img) => [img.name, assetUrl(img.path)] as const));
       } else {
+        // 等网格真正渲染出来再量尺寸：档位与缩略图都要按实际显示尺寸选
+        await syncLayout();
         await loadThumbs(seq);
       }
     }
+    // 记下本次加载对应的数据版本：切回本页时用它判断"数据到底变没变"，
+    // 没变就不重载（重载会让整页网格置灰闪一下）。
+    if (seq === loadSeq) loadedEpoch = appState.galleryEpoch;
   } catch (e) {
     if (seq === loadSeq) {
-      loadError.value = String(e);
+      loadError.value = friendlyError(e);
       images.value = [];
       total.value = 0;
     }
@@ -204,10 +308,12 @@ async function load() {
 async function loadThumbs(seq = loadSeq) {
   const names = images.value.map((i) => i.name);
   if (names.length === 0) return;
+  // 档位按实测列宽现算（见 utils/thumbSize.ts）：固定用配置值会在"大图"档被放大显示
+  const dpr = thumbDpr.value;
   try {
-    const dpr = appState.config?.thumbnail_dpr ?? 2;
     const batch = await resolveThumbnails(source.value, names, dpr);
-    if (seq !== loadSeq) return;
+    // 请求期间窗口缩放/改密度会让档位变化，这一批 URL 已指向别的分辨率，丢弃
+    if (seq !== loadSeq || dpr !== thumbDpr.value) return;
     cacheThumbs(batch.items.map((it) => [it.name, assetUrl(it.thumb_path)] as const));
   } catch (e) {
     if (seq !== loadSeq) return;
@@ -225,7 +331,11 @@ function thumbOf(img: LocalImageEntry): string {
 
 /* 触发重载 */
 watch([source, searchDebounced, sortBy, orphanOnly], () => {
+  // 换来源/搜索条件后旧选中项已不在列表里：不清掉的话计数会虚报，
+  // 批量删除还会拿当前 source 去发另一个来源的文件名。
+  clearSelection();
   page.value = 1;
+  scrollToTop();
   scheduleLoad();
 });
 watch(customDir, () => {
@@ -233,9 +343,15 @@ watch(customDir, () => {
   orphanOnly.value = false;
   clearSelection();
   page.value = 1;
+  scrollToTop();
   scheduleLoad();
 });
-watch([page, pageSize], () => scheduleLoad());
+watch([page, pageSize], () => {
+  // 翻页/改每页条数后把滚动位置带回顶部：滚动容器是根节点 .view，
+  // 否则从列表中段翻页会直接落在新页的中段，看起来像页码没变。
+  scrollToTop();
+  scheduleLoad();
+});
 watch(
   () => appState.galleryEpoch,
   () => {
@@ -246,10 +362,18 @@ watch(
 onMounted(() => {
   viewActive = true;
   loadMonitors();
+  // 窗口缩放会改变容器宽度 → 改变卡片尺寸与缩略图档位
+  observeGrid();
+  void syncLayout();
 });
 onActivated(() => {
   viewActive = true;
-  scheduleLoad();
+  // 显示器列表要重新拉：插拔外接屏 / 换主显示器后，详情抽屉与卡片菜单里的
+  // 显示器选项都会变；以前只在 onMounted 取一次，之后一直是旧的。
+  loadMonitors();
+  // 只在数据真的变过之后才重载：以前无条件 load()，每次切回图库都会整页重取一遍
+  // （还把网格置灰闪一下），而绝大多数情况下数据并没有变。
+  if (appState.galleryEpoch !== loadedEpoch) scheduleLoad();
 });
 onDeactivated(() => {
   viewActive = false;
@@ -261,6 +385,8 @@ onDeactivated(() => {
 onBeforeUnmount(() => {
   if (searchTimer) clearTimeout(searchTimer);
   if (reloadTimer) clearTimeout(reloadTimer);
+  gridRo?.disconnect();
+  gridRo = null;
 });
 
 /* ════ 多选与批量 ════ */
@@ -342,6 +468,9 @@ const detailLoading = ref(false);
 const detail = ref<ImageInfo | null>(null);
 /** 触发详情时的原始条目，详情抽屉的预览/删除直接用它，避免用 detail 字段手工拼 entry */
 const detailEntry = ref<LocalImageEntry | null>(null);
+/** 抽屉里的预览最高 240px，用页面已经解析好的缩略图而不是原图（4K 图解码约 33MB）。
+ *  未命中缓存时 thumbOf 会退回原图地址，等价于旧行为。 */
+const detailPreviewSrc = computed(() => (detailEntry.value ? thumbOf(detailEntry.value) : ""));
 /** 详情请求竞态控制：快速点开 A/B 两图时，慢响应不得覆盖快响应、也不得误关抽屉。 */
 let detailSeq = 0;
 
@@ -420,8 +549,42 @@ async function onDeleteSingle(img: LocalImageEntry) {
 /* ════ 轮播 ════ */
 const slideshowInterval = ref(60);
 const startingSlideshow = ref(false);
+/** 正在带着新间隔重启轮播 */
+const updatingInterval = ref(false);
+/** 当前轮播真正在用的图片列表与间隔：运行中改间隔要带同一份列表重启
+ *  （后端 start_slideshow 会先取消旧任务，所以"重启"就是热更新）。 */
+let activeSlideshowPaths: string[] = [];
+let activeInterval = 60;
 
 const slideshow = computed(() => appState.slideshow);
+
+/** 间隔输入框失焦/回车时提交。以前输入框只在未运行时渲染，想从 60s 改 30s
+ *  必须先停掉、再重新确认一遍图片集。 */
+async function onIntervalCommit() {
+  const v = Math.round(Number(slideshowInterval.value) || 0);
+  if (v < 5) {
+    slideshowInterval.value = activeInterval;
+    toast("轮播间隔不能小于 5 秒", "error");
+    return;
+  }
+  if (v === activeInterval) return;
+  // 没在运行：只记住数值，启动时用
+  if (!slideshow.value.running || activeSlideshowPaths.length === 0) {
+    activeInterval = v;
+    return;
+  }
+  updatingInterval.value = true;
+  try {
+    await startSlideshow(activeSlideshowPaths, v);
+    activeInterval = v;
+    toast(`轮播间隔已改为每 ${v} 秒`, "success");
+  } catch (e) {
+    toastError(e);
+    slideshowInterval.value = activeInterval;
+  } finally {
+    updatingInterval.value = false;
+  }
+}
 
 async function onStartSlideshow() {
   if (startingSlideshow.value) return;
@@ -458,6 +621,8 @@ async function onStartSlideshow() {
       return;
     }
     await startSlideshow(paths, slideshowInterval.value);
+    activeSlideshowPaths = paths;
+    activeInterval = slideshowInterval.value;
     appState.slideshow.running = true;
     toast(`轮播已启动：${paths.length} 张，每 ${slideshowInterval.value} 秒切换`, "success");
   } catch (e) {
@@ -472,6 +637,7 @@ async function onStopSlideshow() {
     await stopSlideshow();
     appState.slideshow.running = false;
     appState.slideshow.current = null;
+    activeSlideshowPaths = [];
     toast("轮播已停止", "info");
   } catch (e) {
     toastError(e);
@@ -480,7 +646,7 @@ async function onStopSlideshow() {
 </script>
 
 <template>
-  <div class="view gallery-view">
+  <div ref="viewRoot" class="view gallery-view">
     <div class="view-header">
       <span class="view-header__title">图库</span>
       <v-chip
@@ -529,25 +695,38 @@ async function onStopSlideshow() {
       <v-btn icon="mdi-refresh" variant="text" size="small" :loading="loading" @click="load" />
     </div>
 
+    <!-- 下载进度：此前后台下载在图库页完全不可见（也不能取消），而这正是最常一边等下载
+         一边挑图的地方。按来源各挂一张卡，取消只作用于自己的来源。 -->
+    <ProgressCard
+      v-for="s in activeDownloadSources"
+      :key="s"
+      :source="s"
+      class="animate-in"
+    />
+
     <!-- 轮播控制条 -->
     <div class="panel-card slideshow-bar animate-in">
       <v-icon icon="mdi-play-circle-outline" size="18" color="primary" />
+      <span class="text-body">{{ slideshow.running ? "轮播中" : "壁纸轮播" }}</span>
+      <!-- 间隔输入框在运行中也保留：改完失焦/回车即生效（带同一份列表重启轮播） -->
+      <v-text-field
+        v-model.number="slideshowInterval"
+        type="number"
+        suffix="秒"
+        density="compact"
+        hide-details
+        class="settings-field slideshow-bar__interval"
+        :loading="updatingInterval"
+        aria-label="轮播间隔（秒）"
+        @keydown.enter="onIntervalCommit"
+        @blur="onIntervalCommit"
+      />
       <template v-if="!slideshow.running">
-        <span class="text-body">壁纸轮播</span>
-        <v-text-field
-          v-model.number="slideshowInterval"
-          type="number"
-          suffix="秒"
-          density="compact"
-          hide-details
-          class="settings-field slideshow-bar__interval"
-        />
         <v-btn size="small" color="primary" variant="flat" :loading="startingSlideshow" @click="onStartSlideshow">
           用当前筛选启动（{{ total }} 张）
         </v-btn>
       </template>
       <template v-else>
-        <span class="text-body">轮播中</span>
         <span class="text-caption slideshow-bar__tick">
           <template v-if="slideshow.current">
             {{ slideshow.current.index + 1 }} / {{ slideshow.current.total }} · {{ slideshow.current.name }}
@@ -644,7 +823,7 @@ async function onStopSlideshow() {
     >
       <v-btn variant="tonal" @click="load">重试</v-btn>
     </EmptyState>
-    <div v-else-if="loading && images.length === 0" class="gallery-grid" :style="gridStyle">
+    <div v-else-if="loading && images.length === 0" ref="gridEl" class="gallery-grid" :style="gridStyle">
       <div v-for="i in pageSize" :key="i" class="gallery-card shimmer" />
     </div>
     <EmptyState
@@ -662,6 +841,7 @@ async function onStopSlideshow() {
 
     <div
       v-else
+      ref="gridEl"
       class="gallery-grid"
       :class="{ 'gallery-grid--loading': loading }"
       :style="gridStyle"
@@ -696,7 +876,37 @@ async function onStopSlideshow() {
 
         <!-- hover 操作 -->
         <div v-if="!selectionMode" class="gallery-card__overlay" @click.stop>
-          <v-btn icon="mdi-monitor" size="x-small" variant="flat" class="overlay-btn" title="设为壁纸" @click="onSetWallpaper(img.path)" />
+          <!-- 多显示器时给个选择：否则双屏用户从网格设壁纸永远铺满所有屏，
+               只有进详情抽屉才能指定显示器。单显示器保持一键。 -->
+          <v-menu v-if="monitors.length > 1" location="top">
+            <template #activator="{ props: menuProps }">
+              <v-btn
+                v-bind="menuProps"
+                icon="mdi-monitor"
+                size="x-small"
+                variant="flat"
+                class="overlay-btn"
+                title="设为壁纸（选择显示器）"
+              />
+            </template>
+            <v-list density="compact">
+              <v-list-item
+                v-for="m in monitorItems"
+                :key="m.value"
+                :title="m.title"
+                @click="onSetWallpaper(img.path, m.value)"
+              />
+            </v-list>
+          </v-menu>
+          <v-btn
+            v-else
+            icon="mdi-monitor"
+            size="x-small"
+            variant="flat"
+            class="overlay-btn"
+            title="设为壁纸"
+            @click="onSetWallpaper(img.path)"
+          />
           <template v-if="!customDir">
             <v-btn icon="mdi-information-outline" size="x-small" variant="flat" class="overlay-btn" title="详情" @click="openDetail(img)" />
             <v-btn icon="mdi-delete-outline" size="x-small" variant="flat" class="overlay-btn overlay-btn--danger" title="删除" @click="onDeleteSingle(img)" />
@@ -725,6 +935,7 @@ async function onStopSlideshow() {
       :monitor-items="monitorItems"
       v-model:monitor="monitorChoice"
       :setting-wallpaper="settingWallpaper"
+      :preview-src="detailPreviewSrc"
       @open-viewer="openViewerFor"
       @open-link="onOpenLink"
       @set-wallpaper="(path, monitor) => onSetWallpaper(path, monitor)"
@@ -736,6 +947,7 @@ async function onStopSlideshow() {
       v-if="viewerOpen"
       :images="viewerImages"
       :start-index="viewerIndex"
+      @update:index="viewerIndex = $event"
       @close="viewerOpen = false"
     />
   </div>
@@ -879,66 +1091,7 @@ async function onStopSlideshow() {
   white-space: nowrap;
   flex: 1;
 }
-.detail-drawer {
-  background: var(--surface-card) !important;
-  border-left: 1px solid var(--border-subtle);
-}
-.detail-body {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-4);
-  padding: var(--space-4);
-  height: 100%;
-  overflow-y: auto;
-}
-.detail-head {
-  display: flex;
-  align-items: center;
-  gap: var(--space-2);
-}
-.detail-head__name {
-  font-size: 0.9375rem;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.detail-preview {
-  border-radius: var(--radius-md);
-  overflow: hidden;
-  background: var(--preview-bg);
-  cursor: zoom-in;
-}
-.detail-preview img {
-  width: 100%;
-  display: block;
-  object-fit: contain;
-  max-height: 240px;
-}
-.detail-rows {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-2);
-}
-.detail-row {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: var(--space-3);
-}
-.detail-row--col {
-  flex-direction: column;
-  align-items: flex-start;
-  gap: 4px;
-}
-.detail-links {
-  display: flex;
-  gap: var(--space-1);
-  flex-wrap: wrap;
-}
-.detail-actions {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-2);
-  margin-top: auto;
-}
+/* 注意：`.detail-*` 的样式全部放在 ImageDetailDrawer.vue 里。
+ * 它们的作用元素在子组件内部，而这里的 <style scoped> 只会把作用域标记加到本组件模板的
+ * 元素和子组件**根节点**上，写在这儿的 .detail-body / .detail-preview 之类一条也不会命中。 */
 </style>

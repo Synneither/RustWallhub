@@ -70,7 +70,10 @@ export const recoverDatabaseFiles = (source: Source) =>
 export const downloadMissingImages = (source: Source, images: ImageRecord[]) =>
   invoke<string>("download_missing_images", { source, images });
 
-export const cancelDownloads = () => invoke<void>("cancel_downloads");
+/** 取消下载。传 source 只取消该来源，省略则取消全部。
+ *  显式传 `null` 而不是依赖"参数缺失"的语义，避免后端 Option 反序列化歧义。 */
+export const cancelDownloads = (source?: Source) =>
+  invoke<void>("cancel_downloads", { source: source ?? null });
 
 /* ════════════ gallery ════════════ */
 

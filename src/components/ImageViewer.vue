@@ -118,6 +118,15 @@ watch(
   },
 );
 
+/* 列表变短时把索引夹回有效范围：下载完成等事件会触发父组件 reload 换页，
+ * 若当前停在末尾那张，index 就越界 → current 为 null，舞台全空且计数显示 "13 / 12"。 */
+watch(
+  () => props.images.length,
+  (len) => {
+    if (len > 0 && index.value >= len) index.value = len - 1;
+  },
+);
+
 onMounted(() => window.addEventListener("keydown", onKey));
 onBeforeUnmount(() => {
   window.removeEventListener("keydown", onKey);

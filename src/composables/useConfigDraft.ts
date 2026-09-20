@@ -4,8 +4,9 @@ import { appState, toastError } from "../stores/app";
 import { saveSettings } from "../utils/api";
 
 /**
- * 配置草稿：把「reactive 草稿 + onMounted 从 appState.config 拷贝 + isDirty + persist」
+ * 配置草稿：把「reactive 草稿 + onMounted 从 appState.config 拷贝 + dirty 判断 + persist」
  * 这一套在 WallhavenView / RedditView / SettingsView 重复的逻辑收敛到一处。
+ * dirty 判断只在 persist 内部使用，不对外暴露。
  *
  * @param keys    需要纳入草稿的配置字段（决定 dirty 比较与保存时的合并范围）
  * @param defaults 草稿初始值（后端配置尚未加载时的占位，之后 onMounted 会用真实值覆盖）
@@ -21,8 +22,10 @@ export function useConfigDraft<K extends keyof AppConfig>(
     const c = appState.config;
     if (!c) return;
     for (const key of keys) {
-      // K 是联合类型时，`draft[key] = c[key]` 会触发 TS 的 correlated-union 限制，
-      // 这里放宽一次索引类型后逐字段拷贝。
+      // K 是联合类型时，`draft[key] = c[key]` 会触发 TS 的 correlated-union 限制
+      // （reactive 包装后的 Reactive<Pick<AppConfig, K>> 无法用未解析的泛型 K 索引），
+      // 这里放宽一次索引类型后逐字段拷贝。keys/defaults 仍受 keyof AppConfig 约束，
+      // 所以字段名拼错依然是编译错误。
       (draft as unknown as Record<string, unknown>)[key as string] = c[key];
     }
   });
@@ -51,5 +54,5 @@ export function useConfigDraft<K extends keyof AppConfig>(
     }
   }
 
-  return { draft, isDirty, saving, persist };
+  return { draft, saving, persist };
 }

@@ -3,45 +3,41 @@ import App from "./App.vue";
 import { createVuetify } from 'vuetify';
 import "./assets/style.css";
 
-// Vuetify core + 项目内 MDI 图标子集。组件改为按需导入，Vite 只打包用到的组件样式。
+// Vuetify core + 项目内 MDI 图标子集。组件按**单个组件目录**导入：
+// barrel 形式 `from 'vuetify/components'` 虽然 JS 侧能被 tree-shake 干净，但 vuetify 的
+// package.json 把 `*.css` 声明为 sideEffects，导致未使用组件的样式照样进包
+// （实测 vuetify CSS 296.9KB → 164.9KB，gzip 38.0 → 20.2KB）。
 import 'vuetify/styles/core';
 import './assets/mdi-subset.css';
 // 自托管 UI 字体（Space Grotesk / Rajdhani），不再从 Google Fonts CDN 加载：
 // 离线可用、不向外部发请求，CSP 也就不用为 fonts.googleapis/gstatic 开口子。
 import './assets/fonts.css';
 
-import {
-  VApp,
-  VBtn,
-  VBtnToggle,
-  VCard,
-  VCardActions,
-  VCardText,
-  VCardTitle,
-  VChip,
-  VCombobox,
-  VDataTable,
-  VDialog,
-  VForm,
-  VIcon,
-  VList,
-  VListItem,
-  VListItemTitle,
-  VMain,
-  VNavigationDrawer,
-  VOverlay,
-  VPagination,
-  VProgressCircular,
-  VProgressLinear,
-  VSelect,
-  VSpacer,
-  VSwitch,
-  VTab,
-  VTabs,
-  VTextField,
-  VWindow,
-  VWindowItem,
-} from 'vuetify/components';
+import { VApp } from 'vuetify/components/VApp';
+import { VBtn } from 'vuetify/components/VBtn';
+import { VBtnToggle } from 'vuetify/components/VBtnToggle';
+import { VCard, VCardActions, VCardText, VCardTitle } from 'vuetify/components/VCard';
+import { VChip } from 'vuetify/components/VChip';
+import { VCombobox } from 'vuetify/components/VCombobox';
+import { VDataTable } from 'vuetify/components/VDataTable';
+import { VDialog } from 'vuetify/components/VDialog';
+import { VForm } from 'vuetify/components/VForm';
+import { VIcon } from 'vuetify/components/VIcon';
+import { VList, VListItem, VListItemTitle } from 'vuetify/components/VList';
+import { VMain } from 'vuetify/components/VMain';
+import { VMenu } from 'vuetify/components/VMenu';
+import { VNavigationDrawer } from 'vuetify/components/VNavigationDrawer';
+import { VOverlay } from 'vuetify/components/VOverlay';
+import { VPagination } from 'vuetify/components/VPagination';
+import { VProgressCircular } from 'vuetify/components/VProgressCircular';
+import { VProgressLinear } from 'vuetify/components/VProgressLinear';
+import { VSelect } from 'vuetify/components/VSelect';
+// VSpacer 虽然语义上属于网格布局，但它的目录是 VGrid。
+import { VSpacer } from 'vuetify/components/VGrid';
+import { VSwitch } from 'vuetify/components/VSwitch';
+import { VTab, VTabs } from 'vuetify/components/VTabs';
+import { VTextField } from 'vuetify/components/VTextField';
+import { VWindow, VWindowItem } from 'vuetify/components/VWindow';
 import { Ripple } from 'vuetify/directives';
 
 const components = {
@@ -62,6 +58,7 @@ const components = {
   VListItem,
   VListItemTitle,
   VMain,
+  VMenu,
   VNavigationDrawer,
   VOverlay,
   VPagination,

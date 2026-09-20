@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref, watch, onMounted, onBeforeUnmount } from "vue";
+import { computed, reactive, ref, watch, onMounted, onBeforeUnmount } from "vue";
 import type { WallhavenImageEntry, WallhavenSearchResult, WallhavenSelected } from "../types";
 import {
   downloadWallhavenSelected,
@@ -10,9 +10,11 @@ import { clearNewImages, toast } from "../stores/app";
 import { positiveInt } from "../utils/rules";
 import { useConfigDraft } from "../composables/useConfigDraft";
 import { useAsyncAction } from "../composables/useAsyncAction";
-import { useSelection } from "../composables/useSelection";
 import { useGridDensity } from "../composables/useGridDensity";
+import { useDeviceDpr } from "../composables/useDeviceDpr";
 import { openUrlSafe } from "../utils/openUrl";
+import { friendlyError } from "../utils/errors";
+import { maxCoveredWidthForPixels } from "../utils/thumbSize";
 import ProgressCard from "../components/ProgressCard.vue";
 import NewImagesStrip from "../components/NewImagesStrip.vue";
 import EmptyState from "../components/EmptyState.vue";
@@ -110,12 +112,28 @@ const nsfwWithoutKey = computed(
 
 /* ── 保存 ── */
 async function onSaveOnly() {
+  if (!(await validateFilter())) return;
   if (await persist()) toast("设置已保存", "success");
 }
 
 /* ── 结果网格密度 ──
- * 缩略图是 Wallhaven 的 large 档（约 500px 宽），所以最大档可以放到 330px 仍清晰。
+ * 档位表里的 min 是参考宽度（内容宽 1168px）下的列宽，实际列宽按容器宽度等比缩放，
+ * 否则 auto-fill 只会不停加列、卡片尺寸恒定不变（见 useGridDensity 的说明）。
+ * 缩略图用的是 Wallhaven 远端 large 档（实测约 500px 宽），前端换不了尺寸，
+ * 所以卡片宽度按它能覆盖的最大宽度封顶，到顶后转为增加列数。
  * 偏好存 localStorage（key 见下），不进 config.json。 */
+
+/** Wallhaven 远端 large 档缩略图的实测宽度；无法调整，只能据此封顶。 */
+const REMOTE_THUMB_WIDTH = 500;
+
+/** 网格元素：量容器宽度用 */
+const gridEl = ref<HTMLElement | null>(null);
+/** 网格容器的内容宽度（网格铺满容器内容盒） */
+const containerWidth = ref(0);
+/** 屏幕像素比（响应变化：拖到别的显示器 / 改系统缩放时要重算上限） */
+const deviceDpr = useDeviceDpr();
+const maxCell = computed(() => maxCoveredWidthForPixels(REMOTE_THUMB_WIDTH, deviceDpr.value));
+
 const { density: cellSize, items: SIZE_ITEMS, gridStyle: cellStyle } = useGridDensity(
   "rustwallhub-wallhaven-cell-size",
   [
@@ -123,7 +141,28 @@ const { density: cellSize, items: SIZE_ITEMS, gridStyle: cellStyle } = useGridDe
     { value: "normal", label: "标准", min: "240px", ph: "155px" },
     { value: "large", label: "大图", min: "330px", ph: "215px" },
   ],
+  "normal",
+  { containerWidth, maxCell },
 );
+
+/** 量容器宽度。网格自身尺寸随容器变化，所以观察它就能覆盖窗口缩放。 */
+let gridRo: ResizeObserver | null = null;
+function observeGrid() {
+  gridRo?.disconnect();
+  const el = gridEl.value;
+  if (!el) return;
+  const sync = () => {
+    const cw = el.clientWidth;
+    if (cw > 0) containerWidth.value = Math.round(cw);
+  };
+  sync();
+  if (typeof ResizeObserver === "undefined") return;
+  gridRo = new ResizeObserver(sync);
+  gridRo.observe(el);
+}
+
+// 模板里 v-if 切换会让网格元素被替换，元素一换就要重新挂 observer
+watch(gridEl, () => observeGrid());
 
 /* ── 搜索 ── */
 const searching = ref(false);
@@ -131,7 +170,21 @@ const result = ref<WallhavenSearchResult | null>(null);
 const searchError = ref("");
 let searchSeq = 0;
 
-async function doSearch(page: number) {
+/** v-form 实例句柄，只用到 validate()。 */
+const filterForm = ref<{ validate: () => Promise<{ valid: boolean }> } | null>(null);
+
+/** 跳页输入框的值：跟随当前页同步，失焦时回填真实页码。 */
+const pageInput = ref(1);
+watch(
+  () => result.value?.page,
+  (p) => {
+    pageInput.value = p ?? 1;
+  },
+);
+
+/** 搜索/翻页。
+ *  `keepSelection`：翻页时保留已选（跨页挑选后一次下载），换搜索条件时才清空。 */
+async function doSearch(page: number, keepSelection = false) {
   const seq = ++searchSeq;
   searching.value = true;
   searchError.value = "";
@@ -139,33 +192,62 @@ async function doSearch(page: number) {
     const next = await searchWallhaven(page);
     if (seq !== searchSeq) return;
     result.value = next;
-    selected.clear();
+    if (!keepSelection) selected.clear();
     // 换页后旧索引可能越界，收起预览并丢弃续接缓冲
     previewIndex.value = -1;
     previewItems.value = [];
     previewExhausted.value = false;
   } catch (e) {
     if (seq !== searchSeq) return;
-    searchError.value = String(e);
+    searchError.value = friendlyError(e);
     result.value = null;
   } finally {
     if (seq === searchSeq) searching.value = false;
   }
 }
 
+/** 保存前先过一遍表单校验：字段下有红字却照样保存、最后只看到后端报错（清空数字框
+ *  还会变成 serde 的英文原始错误）是之前最容易让人以为"存进去了"的地方。 */
+async function validateFilter(): Promise<boolean> {
+  const res = await filterForm.value?.validate();
+  if (res && !res.valid) {
+    toast("搜索条件里有不合法的字段，请按标红提示修正后再保存", "error");
+    return false;
+  }
+  return true;
+}
+
 async function onSaveAndSearch() {
+  if (!(await validateFilter())) return;
   if (await persist()) await doSearch(1);
+}
+
+/** 跳页：只有左右箭头时，从第 1 页到第 20 页要点 19 次。 */
+async function onJumpPage(target: number) {
+  const cur = result.value;
+  if (!cur) return;
+  const p = Math.min(Math.max(1, Math.round(target || 1)), cur.total_pages);
+  if (p === cur.page) return;
+  await doSearch(p, true);
 }
 
 async function onPage(delta: number) {
   if (!result.value) return;
   const next = result.value.page + delta;
   if (next < 1 || next > result.value.total_pages) return;
-  await doSearch(next);
+  await doSearch(next, true);
 }
 
-/* ── 勾选与下载 ── */
-const { selected, toggle: toggleSelect } = useSelection();
+/* ── 勾选与下载 ──
+ * 选中项存 `Map<id, entry>` 而不是 `Set<id>`：翻页后要保留已选，而下载 payload 需要
+ * path / resolution / short_url —— 只有 id 是拼不出来的（用 Set 就只能清空重来）。
+ * Map 与 Set 共享 has/size/delete/clear，所以模板里的用法不用改。 */
+const selected = reactive(new Map<string, WallhavenImageEntry>());
+
+function toggleSelect(img: WallhavenImageEntry) {
+  if (selected.has(img.id)) selected.delete(img.id);
+  else selected.set(img.id, img);
+}
 
 /** 从 "2560x1440" 解析宽高比，供网格单元格按需定高（竖屏图不再被 16:10 裁切） */
 function ratioOf(resolution: string): string {
@@ -177,29 +259,30 @@ function ratioOf(resolution: string): string {
 }
 
 /* 单击选择 / 双击预览：同一元素上直接绑 click+dblclick 会让双击先触发两次选择切换（闪烁）。
- * 这里用 250ms 延迟判定；并且必须记住计时器对应的卡片 id —— 否则在 250ms 内从 A 换到 B
- * 会被当成"对 B 的双击"直接弹预览，用户想连选两张时就会误触。 */
+ * 这里用 250ms 延迟判定；并且必须记住计时器对应的卡片 —— 否则在 250ms 内从 A 换到 B
+ * 会被当成"对 B 的双击"直接弹预览，用户想连选两张时就会误触。
+ * 记的是整个 entry 而不是 id：选中集现在是 Map<id, entry>，结算上一次单击时需要 entry。 */
 let cellClickTimer: ReturnType<typeof setTimeout> | null = null;
-let cellClickId: string | null = null;
+let cellClickEntry: WallhavenImageEntry | null = null;
 
 function onCellClick(img: WallhavenImageEntry) {
   if (cellClickTimer) {
     clearTimeout(cellClickTimer);
     cellClickTimer = null;
-    const prevId = cellClickId;
-    cellClickId = null;
-    if (prevId === img.id) {
+    const prev = cellClickEntry;
+    cellClickEntry = null;
+    if (prev?.id === img.id) {
       openPreview(img); // 同一张连续两次点击 = 双击 → 预览
       return;
     }
     // 换了一张卡片：上一张按单击结算，避免这次点击既丢失选择又误开预览
-    if (prevId) toggleSelect(prevId);
+    if (prev) toggleSelect(prev);
   }
-  cellClickId = img.id;
+  cellClickEntry = img;
   cellClickTimer = setTimeout(() => {
     cellClickTimer = null;
-    cellClickId = null;
-    toggleSelect(img.id);
+    cellClickEntry = null;
+    toggleSelect(img);
   }, 250);
 }
 
@@ -213,15 +296,17 @@ function toggleSelectAll() {
   if (allPageSelected.value) {
     imgs.forEach((i) => selected.delete(i.id));
   } else {
-    imgs.forEach((i) => selected.add(i.id));
+    // 存 entry 而不是 id：翻页后仍要能拿到 path/resolution 拼下载 payload
+    imgs.forEach((i) => selected.set(i.id, i));
   }
 }
 
 const { run: onDownloadSelected, loading: startingSelected } = useAsyncAction(async () => {
   if (selected.size === 0) return;
   if (!(await persist())) return;
-  const imgs = (result.value?.images ?? []).filter((i) => selected.has(i.id));
-  const payload: WallhavenSelected[] = imgs.map((i) => ({
+  // 直接取选中集里的 entry：这样才能下载跨页勾选的图（以前只过滤当前页，
+  // 翻页后勾选被清空，跨页挑选根本无法完成）。
+  const payload: WallhavenSelected[] = [...selected.values()].map((i) => ({
     id: i.id,
     path: i.path,
     resolution: i.resolution,
@@ -368,10 +453,24 @@ function onPreviewKey(e: KeyboardEvent) {
   const img = previewImage.value;
   if (!img) return;
   e.preventDefault();
-  toggleSelect(img.id);
+  toggleSelect(img);
 }
-onMounted(() => window.addEventListener("keydown", onPreviewKey));
-onBeforeUnmount(() => window.removeEventListener("keydown", onPreviewKey));
+onMounted(() => {
+  window.addEventListener("keydown", onPreviewKey);
+  observeGrid();
+});
+onBeforeUnmount(() => {
+  window.removeEventListener("keydown", onPreviewKey);
+  gridRo?.disconnect();
+  gridRo = null;
+  // 250ms 的延迟判定定时器也要清掉：否则卸载后它仍会执行 toggleSelect，
+  // 在组件已销毁的状态下改动选择集。
+  if (cellClickTimer) {
+    clearTimeout(cellClickTimer);
+    cellClickTimer = null;
+    cellClickEntry = null;
+  }
+});
 </script>
 
 <template>
@@ -382,7 +481,7 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onPreviewKey));
     </div>
 
     <!-- 搜索条件 -->
-    <div class="panel-card animate-in">
+    <v-form ref="filterForm" class="panel-card animate-in" @submit.prevent>
       <div class="panel-card__title">
         <v-icon icon="mdi-tune-variant" size="18" color="primary" />
         搜索条件
@@ -501,13 +600,13 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onPreviewKey));
           保存并搜索
         </v-btn>
       </div>
-    </div>
+    </v-form>
 
     <!-- 下载进度 -->
     <ProgressCard source="wallhaven" title="Wallhaven 下载" />
 
     <!-- 搜索结果 -->
-    <div v-if="searching && !result" class="wh-grid">
+    <div v-if="searching && !result" ref="gridEl" class="wh-grid">
       <div v-for="i in 12" :key="i" class="wh-cell shimmer" />
     </div>
 
@@ -550,6 +649,20 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onPreviewKey));
           :disabled="result.page <= 1 || searching"
           @click="onPage(-1)"
         />
+        <!-- 跳页：只有左右箭头时，从第 1 页到第 20 页要点 19 次 -->
+        <span class="wh-page">
+          <input
+            v-model.number="pageInput"
+            class="wh-page__input"
+            type="number"
+            min="1"
+            :max="result.total_pages"
+            :aria-label="'页码，共 ' + result.total_pages + ' 页'"
+            @keydown.enter.prevent="onJumpPage(pageInput)"
+            @blur="pageInput = result.page"
+          />
+          <span class="text-caption">/ {{ result.total_pages }}</span>
+        </span>
         <v-btn
           size="small"
           variant="text"
@@ -577,7 +690,12 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onPreviewKey));
         </v-btn>
       </div>
 
-      <div class="wh-grid" :style="cellStyle">
+      <div
+        ref="gridEl"
+        class="wh-grid"
+        :class="{ 'wh-grid--loading': searching && !!result }"
+        :style="cellStyle"
+      >
         <div
           v-for="img in result.images"
           :key="img.id"
@@ -590,8 +708,8 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onPreviewKey));
           :aria-label="img.id"
           :aria-pressed="selected.has(img.id)"
           @click="onCellClick(img)"
-          @keydown.enter.prevent="toggleSelect(img.id)"
-          @keydown.space.prevent="toggleSelect(img.id)"
+          @keydown.enter.prevent="toggleSelect(img)"
+          @keydown.space.prevent="toggleSelect(img)"
         >
           <img :src="img.thumbnail_url" :alt="img.id" loading="lazy" decoding="async" />
           <button class="wh-cell__preview" title="预览大图" @click.stop="openPreview(img)">
@@ -654,7 +772,7 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onPreviewKey));
           variant="text"
           color="white"
           :prepend-icon="selected.has(previewImage.id) ? 'mdi-check' : 'mdi-plus'"
-          @click="toggleSelect(previewImage.id)"
+          @click="toggleSelect(previewImage)"
         >
           {{ selected.has(previewImage.id) ? "已选入" : "选入下载" }}
         </v-btn>
@@ -716,6 +834,28 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onPreviewKey));
   display: flex;
   align-items: center;
 }
+/* 跳页输入框 */
+.wh-page {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  color: var(--text-secondary);
+}
+.wh-page__input {
+  width: 56px;
+  padding: 2px var(--space-2);
+  border: var(--border-card);
+  border-radius: var(--radius-sm);
+  background: var(--surface-elevated);
+  color: var(--text-primary);
+  font: inherit;
+  font-size: 0.8125rem;
+  text-align: center;
+}
+.wh-page__input:focus-visible {
+  outline: 2px solid var(--accent-primary);
+  outline-offset: 1px;
+}
 .wh-loading-more {
   display: flex;
   align-items: center;
@@ -728,6 +868,13 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onPreviewKey));
   grid-template-columns: repeat(auto-fill, minmax(var(--grid-cell-min, 240px), 1fr));
   gap: var(--space-3);
   align-items: start;
+}
+/* 翻页加载中：旧网格降透明 + 禁点，给出明确反馈。
+ * 之前只在"还没有任何结果"时显示骨架，翻页时界面纹丝不动，只能靠箭头变灰去猜。 */
+.wh-grid--loading {
+  opacity: 0.45;
+  pointer-events: none;
+  transition: opacity 0.15s;
 }
 .wh-cell {
   position: relative;

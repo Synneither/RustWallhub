@@ -8,6 +8,7 @@ import type {
   AppConfig,
   DatabaseStatus,
   SlideshowTickPayload,
+  Source,
   StatsResponse,
   UpdateInfo,
 } from "../types";
@@ -122,17 +123,51 @@ export const anyDownloadActive = computed(() =>
   Object.values(appState.downloads).some((d) => d.active),
 );
 
+/** 正在下载、或刚完成还留着汇总卡的来源，供各页面统一渲染进度卡。
+ *  固定顺序避免卡片随下载启动顺序跳动。 */
+export const activeDownloadSources = computed<Source[]>(() => {
+  const order: Source[] = ["wallhaven", "reddit", "all"];
+  return order.filter((s) => {
+    const t = appState.downloads[s];
+    return !!t && (t.active || !!t.lastComplete);
+  });
+});
+
 let toastSeq = 0;
+/** 同时最多保留的 toast 数量。常驻桌面应用里反复失败会让提示条单调堆积。 */
+const MAX_TOASTS = 5;
+/** 各 toast 的自动消失定时器，关闭/淘汰时清掉，避免残留定时器。 */
+const toastTimers = new Map<number, number>();
+
 export function toast(text: string, color: ToastItem["color"] = "info") {
   const id = ++toastSeq;
   appState.toasts.push({ id, text, color });
-  // 错误提示不自动消失，需手动关闭，避免长文案读不完
-  if (color !== "error") {
-    window.setTimeout(() => dismissToast(id), 3000);
+  // 错误提示给更长时间（长文案要读得完）但仍然自动消失：此前 error 完全不消失，
+  // 反复失败的下载/同步只能靠手点关闭，数组与 DOM 节点会一直涨。
+  const ttl = color === "error" ? 10000 : 3000;
+  toastTimers.set(
+    id,
+    window.setTimeout(() => dismissToast(id), ttl),
+  );
+  // 超上限时先淘汰最早的一条（连同它的定时器）
+  while (appState.toasts.length > MAX_TOASTS) {
+    const oldest = appState.toasts[0];
+    if (!oldest) break;
+    clearToastTimer(oldest.id);
+    appState.toasts.shift();
+  }
+}
+
+function clearToastTimer(id: number) {
+  const timer = toastTimers.get(id);
+  if (timer !== undefined) {
+    window.clearTimeout(timer);
+    toastTimers.delete(id);
   }
 }
 
 export function dismissToast(id: number) {
+  clearToastTimer(id);
   const i = appState.toasts.findIndex((t) => t.id === id);
   if (i >= 0) appState.toasts.splice(i, 1);
 }
@@ -242,20 +277,20 @@ export async function registerGlobalListeners() {
   if (listenersRegistered) return;
   listenersRegistered = true;
 
-  // 逐个 await 并保存卸载函数。此前返回值全部丢弃，dev 下 HMR 重新执行本模块时
-  // 监听器会叠加（表现为 toast 重复弹出、galleryEpoch 一次事件自增多次）。
-  unlistenFns.push(
-    await onDownloadProgress((p) => {
+  // 并行注册。每个 listen 都是一次 IPC，串行会让首屏前多花 11 个往返；更要紧的是
+  // 串行时中途任一 reject 会让它后面的监听器全部注册不上。用 allSettled 让个别失败
+  // 不影响其余，同时仍然逐个保存卸载函数——此前返回值全部丢弃，dev 下 HMR 重新执行
+  // 本模块时监听器会叠加（表现为 toast 重复弹出、galleryEpoch 一次事件自增多次）。
+  const results = await Promise.allSettled([
+    onDownloadProgress((p) => {
       const t = taskOf(p.source);
       t.active = true;
       t.done = p.done;
       t.total = p.total;
       t.message = p.message;
     }),
-  );
 
-  unlistenFns.push(
-    await onDownloadComplete((p) => {
+    onDownloadComplete((p) => {
       const t = taskOf(p.source);
       t.active = false;
       t.done = p.total;
@@ -269,10 +304,8 @@ export async function registerGlobalListeners() {
       toast(msg, cancelled ? "info" : allSuccess ? "success" : "error");
       schedulePostDownloadRefresh();
     }),
-  );
 
-  unlistenFns.push(
-    await onImageDownloaded((p) => {
+    onImageDownloaded((p) => {
       // newImages 是 shallowRef（reactive 单例里自动解包，读写直接当数组用）。
       // 用不可变替换而非 push，触发 shallowRef 的替换更新，且避免逐元素深代理。
       appState.newImages = [...appState.newImages, { source: p.source, name: p.name, path: p.path }];
@@ -282,54 +315,45 @@ export async function registerGlobalListeners() {
         appState.newImages = appState.newImages.slice(appState.newImages.length - MAX_NEW_IMAGES);
       }
     }),
-  );
 
-  unlistenFns.push(
-    await onSettingsChanged(() => {
+    onSettingsChanged(() => {
       appState.galleryEpoch++;
     }),
-  );
 
-  unlistenFns.push(
-    await onUpdateAvailable((info) => {
+    onUpdateAvailable((info) => {
       appState.update.info = info;
     }),
-  );
 
-  unlistenFns.push(
-    await onUpdateProgress((p) => {
+    onUpdateProgress((p) => {
       appState.update.downloaded = p.downloaded;
       appState.update.total = p.total;
     }),
-  );
 
-  unlistenFns.push(
-    await onUpdateInstalling(() => {
+    onUpdateInstalling(() => {
       appState.update.installing = true;
     }),
-  );
 
-  unlistenFns.push(
-    await onSlideshowTick((p) => {
+    onSlideshowTick((p) => {
       appState.slideshow.running = true;
       appState.slideshow.current = p;
     }),
-  );
 
-  // 启动自动拉取的结果：成功后刷新统计与图库，失败只提示
-  unlistenFns.push(
-    await onSyncCompleted((msg) => {
+    // 启动自动拉取的结果：成功后刷新统计与图库，失败只提示
+    onSyncCompleted((msg) => {
       toast(`云端同步：${msg}`, "success");
       refreshStats();
       appState.galleryEpoch++;
     }),
-  );
 
-  unlistenFns.push(
-    await onSyncFailed((msg) => {
+    onSyncFailed((msg) => {
       toast(`云端同步失败：${msg}`, "error");
     }),
-  );
+  ]);
+
+  for (const r of results) {
+    if (r.status === "fulfilled") unlistenFns.push(r.value);
+    else logger.warn("App", "全局监听器注册失败", r.reason);
+  }
 }
 
 /** 解绑全部全局监听器并复位注册标志（HMR / 卸载时调用）。 */
