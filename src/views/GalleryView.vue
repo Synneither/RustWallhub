@@ -100,13 +100,13 @@ const maxCell = computed(() => maxCoveredWidth(THUMB_MAX_DPR, deviceDpr.value));
 const { density: cellSize, items: SIZE_ITEMS, gridStyle } = useGridDensity(
   "rustwallhub-gallery-cell-size",
   [
-    // 85px 会让紧凑档偏小：卡片有 min-height 96px 兜底，占位高度要对齐它
-    { value: "compact", label: "紧凑", min: "120px", ph: "96px" },
-    { value: "normal", label: "标准", min: "170px", ph: "115px" },
-    { value: "large", label: "大图", min: "240px", ph: "155px" },
+    { value: "compact", label: "紧凑", min: "120px" },
+    { value: "normal", label: "标准", min: "170px" },
+    { value: "large", label: "大图", min: "240px" },
   ],
   "normal",
-  { containerWidth, maxCell },
+  // minCellHeight 与 .gallery-card 的 min-height 保持一致，用于算屏外卡片占位高度
+  { containerWidth, maxCell, minCellHeight: 96 },
 );
 
 const loading = ref(false);
@@ -991,6 +991,13 @@ async function onStopSlideshow() {
 .gallery-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(var(--grid-cell-min, 170px), 1fr));
+  /* 关键：行高必须由卡片自身撑开。
+     卡片带 aspect-ratio，但 Chromium 在给 grid 的 auto 行定高时**不会**采用由
+     aspect-ratio 推出的高度，而是用卡片的最小贡献（min-height: 96px）——
+     于是行高只有 96px，而卡片实际有 160px，卡片下半部分会被下一行盖住。
+     列宽 176px 时只被盖住 14px 不明显，卡片放大到 267px（列宽随窗口缩放后）就盖掉 56px，
+     表现为「每一行只露出上半截、只有最后一行完整」。min-content 让行高跟随卡片真实高度。 */
+  grid-auto-rows: min-content;
   gap: var(--space-2);
   align-content: start;
   padding-bottom: var(--space-4);

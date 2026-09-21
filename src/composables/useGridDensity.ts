@@ -8,8 +8,6 @@ export interface DensityOption {
   label: string;
   /** 参考宽度（见 REFERENCE_WIDTH）下的列宽 */
   min: string;
-  /** 参考宽度下屏外卡片的占位高度，需随列宽同步，否则滚动条跳动 */
-  ph: string;
 }
 
 /**
@@ -18,11 +16,16 @@ export interface DensityOption {
  */
 const REFERENCE_WIDTH = 1168;
 
+/** 卡片宽高比：两个网格的卡片都是 16/10，占位高度由列宽折算。 */
+const CARD_ASPECT = 16 / 10;
+
 export interface DensityScale {
   /** 网格容器的内容宽度；为 0（还没量到）时退回档位标称值 */
   containerWidth: Ref<number>;
   /** 列宽上限：超过这个宽度缩略图就会被放大显示，见 utils/thumbSize.ts */
   maxCell: Ref<number> | ComputedRef<number>;
+  /** 卡片 CSS 里的 min-height，参与占位高度计算（默认 96） */
+  minCellHeight?: number;
 }
 
 export interface GridDensityApi {
@@ -78,7 +81,11 @@ export function useGridDensity(
     const cw = scale?.containerWidth.value ?? 0;
     // 还没量到容器宽度（或调用方没开启缩放）：用档位标称值
     if (!scale || !(cw > 0)) {
-      return { "--grid-cell-min": o.min, "--grid-cell-ph": o.ph };
+      const refMin = Number.parseFloat(o.min);
+      return {
+        "--grid-cell-min": o.min,
+        "--grid-cell-ph": `${placeholderHeight(refMin, scale?.minCellHeight)}px`,
+      };
     }
 
     const k = cw / REFERENCE_WIDTH;
@@ -86,14 +93,18 @@ export function useGridDensity(
     // 只向上缩放：不低于档位标称值（窄窗口下与改动前完全一致，避免卡片反而变小），
     // 上限是缩略图能覆盖的宽度（超过就只是把图放大，不如转为增加列数）。
     const cell = Math.min(Math.max(ref * k, ref), Math.max(ref, scale.maxCell.value));
-    // 占位高按「档位里 ph 与列宽的比例」跟着最终列宽走，
-    // 这样即使列宽被上限截断，屏外卡片的高度估算也不会失配。
-    const phRatio = Number.parseFloat(o.ph) / ref;
     return {
       "--grid-cell-min": `${Math.round(cell)}px`,
-      "--grid-cell-ph": `${Math.round(cell * phRatio)}px`,
+      // 占位高度必须等于卡片的真实高度（列宽 ÷ 宽高比），否则屏外行的估算与真实不符。
+      // 之前是按档位表里 ph/min 的比例折算（约 0.65–0.8 而真实是 0.625），会偏高 3–28%。
+      "--grid-cell-ph": `${placeholderHeight(cell, scale.minCellHeight)}px`,
     };
   });
 
   return { density, items, gridStyle };
+}
+
+/** 卡片占位高度 = max(列宽 / 宽高比, CSS 里的 min-height) —— 与真实渲染高度一致。 */
+function placeholderHeight(cell: number, minCellHeight?: number): number {
+  return Math.max(Math.round(cell / CARD_ASPECT), minCellHeight ?? 96);
 }

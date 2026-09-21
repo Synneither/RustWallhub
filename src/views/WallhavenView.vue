@@ -137,12 +137,13 @@ const maxCell = computed(() => maxCoveredWidthForPixels(REMOTE_THUMB_WIDTH, devi
 const { density: cellSize, items: SIZE_ITEMS, gridStyle: cellStyle } = useGridDensity(
   "rustwallhub-wallhaven-cell-size",
   [
-    { value: "compact", label: "紧凑", min: "170px", ph: "110px" },
-    { value: "normal", label: "标准", min: "240px", ph: "155px" },
-    { value: "large", label: "大图", min: "330px", ph: "215px" },
+    { value: "compact", label: "紧凑", min: "170px" },
+    { value: "normal", label: "标准", min: "240px" },
+    { value: "large", label: "大图", min: "330px" },
   ],
   "normal",
-  { containerWidth, maxCell },
+  // minCellHeight 与 .wh-cell 的 min-height 保持一致
+  { containerWidth, maxCell, minCellHeight: 90 },
 );
 
 /** 量容器宽度。网格自身尺寸随容器变化，所以观察它就能覆盖窗口缩放。 */
@@ -866,6 +867,10 @@ onBeforeUnmount(() => {
 .wh-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(var(--grid-cell-min, 240px), 1fr));
+  /* 同 .gallery-grid：不给 grid-auto-rows: min-content 的话，auto 行高会按卡片的
+     最小贡献（min-height: 90px）算，而不是 aspect-ratio 推出的真实高度，
+     卡片就会被下一行盖住。 */
+  grid-auto-rows: min-content;
   gap: var(--space-3);
   align-items: start;
 }
