@@ -23,6 +23,14 @@ export function friendlyError(e: unknown): string {
     return "没有访问权限，请检查文件是否被其他程序占用";
   if (msg.toLowerCase().includes("timeout"))
     return "请求超时，请检查网络或代理设置";
+  // 上游（Wallhaven / Reddit）的 HTTP 状态码错误，原文只有一个状态码，用户看不出是
+  // 「我们请求有问题」还是「对方挂了」，这里给出可操作的判断。
+  if (msg.includes("状态码: 429") || msg.toLowerCase().includes("too many requests"))
+    return "请求过于频繁，被服务端限流（429），请降低搜索/下载频率后重试";
+  if (/状态码: 5\d\d/.test(msg))
+    return "上游服务暂时不可用（5xx），通常是官网维护或宕机，请稍后再试";
+  if (msg.includes("JSON 解析失败"))
+    return "上游返回了非预期内容（多为维护页或代理拦截），请稍后再试";
 
   // 有内容就带上通用前缀，方便用户区分「这是应用报的错」和「这是系统原文」。
   return msg ? `操作失败：${msg}` : "操作失败，请重试";

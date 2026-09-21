@@ -1,5 +1,18 @@
 use serde::Deserialize;
 
+/// 从错误响应体里抽出一句有用的说明，用于日志/报错。
+/// - Wallhaven 自己的 API 错误是 JSON：`{"error": "..."}`
+/// - 宕机/网关层则是 HTML 错误页，这里取第一个 `<h1>`/`<title>` 附近的文字
+fn extract_error_detail(body: &str) -> String {
+    if let Ok(v) = serde_json::from_str::<serde_json::Value>(body) {
+        if let Some(msg) = v.get("error").and_then(|e| e.as_str()) {
+            return msg.chars().take(200).collect();
+        }
+    }
+    let text: String = body.chars().filter(|c| !c.is_control()).take(300).collect();
+    text.trim().replace('\n', " ").chars().take(200).collect()
+}
+
 #[derive(Debug, Clone)]
 pub struct WallhavenSearchParams {
     pub page: u32,
@@ -116,7 +129,17 @@ impl WallhavenClient {
             .map_err(|e| format!("请求失败: {e}"))?;
 
         if !resp.status().is_success() {
-            return Err(format!("API 返回状态码: {}", resp.status()));
+            let status = resp.status();
+            // 带上响应体片段：宕机时是 nginx 的 HTML 错误页，而限流/参数错时是 JSON
+            // {"error": "..."}，只看状态码无法区分「官方挂了」和「我们请求有问题」。
+            let body = resp.text().await.unwrap_or_default();
+            let detail = extract_error_detail(&body);
+            log::warn!("[wallhaven] search failed: {status} {detail}");
+            return Err(if detail.is_empty() {
+                format!("API 返回状态码: {status}")
+            } else {
+                format!("API 返回状态码: {status}（{detail}）")
+            });
         }
 
         let body = resp
