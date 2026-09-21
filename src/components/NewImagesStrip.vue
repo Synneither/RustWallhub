@@ -1,8 +1,9 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, ref, shallowRef, watch } from "vue";
+import { computed, onBeforeUnmount, ref, watch } from "vue";
 import { appState } from "../stores/app";
 import type { Source } from "../types";
 import { assetUrl, resolveThumbnails } from "../utils/api";
+import { useThumbCache } from "../composables/useThumbCache";
 
 /** "本次新图"横向预览条：消费全局 newImages（Wallhaven / Reddit 页使用） */
 const props = defineProps<{ source: Source }>();
@@ -16,9 +17,8 @@ const shown = computed(() => images.value.slice(-MAX_SHOW));
 const extra = computed(() => Math.max(0, images.value.length - MAX_SHOW));
 
 /* 96px 的小格子没必要加载 4K 原图，优先取后端已生成好的缩略图。
- * shallowRef + Map：整批写入只触发一次更新；并设上限，避免长会话里无限增长。 */
-const thumbUrls = shallowRef<Map<string, string>>(new Map());
-const THUMB_CACHE_MAX = 200;
+ * 缩略图缓存（LRU + 上限）已收敛到 useThumbCache。 */
+const thumbCache = useThumbCache(200);
 let thumbSeq = 0;
 let thumbTimer: ReturnType<typeof setTimeout> | null = null;
 /** 是否已经问过后端一次。在拿到结果前不拿原图兜底，否则 96px 格子会先拉 4K 原图。 */
@@ -26,8 +26,7 @@ const thumbsResolved = ref(false);
 
 /** 只请求缓存里没有的名字：下载过程中窗口会持续滚动，否则同几个名字会被反复请求。 */
 async function loadThumbs() {
-  const cache = thumbUrls.value;
-  const names = shown.value.map((i) => i.name).filter((n) => !cache.has(n));
+  const names = shown.value.map((i) => i.name).filter((n) => thumbCache.get(n) === undefined);
   if (names.length === 0) {
     thumbsResolved.value = true;
     return;
@@ -37,19 +36,7 @@ async function loadThumbs() {
     const dpr = appState.config?.thumbnail_dpr ?? 2;
     const batch = await resolveThumbnails(props.source, names, dpr);
     if (seq !== thumbSeq) return;
-    const next = new Map(thumbUrls.value);
-    for (const it of batch.items) {
-      // 已存在的键先删再写，挪到末尾 → 淘汰顺序是 LRU 而不是插入顺序，
-      // 与 GalleryView 的 cacheThumbs 保持一致。
-      next.delete(it.name);
-      next.set(it.name, assetUrl(it.thumb_path));
-    }
-    while (next.size > THUMB_CACHE_MAX) {
-      const oldest = next.keys().next().value;
-      if (oldest === undefined) break;
-      next.delete(oldest);
-    }
-    thumbUrls.value = next;
+    thumbCache.cache(batch.items.map((it) => [it.name, assetUrl(it.thumb_path)] as const));
   } catch {
     // 失败时退回到原图，保证预览条可用
   } finally {
@@ -76,7 +63,7 @@ watch(
 watch(
   () => props.source,
   () => {
-    thumbUrls.value = new Map();
+    thumbCache.clear();
     thumbsResolved.value = false;
   },
 );
@@ -86,7 +73,7 @@ onBeforeUnmount(() => {
 });
 
 function thumbOf(name: string, path: string): string {
-  const cached = thumbUrls.value.get(name);
+  const cached = thumbCache.get(name);
   if (cached) return cached;
   // 还没问过后端就先给空串，让格子保持占位样式，避免为 96px 拉整张原图。
   return thumbsResolved.value ? assetUrl(path) : "";

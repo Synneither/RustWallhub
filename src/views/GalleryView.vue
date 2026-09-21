@@ -1,7 +1,6 @@
 <script setup lang="ts">
 import {
   computed,
-  nextTick,
   onActivated,
   onBeforeUnmount,
   onDeactivated,
@@ -38,6 +37,8 @@ import { useSelection } from "../composables/useSelection";
 import { useGridDensity } from "../composables/useGridDensity";
 import { useAsyncAction } from "../composables/useAsyncAction";
 import { useDeviceDpr } from "../composables/useDeviceDpr";
+import { useThumbCache } from "../composables/useThumbCache";
+import { useContainerWidth } from "../composables/useContainerWidth";
 import { openUrlSafe } from "../utils/openUrl";
 import { friendlyError } from "../utils/errors";
 import { pickThumbDpr, maxCoveredWidth, THUMB_MAX_DPR } from "../utils/thumbSize";
@@ -90,8 +91,12 @@ const PAGE_SIZE_ITEMS = [24, 48, 96];
 
 /** 网格元素：既是真正的滚动容器，也是量列宽的对象。 */
 const gridEl = ref<HTMLElement | null>(null);
-/** 网格容器的内容宽度。网格铺满容器内容盒，所以直接取它的 clientWidth。 */
-const containerWidth = ref(0);
+/** 容器宽度跟踪（ResizeObserver + v-if 换元素自动重挂）已收敛到 useContainerWidth。
+ *  afterMeasure：量完容器宽度、让出一拍后量实际列宽（此时新的 --grid-cell-min
+ *  已生效、网格已重排）。返回值 sync 即原来的 syncLayout。 */
+const { containerWidth, sync: syncLayout } = useContainerWidth(gridEl, {
+  afterMeasure: measureCellWidth,
+});
 /** 屏幕像素比（响应变化：拖到别的显示器 / 改系统缩放时要重算档位） */
 const deviceDpr = useDeviceDpr();
 /** 卡片宽度上限：超过它，缩略图就会被放大显示 */
@@ -116,30 +121,8 @@ const total = ref(0);
 /** 孤儿模式：全量孤儿列表，前端分页。
  * 用 shallowRef：这个数组可能有数千条 entry，整批替换即可，不需要逐项深度代理。 */
 const orphanAll = shallowRef<LocalImageEntry[]>([]);
-/** 缩略图 URL 缓存（文件名 → asset URL），上限见 THUMB_CACHE_MAX。
- * 用 shallowRef + Map：整批写入只替换一次引用、触发一次响应式更新。
- * 此前是 reactive<Record<string,string>>（600 个键会被深度代理），
- * 切换来源时逐个 delete 会触发 600 次独立更新。 */
-const thumbUrls = shallowRef<Map<string, string>>(new Map());
-const THUMB_CACHE_MAX = 600;
-
-/** 批量写入缩略图 URL：克隆一次、整体替换引用，只触发一次响应式更新。 */
-function cacheThumbs(entries: Iterable<readonly [string, string]>) {
-  const next = new Map(thumbUrls.value);
-  for (const [name, url] of entries) {
-    // 已存在的键先删再写，把它挪到 Map 末尾（最近使用），
-    // 这样淘汰顺序是 LRU 而不是插入顺序——翻回旧页时不会重复取缩略图。
-    next.delete(name);
-    next.set(name, url);
-  }
-  // Map 保持插入顺序，超限时从最久未使用的条目开始丢弃
-  while (next.size > THUMB_CACHE_MAX) {
-    const oldest = next.keys().next().value;
-    if (oldest === undefined) break;
-    next.delete(oldest);
-  }
-  thumbUrls.value = next;
-}
+/** 缩略图 URL 缓存（LRU，实现见 useThumbCache） */
+const thumbCache = useThumbCache(600);
 
 let searchTimer: ReturnType<typeof setTimeout> | null = null;
 watch(search, (v) => {
@@ -169,8 +152,8 @@ function scrollToTop() {
 }
 
 /* ════ 布局测量 ════
- * 两件事都靠这里的实测值：
- *  1. 容器宽度 → 决定卡片尺寸（gridStyle 按它缩放）
+ * 两件事都靠实测值：
+ *  1. 容器宽度 → 决定卡片尺寸（gridStyle 按它缩放；测量逻辑在 useContainerWidth）
  *  2. 实际列宽 → 决定缩略图档位（见 utils/thumbSize.ts） */
 /** 实测的网格列宽（CSS px）；0 表示还没量到。 */
 const cellCssWidth = ref(0);
@@ -185,34 +168,6 @@ function measureCellWidth() {
   if (Number.isFinite(w) && w > 0) cellCssWidth.value = Math.round(w);
 }
 
-/** 量容器宽度 + 列宽。列宽要在新的 --grid-cell-min 生效、网格重排之后才读得到，
- *  所以量完容器宽度要让出一拍再量列宽。 */
-async function syncLayout() {
-  const el = gridEl.value;
-  if (!el) return;
-  const cw = el.clientWidth;
-  if (cw > 0) containerWidth.value = Math.round(cw);
-  await nextTick();
-  measureCellWidth();
-}
-
-let gridRo: ResizeObserver | null = null;
-function observeGrid() {
-  gridRo?.disconnect();
-  const el = gridEl.value;
-  if (!el || typeof ResizeObserver === "undefined") return;
-  // 观察网格自身的尺寸：它铺满容器内容盒，所以窗口缩放会在这里体现。
-  // 改 --grid-cell-min 只改变列数、不改变网格自身尺寸，因此不会自激成死循环。
-  gridRo = new ResizeObserver(() => void syncLayout());
-  gridRo.observe(el);
-}
-
-// 模板里 v-if 切换会让网格元素被替换，元素一换就要重新挂 observer
-watch(gridEl, () => {
-  observeGrid();
-  void syncLayout();
-});
-
 /** 该用哪一档缩略图。cellCssWidth 还没量到时退回 170（标准档的参考列宽），
  *  在 floorDpr=2 的默认设置下与改动前一致。 */
 const thumbDpr = computed(() =>
@@ -225,8 +180,8 @@ watch(cellSize, () => void syncLayout());
 /** 档位变化（窗口缩放 / 改密度 / 拖到另一块屏）：缓存里的 URL 指向的是另一个分辨率的
  *  缩略图，必须整批丢弃重新解析，否则会继续用旧档位显示。 */
 watch(thumbDpr, () => {
-  if (thumbUrls.value.size === 0) return;
-  thumbUrls.value = new Map();
+  if (thumbCache.size.value === 0) return;
+  thumbCache.clear();
   void loadThumbs();
 });
 
@@ -244,8 +199,8 @@ function scheduleLoad() {
 }
 
 watch(source, () => {
-  // 切换来源后旧缩略图 URL 不能跨源复用；整体替换引用，只触发一次更新
-  thumbUrls.value = new Map();
+  // 切换来源后旧缩略图 URL 不能跨源复用；整批丢弃（一次替换引用，只触发一次更新）
+  thumbCache.clear();
 });
 
 const totalPages = computed(() => Math.max(1, Math.ceil(total.value / pageSize.value)));
@@ -284,7 +239,7 @@ async function load() {
       images.value = res.images;
       if (customDir.value) {
         // 自定义目录无缩略图管线，直接用原图；同时避免同名文件命中旧缩略图缓存
-        cacheThumbs(res.images.map((img) => [img.name, assetUrl(img.path)] as const));
+        thumbCache.cache(res.images.map((img) => [img.name, assetUrl(img.path)] as const));
       } else {
         // 等网格真正渲染出来再量尺寸：档位与缩略图都要按实际显示尺寸选
         await syncLayout();
@@ -314,19 +269,18 @@ async function loadThumbs(seq = loadSeq) {
     const batch = await resolveThumbnails(source.value, names, dpr);
     // 请求期间窗口缩放/改密度会让档位变化，这一批 URL 已指向别的分辨率，丢弃
     if (seq !== loadSeq || dpr !== thumbDpr.value) return;
-    cacheThumbs(batch.items.map((it) => [it.name, assetUrl(it.thumb_path)] as const));
+    thumbCache.cache(batch.items.map((it) => [it.name, assetUrl(it.thumb_path)] as const));
   } catch (e) {
     if (seq !== loadSeq) return;
     // 缩略图失败不致命，回退原图
-    cacheThumbs(images.value.map((img) => [img.name, assetUrl(img.path)] as const));
+    thumbCache.cache(images.value.map((img) => [img.name, assetUrl(img.path)] as const));
   }
 }
 
 function thumbOf(img: LocalImageEntry): string {
-  // 只读，不在渲染期间改缓存：thumbOf 在模板里被调用，
-  // 若内部写 thumbUrls 会触发渲染中的响应式更新（Vue 会告警并可能死循环）。
-  // LRU 的位置更新交给 cacheThumbs（写入时挪到末尾）完成。
-  return thumbUrls.value.get(img.name) ?? assetUrl(img.path);
+  // useThumbCache.get 是只读的：thumbOf 在模板里被调用，渲染期间写缓存会触发
+  // 渲染中的响应式更新（Vue 会告警并可能死循环）。LRU 位置在 cache() 写入时更新。
+  return thumbCache.get(img.name) ?? assetUrl(img.path);
 }
 
 /* 触发重载 */
@@ -362,9 +316,7 @@ watch(
 onMounted(() => {
   viewActive = true;
   loadMonitors();
-  // 窗口缩放会改变容器宽度 → 改变卡片尺寸与缩略图档位
-  observeGrid();
-  void syncLayout();
+  // 容器宽度的首次测量与 ResizeObserver 挂载由 useContainerWidth 的 onMounted 完成
 });
 onActivated(() => {
   viewActive = true;
@@ -385,8 +337,7 @@ onDeactivated(() => {
 onBeforeUnmount(() => {
   if (searchTimer) clearTimeout(searchTimer);
   if (reloadTimer) clearTimeout(reloadTimer);
-  gridRo?.disconnect();
-  gridRo = null;
+  // ResizeObserver 的断开由 useContainerWidth 的 onBeforeUnmount 完成
 });
 
 /* ════ 多选与批量 ════ */

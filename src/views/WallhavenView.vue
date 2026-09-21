@@ -12,6 +12,7 @@ import { useConfigDraft } from "../composables/useConfigDraft";
 import { useAsyncAction } from "../composables/useAsyncAction";
 import { useGridDensity } from "../composables/useGridDensity";
 import { useDeviceDpr } from "../composables/useDeviceDpr";
+import { useContainerWidth } from "../composables/useContainerWidth";
 import { openUrlSafe } from "../utils/openUrl";
 import { friendlyError } from "../utils/errors";
 import { maxCoveredWidthForPixels } from "../utils/thumbSize";
@@ -128,8 +129,8 @@ const REMOTE_THUMB_WIDTH = 500;
 
 /** 网格元素：量容器宽度用 */
 const gridEl = ref<HTMLElement | null>(null);
-/** 网格容器的内容宽度（网格铺满容器内容盒） */
-const containerWidth = ref(0);
+/** 容器宽度跟踪（ResizeObserver + v-if 换元素自动重挂）已收敛到 useContainerWidth */
+const { containerWidth } = useContainerWidth(gridEl);
 /** 屏幕像素比（响应变化：拖到别的显示器 / 改系统缩放时要重算上限） */
 const deviceDpr = useDeviceDpr();
 const maxCell = computed(() => maxCoveredWidthForPixels(REMOTE_THUMB_WIDTH, deviceDpr.value));
@@ -145,25 +146,6 @@ const { density: cellSize, items: SIZE_ITEMS, gridStyle: cellStyle } = useGridDe
   // minCellHeight 与 .wh-cell 的 min-height 保持一致
   { containerWidth, maxCell, minCellHeight: 90 },
 );
-
-/** 量容器宽度。网格自身尺寸随容器变化，所以观察它就能覆盖窗口缩放。 */
-let gridRo: ResizeObserver | null = null;
-function observeGrid() {
-  gridRo?.disconnect();
-  const el = gridEl.value;
-  if (!el) return;
-  const sync = () => {
-    const cw = el.clientWidth;
-    if (cw > 0) containerWidth.value = Math.round(cw);
-  };
-  sync();
-  if (typeof ResizeObserver === "undefined") return;
-  gridRo = new ResizeObserver(sync);
-  gridRo.observe(el);
-}
-
-// 模板里 v-if 切换会让网格元素被替换，元素一换就要重新挂 observer
-watch(gridEl, () => observeGrid());
 
 /* ── 搜索 ── */
 const searching = ref(false);
@@ -458,12 +440,11 @@ function onPreviewKey(e: KeyboardEvent) {
 }
 onMounted(() => {
   window.addEventListener("keydown", onPreviewKey);
-  observeGrid();
+  // 容器宽度的首次测量与 ResizeObserver 挂载由 useContainerWidth 的 onMounted 完成
 });
 onBeforeUnmount(() => {
   window.removeEventListener("keydown", onPreviewKey);
-  gridRo?.disconnect();
-  gridRo = null;
+  // ResizeObserver 的断开由 useContainerWidth 的 onBeforeUnmount 完成
   // 250ms 的延迟判定定时器也要清掉：否则卸载后它仍会执行 toggleSelect，
   // 在组件已销毁的状态下改动选择集。
   if (cellClickTimer) {
