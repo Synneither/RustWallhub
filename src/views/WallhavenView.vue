@@ -129,6 +129,10 @@ const REMOTE_THUMB_WIDTH = 500;
 
 /** 网格元素：量容器宽度用 */
 const gridEl = ref<HTMLElement | null>(null);
+/** .view 是这一页真正的滚动容器（不像图库那样由网格自己滚） */
+const viewRoot = ref<HTMLElement | null>(null);
+/** 结果区 wrapper（工具栏 + 网格 + 翻页条），翻页后把它带回视口顶部 */
+const resultsEl = ref<HTMLElement | null>(null);
 /** 容器宽度跟踪（ResizeObserver + v-if 换元素自动重挂）已收敛到 useContainerWidth */
 const { containerWidth } = useContainerWidth(gridEl);
 /** 屏幕像素比（响应变化：拖到别的显示器 / 改系统缩放时要重算上限） */
@@ -205,12 +209,28 @@ async function onSaveAndSearch() {
   if (await persist()) await doSearch(1);
 }
 
+/** 翻页后把结果区带回视口顶部。
+ *  翻页条现在贴在结果区底边，点完「下一页」如果停在原地，看到的是新页的末尾。
+ *  先滚再发请求：滚动立刻有反馈，新图回来时人已经停在结果区头部了。 */
+function scrollResultsToTop() {
+  const view = viewRoot.value;
+  const target = resultsEl.value;
+  // 防御：搜索失败时结果区会整块卸载，拿到的可能已是摘除的节点
+  if (!view || !target || !result.value) return;
+  // 用相对 .view 的位移而不是 scrollIntoView：.view 上方还有窗口标题栏，
+  // scrollIntoView 会把结果区顶部对齐到**视口**顶部、顶进 .view 的可视区之外。
+  const delta = target.getBoundingClientRect().top - view.getBoundingClientRect().top;
+  const pad = parseFloat(getComputedStyle(view).paddingTop) || 0;
+  view.scrollTo({ top: Math.max(0, view.scrollTop + delta - pad), behavior: "smooth" });
+}
+
 /** 跳页：只有左右箭头时，从第 1 页到第 20 页要点 19 次。 */
 async function onJumpPage(target: number) {
   const cur = result.value;
   if (!cur) return;
   const p = Math.min(Math.max(1, Math.round(target || 1)), cur.total_pages);
   if (p === cur.page) return;
+  scrollResultsToTop();
   await doSearch(p, true);
 }
 
@@ -218,6 +238,7 @@ async function onPage(delta: number) {
   if (!result.value) return;
   const next = result.value.page + delta;
   if (next < 1 || next > result.value.total_pages) return;
+  scrollResultsToTop();
   await doSearch(next, true);
 }
 
@@ -456,7 +477,7 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <div class="view">
+  <div ref="viewRoot" class="view wh-view">
     <div class="view-header">
       <span class="view-header__title">Wallhaven</span>
       <span class="view-header__sub">搜索条件即下载配置，保存后生效</span>
@@ -603,117 +624,126 @@ onBeforeUnmount(() => {
     </EmptyState>
 
     <template v-else-if="result">
-      <div class="wh-toolbar">
-        <span class="text-caption">
-          第 {{ result.page }} / {{ result.total_pages }} 页 · 共 {{ result.total }} 张
-          <template v-if="selected.size > 0"> · 已选 {{ selected.size }}</template>
-        </span>
-        <v-spacer />
-        <div class="wh-size">
+      <!-- 结果区整体包一层：底部翻页条用 sticky 贴住它的底边，sticky 的包含块就是这一层，
+           所以滚出结果区后它会跟着一起离开视口，不会浮在搜索条件卡上面。 -->
+      <div ref="resultsEl" class="wh-results">
+        <div class="wh-toolbar">
+          <span class="text-caption">
+            共 {{ result.total }} 张
+            <template v-if="selected.size > 0"> · 已选 {{ selected.size }}</template>
+          </span>
+          <v-spacer />
+          <div class="wh-size">
+            <v-btn
+              v-for="s in SIZE_ITEMS"
+              :key="s.value"
+              size="x-small"
+              :variant="cellSize === s.value ? 'tonal' : 'text'"
+              :color="cellSize === s.value ? 'primary' : undefined"
+              @click="cellSize = s.value"
+            >
+              {{ s.label }}
+            </v-btn>
+          </div>
+          <v-btn size="small" variant="text" @click="toggleSelectAll">
+            {{ allPageSelected ? "取消全选" : "全选本页" }}
+          </v-btn>
           <v-btn
-            v-for="s in SIZE_ITEMS"
-            :key="s.value"
-            size="x-small"
-            :variant="cellSize === s.value ? 'tonal' : 'text'"
-            :color="cellSize === s.value ? 'primary' : undefined"
-            @click="cellSize = s.value"
+            size="small"
+            variant="tonal"
+            :disabled="selected.size === 0"
+            :loading="startingSelected"
+            @click="onDownloadSelected"
           >
-            {{ s.label }}
+            下载选中（{{ selected.size }}）
+          </v-btn>
+          <v-btn
+            size="small"
+            color="primary"
+            variant="flat"
+            :loading="startingBatch"
+            @click="onBatchDownload"
+          >
+            按条件批量下载
           </v-btn>
         </div>
-        <v-btn size="small" variant="text" @click="toggleSelectAll">
-          {{ allPageSelected ? "取消全选" : "全选本页" }}
-        </v-btn>
-        <v-btn
-          size="small"
-          variant="text"
-          icon="mdi-chevron-left"
-          :disabled="result.page <= 1 || searching"
-          @click="onPage(-1)"
-        />
-        <!-- 跳页：只有左右箭头时，从第 1 页到第 20 页要点 19 次 -->
-        <span class="wh-page">
-          <input
-            v-model.number="pageInput"
-            class="wh-page__input"
-            type="number"
-            min="1"
-            :max="result.total_pages"
-            :aria-label="'页码，共 ' + result.total_pages + ' 页'"
-            @keydown.enter.prevent="onJumpPage(pageInput)"
-            @blur="pageInput = result.page"
-          />
-          <span class="text-caption">/ {{ result.total_pages }}</span>
-        </span>
-        <v-btn
-          size="small"
-          variant="text"
-          icon="mdi-chevron-right"
-          :disabled="result.page >= result.total_pages || searching"
-          @click="onPage(1)"
-        />
-        <v-btn
-          size="small"
-          variant="tonal"
-          :disabled="selected.size === 0"
-          :loading="startingSelected"
-          @click="onDownloadSelected"
-        >
-          下载选中（{{ selected.size }}）
-        </v-btn>
-        <v-btn
-          size="small"
-          color="primary"
-          variant="flat"
-          :loading="startingBatch"
-          @click="onBatchDownload"
-        >
-          按条件批量下载
-        </v-btn>
-      </div>
 
-      <div
-        ref="gridEl"
-        class="wh-grid"
-        :class="{ 'wh-grid--loading': searching && !!result }"
-        :style="cellStyle"
-      >
         <div
-          v-for="img in result.images"
-          :key="img.id"
-          class="wh-cell wh-cell--clickable"
-          :class="{ 'wh-cell--selected': selected.has(img.id) }"
-          :style="{ aspectRatio: ratioOf(img.resolution) }"
-          title="单击选择，双击预览大图"
-          role="button"
-          tabindex="0"
-          :aria-label="img.id"
-          :aria-pressed="selected.has(img.id)"
-          @click="onCellClick(img)"
-          @keydown.enter.prevent="toggleSelect(img)"
-          @keydown.space.prevent="toggleSelect(img)"
+          ref="gridEl"
+          class="wh-grid"
+          :class="{ 'wh-grid--loading': searching && !!result }"
+          :style="cellStyle"
         >
-          <img :src="img.thumbnail_url" :alt="img.id" loading="lazy" decoding="async" />
-          <button class="wh-cell__preview" title="预览大图" @click.stop="openPreview(img)">
-            <v-icon icon="mdi-eye-outline" size="18" />
-          </button>
-          <span class="wh-cell__res">{{ img.resolution }}</span>
-          <span class="wh-cell__check">
-            <v-icon
-              :icon="selected.has(img.id) ? 'mdi-checkbox-marked-circle' : 'mdi-checkbox-blank-circle-outline'"
-              size="20"
-              :color="selected.has(img.id) ? 'primary' : 'white'"
+          <div
+            v-for="img in result.images"
+            :key="img.id"
+            class="wh-cell wh-cell--clickable"
+            :class="{ 'wh-cell--selected': selected.has(img.id) }"
+            :style="{ aspectRatio: ratioOf(img.resolution) }"
+            title="单击选择，双击预览大图"
+            role="button"
+            tabindex="0"
+            :aria-label="img.id"
+            :aria-pressed="selected.has(img.id)"
+            @click="onCellClick(img)"
+            @keydown.enter.prevent="toggleSelect(img)"
+            @keydown.space.prevent="toggleSelect(img)"
+          >
+            <img :src="img.thumbnail_url" :alt="img.id" loading="lazy" decoding="async" />
+            <button class="wh-cell__preview" title="预览大图" @click.stop="openPreview(img)">
+              <v-icon icon="mdi-eye-outline" size="18" />
+            </button>
+            <span class="wh-cell__res">{{ img.resolution }}</span>
+            <span class="wh-cell__check">
+              <v-icon
+                :icon="selected.has(img.id) ? 'mdi-checkbox-marked-circle' : 'mdi-checkbox-blank-circle-outline'"
+                size="20"
+                :color="selected.has(img.id) ? 'primary' : 'white'"
+              />
+            </span>
+          </div>
+        </div>
+
+        <EmptyState
+          v-if="result.images.length === 0"
+          icon="mdi-image-search-outline"
+          title="没有符合条件的图片"
+          desc="试试放宽分辨率或调整关键词"
+        />
+
+        <!-- 翻页条：贴在结果区底边，往下滚网格时也一直点得到。
+             原来它挂在工具栏里跟着页面一起滚走，翻页得先滚回顶部。 -->
+        <div class="wh-pager">
+          <v-btn
+            size="small"
+            variant="text"
+            icon="mdi-chevron-left"
+            :disabled="result.page <= 1 || searching"
+            @click="onPage(-1)"
+          />
+          <!-- 跳页：只有左右箭头时，从第 1 页到第 20 页要点 19 次 -->
+          <span class="wh-page">
+            <input
+              v-model.number="pageInput"
+              class="wh-page__input"
+              type="number"
+              min="1"
+              :max="result.total_pages"
+              :aria-label="'页码，共 ' + result.total_pages + ' 页'"
+              @keydown.enter.prevent="onJumpPage(pageInput)"
+              @blur="pageInput = result.page"
             />
+            <span class="text-caption">/ {{ result.total_pages }}</span>
           </span>
+          <v-btn
+            size="small"
+            variant="text"
+            icon="mdi-chevron-right"
+            :disabled="result.page >= result.total_pages || searching"
+            @click="onPage(1)"
+          />
         </div>
       </div>
-
-      <EmptyState
-        v-if="result.images.length === 0"
-        icon="mdi-image-search-outline"
-        title="没有符合条件的图片"
-        desc="试试放宽分辨率或调整关键词"
-      />
     </template>
 
     <EmptyState
@@ -806,6 +836,25 @@ onBeforeUnmount(() => {
   justify-content: flex-end;
   gap: var(--space-3);
 }
+/* 翻页条贴在视口底边时，.view 的下内边距会在它下方再露出一条内容（实测卡片会从条
+   下面探出来 40px）。设置页对同一个问题也是把根元素的 padding-bottom 归零，
+   这里照做，被去掉的留白补给页面最后一个元素（本次新图条）。 */
+.wh-view {
+  padding-bottom: 0;
+}
+.wh-view > .new-strip {
+  margin-bottom: var(--space-10);
+}
+
+/* 结果区：工具栏 + 网格 + 翻页条。三者原本是 .view 的直接子项、靠 .view 的 gap 隔开，
+   包进 wrapper 后要自己带上同样的间距。flex:none 是必需的：.view 是确定高度的纵向
+   flex 容器，内容高于视口时子项默认会被压缩（见 style.css 里 .view 的注释）。 */
+.wh-results {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-5);
+  flex: none;
+}
 .wh-toolbar {
   display: flex;
   align-items: center;
@@ -815,6 +864,24 @@ onBeforeUnmount(() => {
 .wh-size {
   display: flex;
   align-items: center;
+}
+/* 翻页条：贴住结果区底边，和 .settings-save-bar 用同一套贴底做法
+   （sticky + --surface-deep + 上边框），往下滚网格时始终点得到。
+   负外边距把底色铺满 .view 的左右留白，底下的卡片才不会从两侧露出来；
+   sticky 的包含块是 .wh-results，滚出结果区后它就跟着一起走，
+   不会一直浮在搜索条件卡上面。 */
+.wh-pager {
+  position: sticky;
+  bottom: 0;
+  z-index: 5;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-3);
+  margin: 0 calc(-1 * var(--space-8));
+  padding: var(--space-2) var(--space-8);
+  background: var(--surface-deep);
+  border-top: 1px solid var(--border-subtle);
 }
 /* 跳页输入框 */
 .wh-page {
