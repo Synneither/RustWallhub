@@ -148,7 +148,7 @@ confirm: { visible: boolean; title: string; text: string; danger: boolean; resol
 上下两区（可滚动单列）：
 1. **搜索条件卡**：关键词 `q`、分类三位开关（general/anime/people）、纯度三位开关（sfw/sketchy/nsfw，NSFW 需 API Key 提示）、排序（date/favorites/toplist/random，toplist 时展开 topRange 选择且禁用 order；random 时禁用 order）、最小分辨率 `atleast`、比例 `ratios`、单次下载目标 `wallhaven_max_images`、API Key（password 输入）。
    - 底部操作条：`保存并搜索`（主按钮，先 `save_settings` 再 `search_wallhaven(1)`）、`仅保存`。
-2. **结果区**：在线缩略图网格（`thumbnail_url` 直链，CSP 已允许 `th.wallhaven.cc` / `w.wallhaven.cc`），卡片显示分辨率角标 + 勾选框；单击选择，双击或悬停按钮打开大图预览（原图 URL 直载，可打开来源页 / 直接下载当前大图）；顶栏：`第 x / y 页 · 共 z 张`、分页前后按钮、`全选本页`、`下载选中`（`download_wallhaven_selected`）、`按条件批量下载`（`start_wallhaven_download`，说明文案"最多 100 页直到凑满 N 张"）。
+2. **结果区**（`.wh-results` 一层 wrapper，含工具栏 / 网格 / 翻页条）：在线缩略图网格（`thumbnail_url` 直链，CSP 已允许 `th.wallhaven.cc` / `w.wallhaven.cc`），卡片显示分辨率角标 + 勾选框；单击选择，双击或悬停按钮打开大图预览（原图 URL 直载，可打开来源页 / 直接下载当前大图）；工具栏：`共 z 张`、卡片尺寸档、`全选本页`、`下载选中`（`download_wallhaven_selected`）、`按条件批量下载`（`start_wallhaven_download`，说明文案"最多 100 页直到凑满 N 张"）；**底部翻页条**（`.wh-pager`，`position: sticky; bottom: 0`）承载上一页 / 跳页输入框 / 下一页，往下滚网格时始终贴在视口底边（sticky 的包含块是 `.wh-results`，滚出结果区就跟着一起走，不会浮在搜索条件卡上）；翻页后 `scrollResultsToTop()` 把结果区带回视口顶部。
 3. 下载中：结果区顶部进度条；`image-downloaded` 累积"本次新图"横向预览条。
 
 ### 7.3 Reddit 页
@@ -215,6 +215,7 @@ confirm: { visible: boolean; title: string; text: string; danger: boolean; resol
 - **数字**：统计数字 `.stat-number`（1.625rem，tabular-nums）。
 - **加载态**：网格用 shimmer 骨架；命令进行中按钮 loading 且禁用。
 - **Toast**：成功 `accent-success` / 失败 `accent-error` / 信息中性；底部居中，3s。
+- **贴底条**：设置页保存条、Wallhaven 结果区翻页条都用 `position: sticky; bottom: 0` + `--surface-deep` + `--border-subtle` 上边框；贴底条的页面根元素要把 `padding-bottom` 归零（否则条下面会再露出一条滚动内容，实测卡片会从条下面探出来），被去掉的留白补给页面最后一个元素。
 - **无障碍**：焦点环、`prefers-reduced-motion` 降级（token 已实现，保持）。
 
 ---

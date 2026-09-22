@@ -63,8 +63,12 @@ two checks that must pass before committing.
 - **Download flow**: start-style commands return immediately and spawn a background task. The
   per-image download loop runs on `tokio::spawn`; SQLite work runs on `spawn_blocking` so it
   does not occupy a tokio worker. Progress arrives only through events.
-- **Two DBs are separate SQLite files**: cross-source paging uses `ATTACH` + `UNION ALL` inside
-  `db::get_all_images_paged` (complexity O(limit), not O(offset)).
+- **Two DBs are separate SQLite files**: cross-source paging (`db::get_all_images_paged`) reads each
+  side through its own `idx_images_created_at`-ordered page query and streaming-merges the two
+  sorted streams in Rust, then slices `[offset, offset + limit)` — cost is O(limit), not O(offset).
+  Do **not** go back to `ATTACH` + `UNION ALL` + `ORDER BY`: SQLite cannot use an index for a
+  cross-database sort, so it builds a TEMP B-TREE over both tables on every page (deep paging then
+  costs hundreds of ms and grows with table size).
 - **Missing/unliked semantics**: `love = 0` marks a record as disliked or missing. A record is
   counted as *missing* only when `love = 1` **and** the file is absent from the save dir;
   manually disliked records are not counted as missing.
