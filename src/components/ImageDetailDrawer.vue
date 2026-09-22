@@ -137,6 +137,11 @@ const previewImage = computed(() => {
 .detail-preview {
   border-radius: var(--radius-md);
   overflow: hidden;
+  /* flex:none 不可省。.detail-body 是 height:100% 的纵向 flex 容器，而本块 overflow:hidden
+     会让 flex 的自动最小尺寸解析为 0 —— 抽屉内容高于视口时负空间全落到它身上：实测
+     1440x640 被压到 136px（预览图内容 184px，裁掉 48px）、1440x520 只剩 16px，整块预览消失。
+     更隐蔽的是 .detail-body 因此永远算"没有溢出"，也就永远不会滚动。关掉收缩后由它正常滚动。 */
+  flex: none;
   background: var(--preview-bg);
   cursor: zoom-in;
 }

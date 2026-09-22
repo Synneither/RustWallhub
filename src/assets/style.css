@@ -247,7 +247,12 @@ body {
 }
 
 /* ── Source cards ── */
-.source-card { overflow: hidden; }
+/* flex:none 不可省：.source-card 是 .view（height:100% 的纵向 flex 容器）的直接子项，
+   而它自身 overflow:hidden 会让 flex 的自动最小尺寸解析为 0，页内内容高于视口时
+   一个人吸掉全部负空间（实测 1440x560 被压掉 113px，底部按钮被裁且滚不到）。
+   另一个选择是去掉 overflow:hidden（min-height 就会退回内容高度），但卡片本就靠它裁圆角，
+   所以与 .progress-card 一致，直接关掉收缩、由 .view 滚动。 */
+.source-card { overflow: hidden; flex: none; }
 .source-card-header {
   display: flex;
   align-items: center;
@@ -402,6 +407,16 @@ textarea:focus-visible {
 /* ════════════════════════════════════════
    页面布局（视图根元素）
    ════════════════════════════════════════ */
+/* ⚠️ .view 是 height:100% 的纵向 flex 容器，子项默认 flex-shrink:1。
+   由此有一条必守规则：**凡是直接挂在 .view（或 .detail-body / .app-main 这类确定高度
+   纵向 flex 容器）下、且自身 overflow 不是 visible 的元素，必须显式 flex:none。**
+   原因：overflow 非 visible 会让 flex 的「自动最小尺寸」解析成 0，而不是内容高度。
+   于是它压不过普通卡片（普通卡片 min-height:auto = 内容高度，压不动），
+   负空间全落到它身上被压塌，而它的 overflow:visible 的兄弟都毫发无损。
+   两个特征值得记：① 它把 .view 的 scrollHeight 顶到与 clientHeight 相等，
+   所以页面看着"没有溢出"却也不滚动，问题会自我隐藏；② 只在这类容器的内容
+   高于视口（窗口变矮 / 卡片变多）时才发作，改窗口大小容易看漏。
+   已按此规则处理的：.progress-card / .source-card / .detail-preview。 */
 .view {
   height: 100%;
   overflow-y: auto;

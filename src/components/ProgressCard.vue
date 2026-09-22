@@ -78,6 +78,13 @@ const { run: onCancel, loading: cancelling } = useAsyncAction(async () => {
   display: flex;
   flex-direction: column;
   gap: var(--space-2);
+  /* 「数据库」「设置」等页面的根 .view 是 height:100% 的纵向 flex 容器，内容高于
+     视口时子项会被压缩。普通 .panel-card 的 overflow 可见，min-height:auto 会解析
+     成内容高度，压不动；本卡继承 .data-panel 的 overflow:hidden，自动最小尺寸是 0，
+     于是它一个人把全部负空间吸收掉——实测在 1440×1000 下被压成 26px 高，进度条与
+     文案（height:0）全被裁掉，看起来就是一条空白细条。
+     固定 flex:none 后不再参与压缩，改由 .view 正常滚动（其余卡片本来就在滚）。 */
+  flex: none;
 }
 .progress-card__head {
   display: flex;
