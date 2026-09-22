@@ -246,6 +246,34 @@ fn test_mark_dislike_and_restore_wallhaven() {
 }
 
 #[test]
+fn test_delete_records_by_names() {
+    let db = TestDb::wallhaven();
+    insert_wallhaven_image(db.path(), "id1", "gone.jpg", "h1", "u1", "s1", "1920x1080").unwrap();
+    insert_wallhaven_image(db.path(), "id2", "keep.jpg", "h2", "u2", "s2", "3840x2160").unwrap();
+
+    let img_dir = TempDir::new().unwrap();
+    let dir = img_dir.path().to_string_lossy().to_string();
+    // 先把统计灌进缓存，用来验证删除后缓存确实被失效（否则页面仍显示 2 条）。
+    assert_eq!(get_db_stats(db.path(), &dir).unwrap().total, 2);
+
+    // 只删指定的名字；不在库里的名字静默跳过，返回值是真实删除的行数。
+    let deleted = delete_records_by_names(
+        db.path(),
+        &["gone.jpg".to_string(), "not-in-db.jpg".to_string()],
+    )
+    .unwrap();
+    assert_eq!(deleted, 1);
+    assert_eq!(
+        get_all_filenames(db.path()).unwrap(),
+        vec!["keep.jpg".to_string()]
+    );
+    assert_eq!(get_db_stats(db.path(), &dir).unwrap().total, 1);
+
+    // 空列表是 no-op，不应该报错（前端在全不选时也会走同一条路径）。
+    assert_eq!(delete_records_by_names(db.path(), &[]).unwrap(), 0);
+}
+
+#[test]
 fn test_wallhaven_missing_love_toggle() {
     let db = TestDb::wallhaven();
     insert_wallhaven_image(db.path(), "id1", "a.jpg", "h1", "u1", "s1", "1920x1080").unwrap();

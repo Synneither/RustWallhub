@@ -6,6 +6,7 @@ import {
   adoptOrphanFiles,
   checkDatabases,
   cleanThumbnails,
+  deleteMissingRecords,
   deleteOrphanFiles,
   downloadMissingImages,
   exportSnapshots,
@@ -208,6 +209,21 @@ const { run: onDownloadSelectedMissing, loading: downloadingMissing } = useAsync
   },
 );
 
+/** 永久删除选中的缺失记录（连同残留缩略图）。与「标记为不喜欢」不同，这一步不可撤销。 */
+const { run: runDeleteMissing, loading: deletingMissing } = useAsyncAction(async () => {
+  const bySource = groupBySource(missingSelected.value);
+  let removed = 0;
+  for (const [source, records] of Object.entries(bySource)) {
+    removed += await deleteMissingRecords(
+      source as "wallhaven" | "reddit",
+      records.map((r) => r.name),
+    );
+  }
+  toast(`已删除 ${removed} 条记录`, "success");
+  missingSelected.value = [];
+  await reloadAll();
+});
+
 /** 收养选中的孤儿文件入库。 */
 const { run: runAdopt, loading: adopting } = useAsyncAction(async () => {
   const bySource = groupBySource(orphanSelected.value);
@@ -256,6 +272,17 @@ async function onMarkDisliked() {
   );
   if (!ok) return;
   await runMarkDisliked();
+}
+
+async function onDeleteMissingRecords() {
+  if (missingSelected.value.length === 0) return;
+  const ok = await askConfirm(
+    "删除记录",
+    `将从数据库中永久删除选中的 ${missingSelected.value.length} 条记录，并清理它们的缩略图。\n文件本身已不在磁盘上，删除后无法补下载，也无法撤销。`,
+    { danger: true, confirmText: "删除" },
+  );
+  if (!ok) return;
+  await runDeleteMissing();
 }
 
 /* ════ 孤儿文件操作 ════ */
@@ -600,6 +627,17 @@ const tab = ref<"missing" | "orphan" | "records">("missing");
               <v-btn size="small" variant="tonal" :disabled="missingCount === 0" @click="onRecoverAll" :loading="recoveringAll">
                 全部补下载
               </v-btn>
+              <v-btn
+                size="small"
+                variant="tonal"
+                color="error"
+                title="只删除选中的记录，不可撤销"
+                :disabled="missingSelected.length === 0"
+                @click="onDeleteMissingRecords"
+                :loading="deletingMissing"
+              >
+                删除记录（{{ missingSelected.length }}）
+              </v-btn>
               <v-btn size="small" variant="tonal" color="error" :disabled="missingCount === 0" @click="onMarkDisliked" :loading="markingDisliked">
                 标记为不喜欢
               </v-btn>
@@ -850,6 +888,9 @@ const tab = ref<"missing" | "orphan" | "records">("missing");
   align-items: center;
   gap: var(--space-2);
   padding: var(--space-3) 0;
+  /* 缺失文件页的动作按钮已排到 4 个，窗口收窄时允许换行，
+     否则按钮会溢出到 panel-card 之外（卡片是 overflow 可见的）。 */
+  flex-wrap: wrap;
 }
 .db-table {
   background: transparent !important;

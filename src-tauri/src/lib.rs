@@ -182,6 +182,7 @@ pub fn run() {
             mark_disliked_files,
             restore_all_files,
             list_missing_images,
+            delete_missing_records,
             refresh_file_caches,
             // sync
             export_snapshots,

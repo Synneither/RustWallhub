@@ -1,10 +1,12 @@
 //! Database query commands: list_database_images, list_orphan_files,
-//! mark_disliked_files, restore_all_files, list_missing_images, refresh_file_caches.
+//! mark_disliked_files, restore_all_files, list_missing_images,
+//! delete_missing_records, refresh_file_caches.
 
 use crate::config::Source;
 use crate::db;
 use crate::downloader;
-use crate::state::{AppError, AppState};
+use crate::state::{ensure_plain_filename, AppError, AppState};
+use crate::thumbnail;
 use serde::Serialize;
 use std::collections::HashSet;
 
@@ -223,6 +225,60 @@ pub async fn list_missing_images(
             )?);
             Ok(all)
         }
+    })
+    .await
+}
+
+/// 永久删除缺失图片的数据库记录，并顺手清掉它们残留的缩略图。
+///
+/// 与 `mark_disliked_files`（只置 love=0，可用「恢复所有已标记」撤销）不同，
+/// 这是真的删行，调用方必须先用确认框明确告知不可撤销。
+///
+/// 缩略图一并删除：原图已经不在保存目录，缩略图必然对不上任何文件，
+/// 留着只能等「清理孤儿缩略图」再扫一遍。
+#[tauri::command]
+pub async fn delete_missing_records(
+    state: tauri::State<'_, AppState>,
+    source: Source,
+    names: Vec<String>,
+) -> Result<u64, AppError> {
+    log::info!(
+        "[CMD] delete_missing_records: source={:?}, count={}",
+        source,
+        names.len()
+    );
+    // 文件名来自前端，先逐个校验，避免任何路径穿越进到删文件/删缩略图环节。
+    for name in &names {
+        ensure_plain_filename(name)?;
+    }
+    let config = crate::state::load_config(&state)?;
+    run_blocking(move || {
+        // 显式展开 All：`thumb_dir_for(All)` 会回退到 Reddit 目录，
+        // 直接用它会把 Wallhaven 的缩略图留在原地。
+        let targets: Vec<(&str, std::path::PathBuf)> = match source {
+            Source::Wallhaven => vec![(
+                config.wallhaven_db_path.as_str(),
+                config.wallhaven_thumb_dir(),
+            )],
+            Source::Reddit => vec![(config.reddit_db_path.as_str(), config.reddit_thumb_dir())],
+            Source::All => vec![
+                (
+                    config.wallhaven_db_path.as_str(),
+                    config.wallhaven_thumb_dir(),
+                ),
+                (config.reddit_db_path.as_str(), config.reddit_thumb_dir()),
+            ],
+        };
+
+        let mut removed = 0u64;
+        for (db_path, thumb_dir) in targets {
+            removed += db::delete_records_by_names(db_path, &names).map_err(AppError::Db)?;
+            for name in &names {
+                thumbnail::remove_thumbnails(&thumb_dir, name);
+            }
+        }
+        log::info!("[delete_missing_records] removed={}", removed);
+        Ok(removed)
     })
     .await
 }

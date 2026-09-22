@@ -253,6 +253,39 @@ pub fn mark_dislike_by_names(db_path: &str, names: &[String]) -> SqlResult<u64> 
     Ok(count)
 }
 
+/// 按文件名批量删除记录，返回真正删掉的行数。
+///
+/// 给「缺失文件」用的硬删除：原文件已不在磁盘，记录除了占着缺失列表之外没有别的价值。
+/// 与 `mark_dislike_by_names` 的区别是**不可撤销**——标记为不喜欢还能用
+/// 「恢复所有已标记」撤销，删除要恢复只能重新入库，所以调用方必须先二次确认。
+///
+/// 不存在于库中的名字会被静默跳过（不报错），这样按来源分组批量调用时
+/// 不需要先过滤（例如合并来源里混着另一个库的名字）。
+pub fn delete_records_by_names(db_path: &str, names: &[String]) -> SqlResult<u64> {
+    let count = with_cached_connection(db_path, |conn| {
+        let tx = conn.transaction()?;
+        let mut count = 0u64;
+        {
+            // 复用同一条 prepared statement：批量删除的瓶颈在 WAL 写入而不是解析。
+            let mut stmt = tx.prepare("DELETE FROM images WHERE name = ?1")?;
+            for name in names {
+                count += stmt.execute(rusqlite::params![name])? as u64;
+            }
+        }
+        tx.commit()?;
+        Ok(count)
+    })?;
+    if count > 0 {
+        invalidate_stats(db_path);
+    }
+    log::info!(
+        "[DB] delete_records_by_names: deleted={}/{}",
+        count,
+        names.len()
+    );
+    Ok(count)
+}
+
 pub fn get_wallhaven_images(db_path: &str, limit: i64, offset: i64) -> SqlResult<Vec<ImageRecord>> {
     with_cached_connection(db_path, |conn| {
         let mut stmt = conn.prepare(
