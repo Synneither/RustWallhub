@@ -15,11 +15,12 @@
 | ⬇️ **批量下载** | Wallhaven 按条件批量下载 / 勾选下载；Reddit 按 subreddit 列表批量抓取 |
 | 🧵 **Reddit 抓取** | 支持 i.redd.it 直链、gallery 首图、imgur 直链与相册；连续 3 批无新增自动停止 |
 | 🗂️ **本地图库** | Wallhaven / Reddit 双源浏览，搜索、排序、分页、孤儿标记，支持浏览主目录内的自定义本地目录 |
-| 🖥️ **设置壁纸** | 支持 GNOME / KDE / XFCE / sway / Hyprland / swww / feh；Windows 支持多显示器 |
+| 🖥️ **设置壁纸** | 支持 Noctalia / GNOME / KDE / XFCE / sway / Hyprland / awww(swww) / feh；Windows 与 Noctalia/Hyprland/sway 支持按显示器设置 |
 | 🎞️ **壁纸轮播** | 使用当前筛选结果启动轮播，可设置间隔并随时停止 |
 | 📋 **缺失检测** | 检测“数据库有记录但磁盘文件不存在”的图片，可选中补下载或全部恢复 |
 | 🗑️ **孤儿文件** | 检测“磁盘有文件但数据库无记录”的图片，可批量收养入库或删除 |
 | ❤️ **喜好管理** | 删除/不喜欢会写入数据库；缺失恢复时自动跳过已标记记录 |
+| 🗑️ **回收站删除** | 删除图片 = 移入系统回收站（Windows 回收站 / Linux XDG Trash），可再恢复；缩略图缓存直接清理 |
 | 🧹 **数据库维护** | 库状态、记录浏览、标记缺失、恢复标记、清理孤儿缩略图 |
 | 🔄 **自动更新** | 启动时可选检查更新，支持下载安装后自动重启 |
 | 🌙 **多主题** | 柔灰暗色（默认）/ 暖白亮色 / 跟随系统 |
@@ -74,6 +75,92 @@ cargo test
 cd .. && deno task build
 ```
 
+## 🐧 Linux / Wayland（niri + Noctalia）
+
+Linux 侧按「谁是背景层的真正绘制者」来选壁纸后端，探测顺序即优先级：
+
+| 顺序 | 后端 | 适用场景 |
+|------|------|----------|
+| 1 | **Noctalia** | v5 走 `noctalia msg wallpaper-set`，v4 走 `qs -c noctalia-shell ipc call wallpaper set` |
+| 2 | Hyprland (hyprpaper) | Hyprland 会话 |
+| 3 | sway (swaymsg) | sway 会话 |
+| 4 | awww / swww | 独立壁纸守护进程（守护进程没在跑时会自动拉起） |
+| 5 | KDE / GNOME / XFCE | 桌面环境自身的壁纸设置 |
+| 6 | feh | 仅 X11 有意义 |
+
+**niri 本身不画壁纸**，所以要么跑 Noctalia（推荐，壁纸和调色板主题会一起变），要么跑 `awww-daemon`。走 Noctalia 时壁纸由外壳绘制，不要再另外启动 awww/swaybg 抢背景层。
+
+「当前壁纸」读取顺序：`noctalia msg wallpaper-get` → Noctalia v4 缓存 JSON → awww/swww 守护进程缓存 → Noctalia `settings.toml`。
+
+### AppImage
+
+```bash
+chmod +x rustwallhub_*.AppImage && ./rustwallhub_*.AppImage
+```
+
+遇到 `dlopen(): error loading libfuse.so.2` 时，装上 `fuse2`，或改用解包运行：`./rustwallhub_*.AppImage --appimage-extract-and-run`。
+
+### 桌面集成（装进启动器）
+
+AppImage 不会被启动器自动收录，所以先手动装一次桌面项：
+
+```bash
+./rustwallhub_*.AppImage --install-desktop     # 写入 ~/.local/share/applications/rustwallhub.desktop + 图标
+./rustwallhub_*.AppImage --uninstall-desktop   # 卸载
+```
+
+装好后启动器/dock 里就能搜到 RustWallhub。桌面项里的 `StartupWMClass=rustwallhub` 与应用的 Wayland `app-id` 一致，dock 才能把窗口和图标对上。
+
+### 界面缩放
+
+WebKitGTK 基于 GTK3，不支持 `wp_fractional_scale_v1`。niri 这类用非整数缩放（1.25 / 1.5）的合成器下，界面会由合成器整体放大而发虚。**设置 → 外观 → 界面缩放** 可以在应用侧补偿（80% – 200%，保存后立即生效）。
+
+### 自动更新
+
+Linux 上的自动更新走 Tauri updater，有两个前提，不满足时应用会直接给出中文提示：
+
+- **必须是从 AppImage 运行的实例**。`.deb` 装的实例走的是 `pkexec dpkg -i`，而 niri 默认没有 polkit 认证代理，这条路走不通 —— 请用包管理器升级。
+- **AppImage 所在目录必须可写**，因为更新过程会先把当前 AppImage 挪走后写入新文件。放在 `/opt`、`/usr/local/bin` 这类 root 所有的目录会失败，放进 `$HOME` 下的目录（例如 `~/Applications`）即可。
+
+### 日志与回收站
+
+- 日志同时写 stderr 与 `~/.local/state/rustwallhub/logs/rustwallhub.log`（超过 2 MiB 滚动，保留一份 `.1` 备份）。从启动器启动时看这个文件。
+- 删除走回收站：有 `gio` 时用 `gio trash`，否则用内置的 XDG Trash 实现（`~/.local/share/Trash`）。移入回收站失败会直接报错，**不会退化成永久删除**。
+
+### niri 窗口规则
+
+niri 默认平铺，桌面工具类窗口建议浮动打开。先 `niri msg windows` 确认真实 `app-id`（AppImage 下通常是 `rustwallhub`），再写进 `~/.config/niri/config.kdl`：
+
+```kdl
+window-rule {
+    match app-id="rustwallhub"
+    open-floating true
+    default-column-width { proportion 0.8; }
+}
+```
+
+### NVIDIA 显卡
+
+WebKitGTK 在专有 NVIDIA 驱动上有已知的空白窗口 / resize 崩溃问题。应用会在**检测到专有 NVIDIA 驱动**时按会话类型自动补上兼容项，并在日志里打印一行 `[linux-env] ...`：
+
+- Wayland（niri 等）：`__NV_DISABLE_EXPLICIT_SYNC=1`（驱动 ≥ 560 且装了 egl-wayland2 时自动跳过，保留快速路径）
+- X11：`WEBKIT_DISABLE_DMABUF_RENDERER=1`
+
+自己显式设置过的变量不会被覆盖；排查问题时可临时 `WEBKIT_DISABLE_COMPOSITING_MODE=1` 再试。
+
+### 排查
+
+从终端启动可以看到日志（`RUST_LOG=info` 是默认值）：
+
+```bash
+RUST_LOG=info ./rustwallhub_*.AppImage
+```
+
+- 设壁纸报「未检测到可用的壁纸后端」：确认 Noctalia 在跑，或 `awww-daemon` 已启动。
+- 文件/目录选择框是**进程内 GTK 对话框**（`tauri-plugin-dialog` 默认 gtk3 后端），不需要 `xdg-desktop-portal`；打不开先看日志。
+- 打开外链/来源页走 `xdg-open`（自带 `gio open` 等回退），都没装时补一个 `xdg-utils`。
+- 明明装了 `noctalia` / `awww` 却探测不到：GUI 启动时继承的 `PATH` 可能被裁剪，应用会额外查找 `~/.local/bin`、`~/.nix-profile/bin`、`/run/current-system/sw/bin` 等目录。
+
 ## 🏗️ 项目结构
 
 ```
@@ -102,6 +189,11 @@ RustWallhub/
 │   │   ├── wallhaven.rs          # Wallhaven API 客户端
 │   │   ├── reddit.rs             # Reddit JSON 客户端与 imgur 解析
 │   │   ├── wallpaper.rs          # 各桌面环境壁纸设置与轮播
+│   │   ├── linux_env.rs          # Linux/WebKit 启动期兼容项（NVIDIA、会话类型）
+│   │   ├── exec.rs               # 外部命令查找（PATH + ~/.local/bin、Nix profile 等）
+│   │   ├── trash.rs             # 回收站（Windows SHFileOperationW / Linux gio+XDG Trash）
+│   │   ├── logging.rs            # 日志 tee 到文件 + 滚动
+│   │   ├── desktop_entry.rs      # --install-desktop / --uninstall-desktop
 │   │   ├── state.rs              # 应用状态、事件 payload、安全路径
 │   │   └── commands/             # settings/gallery/database/download/...
 │   ├── capabilities/             # Tauri capability
