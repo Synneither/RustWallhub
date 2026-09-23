@@ -42,6 +42,9 @@ log = "0.4"
 env_logger = "0.11"
 tauri-plugin-dialog = "2"
 tauri-plugin-updater = "2"
+# 单实例：从 dock/启动器重复点击时不应起第二个进程（会各自跑自动同步、更新检查、
+# 轮播，互相抢壁纸）。第二个实例把已有窗口带到前台后退出。
+tauri-plugin-single-instance = "2"
 # 只为了 JPEG 的 DCT 域缩放解码（1/8、1/4、1/2）：image / zune-jpeg 不支持降采样解码，
 # 生成缩略图时只能整图解码（4K 约 31 MiB、占全链路 80% 时间）。
 # 关掉默认 feature（rayon）：单张内部再并行没意义，我们已在外层用线程池并行处理多张图，

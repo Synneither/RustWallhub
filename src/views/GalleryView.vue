@@ -36,7 +36,7 @@ import ImageDetailDrawer from "../components/ImageDetailDrawer.vue";
 import { useSelection } from "../composables/useSelection";
 import { useGridDensity } from "../composables/useGridDensity";
 import { useAsyncAction } from "../composables/useAsyncAction";
-import { useDeviceDpr } from "../composables/useDeviceDpr";
+import { useEffectiveDpr } from "../composables/useEffectiveDpr";
 import { useThumbCache } from "../composables/useThumbCache";
 import { useContainerWidth } from "../composables/useContainerWidth";
 import { openUrlSafe } from "../utils/openUrl";
@@ -98,7 +98,7 @@ const { containerWidth, sync: syncLayout } = useContainerWidth(gridEl, {
   afterMeasure: measureCellWidth,
 });
 /** 屏幕像素比（响应变化：拖到别的显示器 / 改系统缩放时要重算档位） */
-const deviceDpr = useDeviceDpr();
+const deviceDpr = useEffectiveDpr();
 /** 卡片宽度上限：超过它，缩略图就会被放大显示 */
 const maxCell = computed(() => maxCoveredWidth(THUMB_MAX_DPR, deviceDpr.value));
 
@@ -365,8 +365,8 @@ async function onBatchDelete() {
   const ok = await askConfirm(
     isOrphanMode ? "删除孤儿文件" : "批量删除",
     isOrphanMode
-      ? `将永久删除 ${names.length} 个孤儿文件及其缩略图，无法恢复。`
-      : `将把 ${names.length} 张图片标记为不喜欢并删除本地文件及缩略图。`,
+      ? `将把 ${names.length} 个孤儿文件移入回收站（缩略图缓存直接删除）。`
+      : `将把 ${names.length} 张图片标记为不喜欢，并移入回收站（缩略图缓存直接删除）。`,
     { danger: true, confirmText: "删除" },
   );
   if (!ok) return;
@@ -481,15 +481,15 @@ async function onDeleteSingle(img: LocalImageEntry) {
   const ok = await askConfirm(
     isOrphan ? "删除孤儿文件" : "删除图片",
     isOrphan
-      ? `将永久删除「${img.name}」及其缩略图，无法恢复。`
-      : `将把「${img.name}」标记为不喜欢并删除本地文件及缩略图。`,
+      ? `将把「${img.name}」移入回收站（缩略图缓存直接删除）。`
+      : `将把「${img.name}」标记为不喜欢并移入回收站（缩略图缓存直接删除）。`,
     { danger: true, confirmText: "删除" },
   );
   if (!ok) return;
   try {
     if (isOrphan) await deleteOrphanFile(source.value, img.name);
     else await dislikeFile(source.value, img.name);
-    toast("已删除", "success");
+    toast("已移入回收站", "success");
     detailOpen.value = false;
     await load();
   } catch (e) {

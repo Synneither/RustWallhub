@@ -1,11 +1,16 @@
 mod commands;
 mod config;
 mod db;
+mod desktop_entry;
 mod downloader;
+mod exec;
+mod linux_env;
+mod logging;
 mod oss;
 mod reddit;
 mod state;
 mod thumbnail;
+mod trash;
 mod wallhaven;
 mod wallpaper;
 
@@ -20,14 +25,59 @@ use wallpaper::{
     is_slideshow_running, list_monitors, set_wallpaper, start_slideshow, stop_slideshow,
 };
 
+/// 应用界面缩放（webview zoom）。
+///
+/// niri 这类用非整数缩放的合成器下，WebKitGTK（GTK3）不支持 fractional-scale，
+/// 界面会被合成器整体放大而发虚；这个设置让用户在应用侧自行补偿。
+/// 取值钳制到配置允许的范围，失败只记日志——缩放设不上不该影响应用启动。
+pub(crate) fn apply_ui_zoom(app: &tauri::AppHandle, zoom: f64) {
+    let clamped = zoom.clamp(config::UI_ZOOM_MIN, config::UI_ZOOM_MAX);
+    let Some(window) = app.get_webview_window("main") else {
+        log::warn!("[ui-zoom] 找不到主窗口，跳过界面缩放");
+        return;
+    };
+    match window.set_zoom(clamped) {
+        Ok(()) => log::info!("[ui-zoom] 界面缩放 = {clamped}"),
+        Err(e) => log::warn!("[ui-zoom] 设置界面缩放失败: {e}"),
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info"))
-        .format_timestamp_millis()
-        .init();
+    // 纯命令行子命令（安装/卸载桌面项）先处理：不初始化日志与 WebView，跑完即退出。
+    if let Some(result) = desktop_entry::handle_cli_args() {
+        match result {
+            Ok(text) => println!("{text}"),
+            Err(text) => {
+                eprintln!("{text}");
+                std::process::exit(1);
+            }
+        }
+        return;
+    }
+
+    // 日志同时落盘：从启动器/双击 AppImage 启动时 stderr 无处可去。
+    let log_path = logging::init("info");
+    // 必须在 GTK / WebView 初始化之前：NVIDIA + Wayland 下网页视图的渲染路径
+    // 由这里的几个环境变量决定（见 linux_env 模块注释）。
+    linux_env::init();
     log::info!("RustWallhub 启动");
+    if let Some(path) = log_path {
+        log::info!("日志文件: {}", path.display());
+    }
 
     let app = tauri::Builder::default()
+        // single-instance 必须在其它插件之前注册：它要在第一个实例里尽早抢到
+        // 单实例锁，并把后续实例的命令行参数转交过来。
+        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+            // 第二个实例被拦下：把已有窗口带回前台（Wayland 下 set_focus 可能被
+            // 合成器忽略，能 show 出来就达到目的了）。
+            if let Some(window) = app.get_webview_window("main") {
+                let _ = window.unminimize();
+                let _ = window.show();
+                let _ = window.set_focus();
+            }
+        }))
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
@@ -113,6 +163,7 @@ pub fn run() {
 
             let auto_update = config.auto_update;
             let auto_sync_start = config.oss_auto_download_on_start;
+            let ui_zoom = config.ui_zoom;
 
             // asset 协议白名单：静态 scope 只含缩略图缓存目录，用户配置的保存目录
             // 在这里按实际路径授权，避免为了显示图片而把整个 $HOME 暴露给 asset 协议。
@@ -126,6 +177,9 @@ pub fn run() {
                 config_cache: Mutex::new(Some(std::sync::Arc::new(config))),
                 slideshow_cancel: Mutex::new(None),
             });
+
+            // 界面缩放：把配置里的值同步到 webview（1.0 也要调一次，用户可能刚调回 100%）
+            apply_ui_zoom(app.handle(), ui_zoom);
 
             if auto_update {
                 let app_handle = app.handle().clone();

@@ -190,25 +190,39 @@ pub async fn browse_image_files(
         };
 
         let mut entries: Vec<FileEntry> = Vec::new();
+        let mut skipped_non_utf8 = 0usize;
         if let Ok(read_dir) = std::fs::read_dir(&scan_path) {
             for entry in read_dir.flatten() {
                 let file_path = entry.path();
-                if file_path.is_file() && downloader::file_is_image(&file_path) {
-                    let name = entry.file_name().to_string_lossy().to_string();
-                    // 注意：这里**不能**按搜索词过滤。缓存存的是扫描结果，一旦存了子集，
-                    // 用户清空搜索框后（目录 mtime 未变、仍在 5 分钟新鲜期内）图库就会
-                    // 凭空少图。搜索统一在 page_from_cache 里对全量条目应用。
-                    let metadata = entry.metadata().ok();
-                    let is_orphan = !db_names.contains(&name);
-                    entries.push(FileEntry {
-                        name,
-                        path: file_path.to_string_lossy().to_string(),
-                        size: metadata.as_ref().map_or(0, |m| m.len()),
-                        is_orphan,
-                        modified: metadata.and_then(|m| m.modified().ok()),
-                    });
+                if !file_path.is_file() || !downloader::file_is_image(&file_path) {
+                    continue;
                 }
+                // 非 UTF-8 文件名在 Linux 上是合法的，但本应用全链路用 String 传路径
+                // （IPC、asset 授权、缩略图键），lossy 转换出来的路径根本打不开，
+                // 列到图库里只会是一张点不动的裂图。这里直接跳过并记数，
+                // 至少让日志能解释"目录里明明有图却少了几张"。
+                let Some(name) = entry.file_name().to_str().map(str::to_string) else {
+                    skipped_non_utf8 += 1;
+                    continue;
+                };
+                // 注意：这里**不能**按搜索词过滤。缓存存的是扫描结果，一旦存了子集，
+                // 用户清空搜索框后（目录 mtime 未变、仍在 5 分钟新鲜期内）图库就会
+                // 凭空少图。搜索统一在 page_from_cache 里对全量条目应用。
+                let metadata = entry.metadata().ok();
+                let is_orphan = !db_names.contains(&name);
+                entries.push(FileEntry {
+                    name,
+                    path: file_path.to_string_lossy().to_string(),
+                    size: metadata.as_ref().map_or(0, |m| m.len()),
+                    is_orphan,
+                    modified: metadata.and_then(|m| m.modified().ok()),
+                });
             }
+        }
+        if skipped_non_utf8 > 0 {
+            log::warn!(
+                "[browse] 目录里有 {skipped_non_utf8} 个文件名不是合法 UTF-8，已跳过（当前版本不支持）"
+            );
         }
 
         apply_sort(&mut entries, &scan_sort);
@@ -423,9 +437,13 @@ pub async fn dislike_file(
 
         let file_path = state::safe_join(std::path::Path::new(&save_dir), &name)?;
         if file_path.exists() {
-            std::fs::remove_file(&file_path).map_err(|e| {
-                log::error!("[dislike_file] 删除文件失败 {}: {}", file_path.display(), e);
-                AppError::Io(e)
+            // 用 inspect_err 而非 map_err：错误类型已经是 AppError，这里只加日志不转换。
+            crate::trash::move_to_trash(&file_path).inspect_err(|e| {
+                log::error!(
+                    "[dislike_file] 移入回收站失败 {}: {}",
+                    file_path.display(),
+                    e
+                );
             })?;
         }
 
@@ -463,9 +481,9 @@ pub async fn dislike_files(
         // 否则用户点了「删除 20 个」会因第一个失败而一个都删不掉。
         for (name, file_path) in state::safe_join_all(std::path::Path::new(&save_dir), &names) {
             if file_path.exists() {
-                if let Err(e) = std::fs::remove_file(&file_path) {
+                if let Err(e) = crate::trash::move_to_trash(&file_path) {
                     log::error!(
-                        "[dislike_files] 删除文件失败 {}: {}",
+                        "[dislike_files] 移入回收站失败 {}: {}",
                         file_path.display(),
                         e
                     );
@@ -508,13 +526,12 @@ pub async fn delete_orphan_file(
         let file_path = state::safe_join(std::path::Path::new(&save_dir), &name)?;
         let existed = file_path.exists();
         if existed {
-            std::fs::remove_file(&file_path).map_err(|e| {
+            crate::trash::move_to_trash(&file_path).inspect_err(|e| {
                 log::error!(
-                    "[delete_orphan_file] 删除文件失败 {}: {}",
+                    "[delete_orphan_file] 移入回收站失败 {}: {}",
                     file_path.display(),
                     e
                 );
-                AppError::Io(e)
             })?;
         }
 
@@ -549,9 +566,9 @@ pub async fn delete_orphan_files(
         // 同 dislike_files：base 只解析一次，单个失败只跳过，不中断整批。
         for (name, file_path) in state::safe_join_all(std::path::Path::new(&save_dir), &names) {
             if file_path.exists() {
-                if let Err(e) = std::fs::remove_file(&file_path) {
+                if let Err(e) = crate::trash::move_to_trash(&file_path) {
                     log::error!(
-                        "[delete_orphan_files] 删除文件失败 {}: {}",
+                        "[delete_orphan_files] 移入回收站失败 {}: {}",
                         file_path.display(),
                         e
                     );

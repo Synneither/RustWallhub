@@ -11,7 +11,7 @@ import { positiveInt } from "../utils/rules";
 import { useConfigDraft } from "../composables/useConfigDraft";
 import { useAsyncAction } from "../composables/useAsyncAction";
 import { useGridDensity } from "../composables/useGridDensity";
-import { useDeviceDpr } from "../composables/useDeviceDpr";
+import { useEffectiveDpr } from "../composables/useEffectiveDpr";
 import { useContainerWidth } from "../composables/useContainerWidth";
 import { openUrlSafe } from "../utils/openUrl";
 import { friendlyError } from "../utils/errors";
@@ -136,7 +136,7 @@ const resultsEl = ref<HTMLElement | null>(null);
 /** 容器宽度跟踪（ResizeObserver + v-if 换元素自动重挂）已收敛到 useContainerWidth */
 const { containerWidth } = useContainerWidth(gridEl);
 /** 屏幕像素比（响应变化：拖到别的显示器 / 改系统缩放时要重算上限） */
-const deviceDpr = useDeviceDpr();
+const deviceDpr = useEffectiveDpr();
 const maxCell = computed(() => maxCoveredWidthForPixels(REMOTE_THUMB_WIDTH, deviceDpr.value));
 
 const { density: cellSize, items: SIZE_ITEMS, gridStyle: cellStyle } = useGridDensity(

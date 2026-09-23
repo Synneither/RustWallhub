@@ -105,6 +105,17 @@ pub async fn save_settings(
     if config.thumbnail_dpr < 1 || config.thumbnail_dpr > 3 {
         return Err(AppError::Config("缩略图 DPR 超出范围 (1-3)".into()));
     }
+    // 非有限值（NaN/∞）会让 webview 缩放级别落到未定义行为，先单独挡一次
+    if !config.ui_zoom.is_finite() {
+        return Err(AppError::Config("界面缩放必须是数字".into()));
+    }
+    if !(crate::config::UI_ZOOM_MIN..=crate::config::UI_ZOOM_MAX).contains(&config.ui_zoom) {
+        return Err(AppError::Config(format!(
+            "界面缩放超出范围 ({}-{})",
+            crate::config::UI_ZOOM_MIN,
+            crate::config::UI_ZOOM_MAX
+        )));
+    }
     let old_config = crate::state::load_config(&state)?;
     crate::state::save_config(&state, &config)?;
     if let Ok(mut cache) = state.file_cache.lock() {
@@ -124,6 +135,8 @@ pub async fn save_settings(
     std::fs::create_dir_all(std::path::Path::new(&config.db_dir)).ok();
     // 保存目录可能刚被改到新位置，补一次 asset 协议授权，否则图库里的图会加载失败。
     crate::state::allow_config_asset_dirs(&app, &config);
+    // 界面缩放立即生效（不必重启），边界与前端档位一致。
+    crate::apply_ui_zoom(&app, config.ui_zoom);
     // 注意：这里不初始化数据库，由前端确认后调用 init_databases 显式创建
     rebuild_http_client(&state, config.request_timeout, &config.proxy_url)
         .map_err(AppError::Config)?;
@@ -204,12 +217,53 @@ pub async fn check_update(app: tauri::AppHandle) -> Result<UpdateInfo, String> {
     })
 }
 
+/// 自动更新在 Linux 上有两个隐含前提，不满足时给可执行的中文提示，
+/// 而不是把 updater 的英文报错原样抛给用户。
+///
+/// - 必须是从 AppImage 运行的（`APPIMAGE` 环境变量存在）：deb 包走的是 updater 的
+///   `install_deb` 分支，它会依次尝试 `pkexec` → zenity/kdialog → 终端 `sudo`，
+///   而 niri 这类会话默认没有 polkit 认证代理，三条路都不通；源码运行同理没有可替换的产物。
+/// - AppImage 所在目录必须可写：`install_appimage` 会先把当前 AppImage **rename** 进
+///   临时目录再写新字节，所以放在 `/opt`、`/usr/local/bin`（root 所有）会失败。
+fn precheck_update_support() -> Result<(), String> {
+    if !cfg!(target_os = "linux") {
+        return Ok(());
+    }
+    let appimage = std::env::var("APPIMAGE").unwrap_or_default();
+    if appimage.is_empty() {
+        return Err(
+            "当前实例不是从 AppImage 运行的，自动更新不可用：请用发行版包管理器升级，\
+             或改用 AppImage 版本"
+                .to_string(),
+        );
+    }
+
+    let path = std::path::Path::new(&appimage);
+    let Some(dir) = path.parent() else {
+        return Err(format!("无法确定 AppImage 所在目录: {appimage}"));
+    };
+    // 用探针文件做真实的可写判定：只看 metadata 的 readonly 位判断不出 root 所有的目录。
+    let probe = dir.join(".rustwallhub-write-test");
+    match std::fs::write(&probe, b"") {
+        Ok(()) => {
+            let _ = std::fs::remove_file(&probe);
+            Ok(())
+        }
+        Err(e) => Err(format!(
+            "AppImage 所在目录不可写（{}），自动更新无法替换文件。\
+             把 AppImage 移到 $HOME 下的目录（例如 ~/Applications）后重试。原始错误: {e}",
+            dir.display()
+        )),
+    }
+}
+
 /// Downloads and installs the latest update, then restarts the app.
 /// Emits `update-progress` (with `UpdateProgress`) during download and
 /// `update-installing` when the download finishes and installation begins.
 #[tauri::command]
 pub async fn install_update(app: tauri::AppHandle) -> Result<(), String> {
     log::info!("[CMD] install_update called");
+    precheck_update_support()?;
     let updater = app
         .updater()
         .map_err(|e| format!("初始化 updater 失败: {e}"))?;

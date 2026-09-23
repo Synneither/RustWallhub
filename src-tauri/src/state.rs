@@ -308,6 +308,29 @@ pub fn normalize_config_path(base_dir: &std::path::Path, value: String) -> Strin
         .to_string()
 }
 
+/// Percent-encode 一个绝对路径。
+///
+/// `file://` URI（GNOME/KDE 设壁纸）与 XDG 回收站 `.trashinfo` 里的 `Path=` 值
+/// 用的是同一套规则：保留 RFC 3986 的 unreserved 字符与 `/`，其余按 UTF-8 逐字节编码。
+pub fn escape_path_percent(path: &str) -> String {
+    const HEX: &[u8; 16] = b"0123456789ABCDEF";
+    // 预分配（最坏情况每个字符都编码成 %XX，3 倍原长），避免逐字符堆分配。
+    let mut out = String::with_capacity(path.len() * 3);
+    for c in path.chars() {
+        if c.is_ascii_alphanumeric() || matches!(c, '/' | '-' | '_' | '.' | '~') {
+            out.push(c);
+        } else {
+            let mut buf = [0u8; 4];
+            for &b in c.encode_utf8(&mut buf).as_bytes() {
+                out.push('%');
+                out.push(HEX[(b >> 4) as usize] as char);
+                out.push(HEX[(b & 0xf) as usize] as char);
+            }
+        }
+    }
+    out
+}
+
 /// 读取配置。参数用 `&AppState`：传入 `&tauri::State<'_, AppState>` 时靠 Deref 自动转换，
 /// 这样命令与后台钩子（拿到的可能是 `State` 也可能是 `&AppState`）都能复用。
 ///
@@ -464,6 +487,19 @@ pub fn allow_asset_file(app: &tauri::AppHandle, path: &str) {
 mod tests {
     use super::*;
     use tempfile::TempDir;
+
+    #[test]
+    fn test_escape_path_percent() {
+        assert_eq!(escape_path_percent("/a b/c.png"), "/a%20b/c.png");
+        assert_eq!(
+            escape_path_percent("/图片/壁纸.png"),
+            "/%E5%9B%BE%E7%89%87/%E5%A3%81%E7%BA%B8.png"
+        );
+        // 已允许的字符不该被编码（回收站 trashinfo 里也别把 -_.~ 转义）
+        assert_eq!(escape_path_percent("/home/u-x_1.2~/a"), "/home/u-x_1.2~/a");
+        // 井号/问号在 URI 里有语义，必须编码，否则 file:// 链接会被截断
+        assert_eq!(escape_path_percent("/a#b?c.jpg"), "/a%23b%3Fc.jpg");
+    }
 
     #[test]
     fn test_ensure_plain_filename() {

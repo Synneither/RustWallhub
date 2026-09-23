@@ -44,7 +44,10 @@ fn temp_snapshot_dir() -> std::path::PathBuf {
     use std::sync::atomic::{AtomicU64, Ordering};
     static SEQ: AtomicU64 = AtomicU64::new(0);
     let n = SEQ.fetch_add(1, Ordering::Relaxed);
-    std::env::temp_dir()
+    // 优先放缓存目录：Linux 的 /tmp 常是 tmpfs，导出整个数据库等于写内存；
+    // 缓存目录在磁盘上、空间也更宽裕。拿不到缓存目录时才退回系统临时目录。
+    dirs::cache_dir()
+        .unwrap_or_else(std::env::temp_dir)
         .join(TEMP_DIR_NAME)
         .join(format!("{}-{}", std::process::id(), n))
 }
@@ -129,7 +132,17 @@ fn is_same_db_file(db_path: &str, target: &std::path::Path) -> bool {
     let db = std::path::Path::new(db_path);
     match (normalize(db), normalize(target)) {
         (Some(a), Some(b)) => a == b,
-        _ => db_path.to_lowercase() == target.to_string_lossy().to_lowercase(),
+        // 兜底比较：Windows 路径大小写不敏感，Linux/macOS 敏感（`a.db` 与 `A.db` 是两个文件）。
+        // 这里只在父子目录都规范化失败时才走到，宁可保守也不要漏判。
+        _ => {
+            let db = db_path.to_string();
+            let target = target.to_string_lossy().to_string();
+            if cfg!(windows) {
+                db.to_lowercase() == target.to_lowercase()
+            } else {
+                db == target
+            }
+        }
     }
 }
 

@@ -25,6 +25,7 @@ const SETTINGS_DRAFT_KEYS = [
   "thumbnail_dpr",
   "proxy_url",
   "auto_update",
+  "ui_zoom",
 ] as const;
 
 const { draft, saving } = useConfigDraft(SETTINGS_DRAFT_KEYS, {
@@ -36,6 +37,7 @@ const { draft, saving } = useConfigDraft(SETTINGS_DRAFT_KEYS, {
   thumbnail_dpr: 2,
   proxy_url: "",
   auto_update: true,
+  ui_zoom: 1,
 });
 
 /* ── 静态选项 ──
@@ -51,6 +53,19 @@ const DPR_ITEMS = [
   { title: "1x（240px）", value: 1 },
   { title: "2x（480px）", value: 2 },
   { title: "3x（720px）", value: 3 },
+];
+
+/* 界面缩放档位。分数缩放（如 niri 的 1.25/1.5）下 WebKitGTK 不支持 fractional-scale，
+ * 界面会被合成器整体放大而发虚，用这里的档位在应用侧补偿。 */
+const ZOOM_ITEMS = [
+  { title: "80%", value: 0.8 },
+  { title: "90%", value: 0.9 },
+  { title: "100%（默认）", value: 1 },
+  { title: "110%", value: 1.1 },
+  { title: "125%", value: 1.25 },
+  { title: "150%", value: 1.5 },
+  { title: "175%", value: 1.75 },
+  { title: "200%", value: 2 },
 ];
 
 type ThemeChoiceKey = "system" | Theme;
@@ -308,6 +323,14 @@ function onThemeChange(v: "system" | Theme) {
             {{ t.label }}
           </v-btn>
         </div>
+        <v-select
+          v-model.number="draft.ui_zoom"
+          :items="ZOOM_ITEMS"
+          label="界面缩放"
+          hint="保存后立即生效；分数缩放的桌面环境（如 niri 1.25）下界面发虚时可调大补偿"
+          persistent-hint
+          class="settings-field zoom-field"
+        />
       </div>
     </v-form>
 
@@ -372,6 +395,10 @@ function onThemeChange(v: "system" | Theme) {
 .theme-row {
   display: flex;
   gap: var(--space-2);
+}
+/* 缩放选择器紧跟主题按钮组，靠上留白区分同一个面板里的两组控件 */
+.zoom-field {
+  margin-top: var(--space-4);
 }
 .settings-save-bar {
   margin: 0 calc(-1 * var(--space-8));

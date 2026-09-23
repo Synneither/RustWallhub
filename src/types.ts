@@ -35,6 +35,7 @@ export interface AppConfig {
   thumbnail_dpr: number; // 1-3
   request_timeout: number; // 5-120 秒
   auto_update: boolean;
+  ui_zoom: number; // 0.8-2.0，webview 界面缩放
   proxy_url: string;
   // OSS 云同步
   oss_endpoint: string; // 如 "oss-cn-beijing.aliyuncs.com"

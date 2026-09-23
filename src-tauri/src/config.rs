@@ -71,6 +71,11 @@ pub struct AppConfig {
     /// 启动时自动检查应用更新
     #[serde(default = "default_auto_update")]
     pub auto_update: bool,
+    /// 界面缩放（webview zoom，0.8 – 2.0，默认 1.0）。
+    /// niri 等使用非整数缩放的合成器下 WebKitGTK（GTK3）不支持 fractional-scale，
+    /// 界面会被合成器整体放大而发虚，需要应用侧自行补偿。
+    #[serde(default = "default_ui_zoom")]
+    pub ui_zoom: f64,
     /// HTTP/HTTPS 代理地址 (例如 "http://127.0.0.1:7890", 空字符串表示不使用代理)
     #[serde(default)]
     pub proxy_url: String,
@@ -100,6 +105,14 @@ pub struct AppConfig {
 
 fn default_reddit_url() -> String {
     "https://www.reddit.com/r/Animewallpaper/?f=flair_name%3A%22Desktop%22".into()
+}
+
+/// 界面缩放的边界，后端校验用（前端只提供合法档位）。
+pub const UI_ZOOM_MIN: f64 = 0.8;
+pub const UI_ZOOM_MAX: f64 = 2.0;
+
+fn default_ui_zoom() -> f64 {
+    1.0
 }
 
 fn default_thumbnails_dir() -> String {
@@ -259,6 +272,7 @@ impl Default for AppConfig {
             thumbnail_dpr: 2,
             request_timeout: 30,
             auto_update: true,
+            ui_zoom: default_ui_zoom(),
             proxy_url: String::new(),
             oss_endpoint: String::new(),
             oss_bucket: String::new(),

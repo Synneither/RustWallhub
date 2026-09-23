@@ -1,13 +1,51 @@
 //! Wallpaper setting for Linux and Windows desktop environments.
 //! Each setter probes whether its environment is available, returns `None` if not.
 
-use crate::state::{AppError, AppState};
+use crate::exec::{cmd, has_command};
+use crate::state::{escape_path_percent, AppError, AppState};
 use serde::Serialize;
 use std::process::Command;
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 use tauri::Emitter;
 
+// ---------------------------------------------------------------------------
+// 告警消息与 Noctalia CLI
+// ---------------------------------------------------------------------------
+
+/// 执行 `noctalia msg <args>`，成功时返回 stdout。
+///
+/// v5 的 CLI 在 NixOS flake 安装下叫 `noctalia-shell`，所以两个名字都试；
+/// 外壳没在跑时命令本身就是非零退出，直接当不可用处理，不额外做探测。
+pub(crate) fn noctalia_msg(args: &[&str]) -> Option<String> {
+    for cli in ["noctalia", "noctalia-shell"] {
+        if !has_command(cli) {
+            continue;
+        }
+        let Ok(out) = cmd(cli).arg("msg").args(args).output() else {
+            continue;
+        };
+        if out.status.success() {
+            return Some(String::from_utf8_lossy(&out.stdout).to_string());
+        }
+    }
+    None
+}
+
+fn output_ok(command: &mut Command) -> bool {
+    command.output().is_ok_and(|out| out.status.success())
+}
+
+/// 拼「壁纸已设置 (后端 · 显示器)」提示，避免各后端各写一遍。
+fn done_message(backend: &str, monitor: Option<&str>) -> String {
+    match monitor {
+        Some(name) => format!("壁纸已设置 ({backend} · {name})"),
+        None => format!("壁纸已设置 ({backend})"),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Monitor info
 // ---------------------------------------------------------------------------
 // Monitor info
 // ---------------------------------------------------------------------------
@@ -117,76 +155,168 @@ mod win_monitors {
 
 #[cfg(not(target_os = "windows"))]
 mod win_monitors {
-    use super::MonitorInfo;
-    use std::process::Command;
+    use super::{cmd, MonitorInfo};
+    use serde_json::Value;
 
+    /// 依次尝试各合成器，取第一个能给出结果的方式。
+    ///
+    /// Wayland 侧优先用合成器自己的 IPC 而不是 xrandr：niri 只跑 Wayland，
+    /// xrandr 要么不可用、要么只能看到 XWayland 的假输出；而且合成器给出的
+    /// 输出名（`eDP-1` / `HDMI-A-1`）正好是 Noctalia `wallpaper-set` 需要的连接器名。
     pub fn list_monitors() -> Vec<MonitorInfo> {
-        // Linux: try xrandr or hyprctl
-        if let Ok(output) = Command::new("xrandr").args(["--listmonitors"]).output() {
-            if output.status.success() {
-                let stdout = String::from_utf8_lossy(&output.stdout);
-                let monitors: Vec<MonitorInfo> = stdout
-                    .lines()
-                    .skip(1) // skip header line
-                    .filter_map(|line| {
-                        let parts: Vec<&str> = line.split_whitespace().collect();
-                        if parts.len() >= 3 {
-                            let name = parts[parts.len() - 1].to_string();
-                            let dims = parts.get(1).and_then(|s| {
-                                let d: Vec<&str> = s.split('x').collect();
-                                if d.len() == 2 {
-                                    Some((d[0].parse().unwrap_or(0), d[1].parse().unwrap_or(0)))
-                                } else {
-                                    None
-                                }
-                            });
-                            Some(MonitorInfo {
-                                id: name.clone(),
-                                name,
-                                is_primary: parts.first().is_some_and(|s| s.contains('*')),
-                                width: dims.map(|(w, _)| w).unwrap_or(0),
-                                height: dims.map(|(_, h)| h).unwrap_or(0),
-                            })
-                        } else {
-                            None
-                        }
-                    })
-                    .collect();
-                if !monitors.is_empty() {
-                    return monitors;
-                }
-            }
-        }
-        // Fallback: single virtual monitor
-        vec![MonitorInfo {
-            id: "default".to_string(),
-            name: "Default".to_string(),
-            is_primary: true,
-            width: 0,
-            height: 0,
-        }]
+        niri_monitors()
+            .or_else(hyprctl_monitors)
+            .or_else(sway_monitors)
+            .or_else(xrandr_monitors)
+            .unwrap_or_else(|| {
+                vec![MonitorInfo {
+                    id: "default".to_string(),
+                    name: "Default".to_string(),
+                    is_primary: true,
+                    width: 0,
+                    height: 0,
+                }]
+            })
     }
-}
 
-/// Percent-encode a file path for use in a `file://` URI.
-/// Handles spaces, non-ASCII characters, and other special characters.
-fn url_escape_path(path: &str) -> String {
-    const HEX: &[u8; 16] = b"0123456789ABCDEF";
-    // 预分配（最坏情况每个字符都编码成 %XX，3 倍原长），避免旧实现的逐字符堆分配。
-    let mut out = String::with_capacity(path.len() * 3);
-    for c in path.chars() {
-        if c.is_ascii_alphanumeric() || matches!(c, '/' | '-' | '_' | '.' | '~') {
-            out.push(c);
-        } else {
-            let mut buf = [0u8; 4];
-            for &b in c.encode_utf8(&mut buf).as_bytes() {
-                out.push('%');
-                out.push(HEX[(b >> 4) as usize] as char);
-                out.push(HEX[(b & 0xf) as usize] as char);
-            }
-        }
+    fn json_u32(value: Option<&Value>) -> u32 {
+        value.and_then(Value::as_u64).unwrap_or(0) as u32
     }
-    out
+
+    fn json_string(value: Option<&Value>) -> Option<String> {
+        value.and_then(Value::as_str).map(str::to_string)
+    }
+
+    /// 执行 `<program> <args...>` 并解析 stdout 为 JSON，非零退出或解析失败都返回 None。
+    fn json_command(program: &str, args: &[&str]) -> Option<Value> {
+        let out = cmd(program).args(args).output().ok()?;
+        if !out.status.success() {
+            return None;
+        }
+        serde_json::from_slice(&out.stdout).ok()
+    }
+
+    /// niri：`niri msg --json outputs` 返回 `{连接器名: {...}}` 映射。
+    /// `logical` 为 null 表示该输出已关闭，不进列表。
+    fn niri_monitors() -> Option<Vec<MonitorInfo>> {
+        let outputs = json_command("niri", &["msg", "--json", "outputs"])?;
+        let map = outputs.as_object()?;
+        // niri 没有 "主显示器" 概念，用当前聚焦的输出代替。
+        let focused = json_command("niri", &["msg", "--json", "focused-output"])
+            .and_then(|value| json_string(value.get("name")));
+
+        let mut monitors: Vec<MonitorInfo> = map
+            .iter()
+            .filter_map(|(name, info)| {
+                let logical = info.get("logical")?;
+                Some(MonitorInfo {
+                    id: name.clone(),
+                    name: name.clone(),
+                    is_primary: focused.as_deref() == Some(name.as_str()),
+                    width: json_u32(logical.get("width")),
+                    height: json_u32(logical.get("height")),
+                })
+            })
+            .collect();
+
+        if monitors.is_empty() {
+            return None;
+        }
+        // 聚焦输出拿不到时（不同 niri 版本的字段差异），至少保留一块标记为主。
+        if !monitors.iter().any(|m| m.is_primary) {
+            monitors[0].is_primary = true;
+        }
+        Some(monitors)
+    }
+
+    /// Hyprland：`hyprctl monitors -j` 返回数组，`focused` 当主显示器标记。
+    fn hyprctl_monitors() -> Option<Vec<MonitorInfo>> {
+        let value = json_command("hyprctl", &["monitors", "-j"])?;
+        let monitors: Vec<MonitorInfo> = value
+            .as_array()?
+            .iter()
+            .filter_map(|monitor| {
+                let name = json_string(monitor.get("name"))?;
+                Some(MonitorInfo {
+                    id: name.clone(),
+                    name,
+                    is_primary: monitor
+                        .get("focused")
+                        .and_then(Value::as_bool)
+                        .unwrap_or(false),
+                    width: json_u32(monitor.get("width")),
+                    height: json_u32(monitor.get("height")),
+                })
+            })
+            .collect();
+        (!monitors.is_empty()).then_some(monitors)
+    }
+
+    /// sway / i3 系：`swaymsg -t get_outputs`，跳过未启用的输出。
+    fn sway_monitors() -> Option<Vec<MonitorInfo>> {
+        let value = json_command("swaymsg", &["-t", "get_outputs"])?;
+        let monitors: Vec<MonitorInfo> = value
+            .as_array()?
+            .iter()
+            .filter(|output| {
+                output
+                    .get("active")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false)
+            })
+            .filter_map(|output| {
+                let name = json_string(output.get("name"))?;
+                let rect = output.get("rect");
+                Some(MonitorInfo {
+                    id: name.clone(),
+                    name,
+                    is_primary: output
+                        .get("primary")
+                        .and_then(Value::as_bool)
+                        .unwrap_or(false),
+                    width: json_u32(rect.and_then(|r| r.get("width"))),
+                    height: json_u32(rect.and_then(|r| r.get("height"))),
+                })
+            })
+            .collect();
+        (!monitors.is_empty()).then_some(monitors)
+    }
+
+    /// X11 回退：`xrandr --listmonitors`。
+    fn xrandr_monitors() -> Option<Vec<MonitorInfo>> {
+        let out = cmd("xrandr").arg("--listmonitors").output().ok()?;
+        if !out.status.success() {
+            return None;
+        }
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        let monitors: Vec<MonitorInfo> = stdout
+            .lines()
+            .skip(1) // skip header line
+            .filter_map(|line| {
+                let parts: Vec<&str> = line.split_whitespace().collect();
+                if parts.len() < 3 {
+                    return None;
+                }
+                let name = parts[parts.len() - 1].to_string();
+                let dims = parts.get(1).and_then(|s| {
+                    let d: Vec<&str> = s.split('x').collect();
+                    if d.len() == 2 {
+                        Some((d[0].parse().unwrap_or(0), d[1].parse().unwrap_or(0)))
+                    } else {
+                        None
+                    }
+                });
+                Some(MonitorInfo {
+                    id: name.clone(),
+                    name,
+                    is_primary: parts.first().is_some_and(|s| s.contains('*')),
+                    width: dims.map(|(w, _)| w).unwrap_or(0),
+                    height: dims.map(|(_, h)| h).unwrap_or(0),
+                })
+            })
+            .collect();
+        (!monitors.is_empty()).then_some(monitors)
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -444,39 +574,72 @@ mod com_wallpaper {
 
 // ---------------------------------------------------------------------------
 
-/// GNOME (gsettings)
-fn set_gnome_wallpaper(path_str: &str) -> Option<String> {
-    if Command::new("gsettings")
-        .args(["get", "org.gnome.desktop.background", "picture-uri"])
-        .output()
-        .is_err()
-    {
-        return None;
+/// Noctalia（Quickshell 桌面外壳，niri 上最常见的搭配）
+///
+/// 壁纸由外壳自己绘制（layer-shell 背景层 + GLSL 转场），主题调色板也是从壁纸派生的，
+/// 所以必须走它的 IPC：另起 awww/swaybg 去抢背景层会互相覆盖，Noctalia 的主题色也不会跟着变。
+///
+/// - v5：`noctalia msg wallpaper-set [连接器名] <路径>`（NixOS flake 装的是 `noctalia-shell msg ...`）
+/// - v4：`qs -c noctalia-shell ipc call wallpaper set <路径> [连接器名]`
+///
+/// 不额外做可用性探测：外壳没在跑时命令本身就是非零退出，直接当失败处理即可，
+/// 顺带省掉一次进程启动。
+fn set_noctalia_wallpaper(path_str: &str, monitor: Option<&str>) -> Option<String> {
+    let mut args = vec!["wallpaper-set"];
+    args.extend(monitor);
+    args.push(path_str);
+    if noctalia_msg(&args).is_some() {
+        return Some(done_message("Noctalia", monitor));
     }
-    let uri = format!("file://{}", url_escape_path(path_str));
-    if let Ok(output) = Command::new("gsettings")
-        .args(["set", "org.gnome.desktop.background", "picture-uri", &uri])
-        .output()
-    {
-        if output.status.success() {
-            Command::new("gsettings")
-                .args([
-                    "set",
-                    "org.gnome.desktop.background",
-                    "picture-uri-dark",
-                    &uri,
-                ])
-                .output()
-                .ok();
-            return Some("\u{58c1}\u{7eb8}\u{5df2}\u{8bbe}\u{7f6e} (GNOME)".to_string());
+
+    if has_command("qs") {
+        let mut args = vec![
+            "-c",
+            "noctalia-shell",
+            "ipc",
+            "call",
+            "wallpaper",
+            "set",
+            path_str,
+        ];
+        args.extend(monitor);
+        if output_ok(cmd("qs").args(&args)) {
+            return Some(done_message("Noctalia", monitor));
         }
     }
     None
 }
 
+/// GNOME (gsettings)
+fn set_gnome_wallpaper(path_str: &str, monitor: Option<&str>) -> Option<String> {
+    if !has_command("gsettings") {
+        return None;
+    }
+    let uri = format!("file://{}", escape_path_percent(path_str));
+    // 亮/暗两套 key 都写，否则跟随系统主题切换后会回退到旧图。
+    if output_ok(cmd("gsettings").args([
+        "set",
+        "org.gnome.desktop.background",
+        "picture-uri",
+        &uri,
+    ])) {
+        let _ = output_ok(cmd("gsettings").args([
+            "set",
+            "org.gnome.desktop.background",
+            "picture-uri-dark",
+            &uri,
+        ]));
+        return Some(done_message("GNOME", monitor));
+    }
+    None
+}
+
 /// XFCE (xfconf-query)
-fn set_xfce_wallpaper(path_str: &str) -> Option<String> {
-    let output = Command::new("xfconf-query")
+fn set_xfce_wallpaper(path_str: &str, monitor: Option<&str>) -> Option<String> {
+    if !has_command("xfconf-query") {
+        return None;
+    }
+    let output = cmd("xfconf-query")
         .args(["-c", "xfce4-desktop", "-lv"])
         .output()
         .ok()?;
@@ -489,32 +652,34 @@ fn set_xfce_wallpaper(path_str: &str) -> Option<String> {
             // 每个显示器/工作区都有一个独立的 last-image 属性，逐个设置，
             // 不要命中第一个就 return——否则多显示器/多工作区只设了第一块。
             any = true;
-            match Command::new("xfconf-query")
-                .args(["-c", "xfce4-desktop", "-p", parts[0].trim(), "-s", path_str])
-                .output()
-            {
-                Ok(output) if output.status.success() => {}
-                _ => all_ok = false,
+            if !output_ok(cmd("xfconf-query").args([
+                "-c",
+                "xfce4-desktop",
+                "-p",
+                parts[0].trim(),
+                "-s",
+                path_str,
+            ])) {
+                all_ok = false;
             }
         }
     }
-    (any && all_ok).then(|| "\u{58c1}\u{7eb8}\u{5df2}\u{8bbe}\u{7f6e} (XFCE)".to_string())
+    (any && all_ok).then(|| done_message("XFCE", monitor))
 }
 
-/// KDE Plasma (qdbus)
-fn set_kde_wallpaper(path_str: &str) -> Option<String> {
-    let has_kde = Command::new("kwriteconfig5")
-        .args(["--help"])
-        .output()
-        .is_ok()
-        || Command::new("kwriteconfig6")
-            .args(["--help"])
-            .output()
-            .is_ok();
-    if !has_kde {
+/// KDE Plasma (kwriteconfig 探测可用性 + qdbus 调 plasmashell 脚本)
+fn set_kde_wallpaper(path_str: &str, monitor: Option<&str>) -> Option<String> {
+    if !["kwriteconfig6", "kwriteconfig5"]
+        .into_iter()
+        .any(has_command)
+    {
         return None;
     }
-    log::info!("[set_wallpaper] detected KDE Plasma");
+    // Plasma 6 里 qdbus 改名为 qdbus6，老名字可能已经不存在。
+    let qdbus = ["qdbus6", "qdbus", "qdbus-qt5"]
+        .into_iter()
+        .find(|tool| has_command(tool))?;
+    log::info!("[set_wallpaper] detected KDE Plasma (qdbus: {qdbus})");
     // 转义路径中的特殊字符，防止 qdbus JavaScript 上下文中的注入
     let escaped = path_str
         .replace('\\', "\\\\")
@@ -529,9 +694,9 @@ for (var i = 0; i < allDesktops.length; i++) {{
     d.currentConfigGroup = ['Wallpaper', 'org.kde.image', 'General'];
     d.writeConfig('Image', 'file://{}');
 }}",
-        url_escape_path(&escaped)
+        escape_path_percent(&escaped)
     );
-    let output = Command::new("qdbus")
+    let output = cmd(qdbus)
         .args([
             "org.kde.plasmashell",
             "/PlasmaShell",
@@ -541,115 +706,132 @@ for (var i = 0; i < allDesktops.length; i++) {{
         .output()
         .ok()?;
     if output.status.success() {
-        return Some("\u{58c1}\u{7eb8}\u{5df2}\u{8bbe}\u{7f6e} (KDE)".to_string());
+        return Some(done_message("KDE", monitor));
     }
     None
 }
 
 /// sway (swaymsg)
-fn set_sway_wallpaper(path_str: &str) -> Option<String> {
-    let output = Command::new("swaymsg")
-        .args(["-t", "get_outputs"])
-        .output()
-        .ok()?;
-    if output.status.success() {
-        Command::new("swaymsg")
-            .args(["output", "*", "bg", path_str, "fill"])
+fn set_sway_wallpaper(path_str: &str, monitor: Option<&str>) -> Option<String> {
+    // 探测 sway 是否在跑：能列出输出说明 IPC 通。
+    if !output_ok(cmd("swaymsg").args(["-t", "get_outputs"])) {
+        return None;
+    }
+    // 指定显示器时只设那一块；`*` 在 swaymsg 里代表全部输出。
+    let target = monitor.unwrap_or("*");
+    if !output_ok(cmd("swaymsg").args(["output", target, "bg", path_str, "fill"])) {
+        return None;
+    }
+    Some(done_message("sway", monitor))
+}
+
+/// Hyprland (hyprpaper)
+fn set_hyprland_wallpaper(path_str: &str, monitor: Option<&str>) -> Option<String> {
+    if !output_ok(cmd("hyprctl").arg("--version")) {
+        return None;
+    }
+    // 先 preload 才能给显示器设置，重复 preload 同一张图是幂等的。
+    let _ = output_ok(cmd("hyprctl").args(["hyprpaper", "preload", path_str]));
+
+    let targets: Vec<String> = match monitor {
+        Some(name) => vec![name.to_string()],
+        None => cmd("hyprctl")
+            .args(["monitors", "-j"])
             .output()
-            .ok()?;
-        return Some("\u{58c1}\u{7eb8}\u{5df2}\u{8bbe}\u{7f6e} (sway)".to_string());
+            .ok()
+            .map(|output| {
+                String::from_utf8_lossy(&output.stdout)
+                    .lines()
+                    .filter(|line| line.contains("\"name\":"))
+                    .filter_map(|line| {
+                        let parts: Vec<&str> = line.splitn(2, ':').collect();
+                        (parts.len() == 2).then(|| {
+                            parts[1]
+                                .trim()
+                                .trim_matches('"')
+                                .trim_matches(',')
+                                .to_string()
+                        })
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default(),
+    };
+
+    // 逐块设置，不因某一块失败就短路后续显示器（iter().all 会在第一次失败时停止）。
+    let mut all_ok = !targets.is_empty();
+    for target in &targets {
+        if !output_ok(cmd("hyprctl").args([
+            "hyprpaper",
+            "wallpaper",
+            &format!("{target},{path_str}"),
+        ])) {
+            all_ok = false;
+        }
+    }
+    // 单显示器且拿不到名字时，用空显示器名让 hyprpaper 自己挑一个。
+    if all_ok {
+        return Some(done_message("Hyprland", monitor));
+    }
+    output_ok(cmd("hyprctl").args(["hyprpaper", "wallpaper", &format!(",{path_str}")]))
+        .then(|| done_message("Hyprland", monitor))
+}
+
+/// awww / swww —— niri、sway 上常用的独立壁纸守护进程
+///
+/// swww 已更名为 awww（CLI 兼容），这里按 awww → swww 的顺序尝试。
+/// 守护进程没在跑时先拉起来再重试一次：壁纸守护进程本来就该常驻，
+/// 少了这一步会表现为「命令存在却设不上，最后落到 feh 那条死路」。
+fn set_swww_wallpaper(path_str: &str, monitor: Option<&str>) -> Option<String> {
+    for tool in ["awww", "swww"] {
+        if !has_command(tool) {
+            continue;
+        }
+        if apply_daemon_wallpaper(tool, path_str, monitor) {
+            return Some(done_message(tool, monitor));
+        }
+        if start_wallpaper_daemon(tool) && apply_daemon_wallpaper(tool, path_str, monitor) {
+            return Some(done_message(tool, monitor));
+        }
     }
     None
 }
 
-/// Hyprland (hyprpaper)
-fn set_hyprland_wallpaper(path_str: &str) -> Option<String> {
-    if Command::new("hyprctl").arg("--version").output().is_err() {
-        return None;
+fn apply_daemon_wallpaper(tool: &str, path_str: &str, monitor: Option<&str>) -> bool {
+    let mut args = vec![
+        "img",
+        "--transition-type",
+        "fade",
+        "--transition-step",
+        "60",
+    ];
+    if let Some(name) = monitor {
+        args.push("-o");
+        args.push(name);
     }
-    let monitors = Command::new("hyprctl")
-        .args(["monitors", "-j"])
-        .output()
-        .ok()
-        .map(|output| {
-            let stdout = String::from_utf8_lossy(&output.stdout);
-            stdout
-                .lines()
-                .filter(|l| l.contains("\"name\":"))
-                .filter_map(|l| {
-                    let parts: Vec<&str> = l.splitn(2, ':').collect();
-                    (parts.len() == 2).then(|| {
-                        parts[1]
-                            .trim()
-                            .trim_matches('"')
-                            .trim_matches(',')
-                            .to_string()
-                    })
-                })
-                .collect::<Vec<_>>()
-        })
-        .unwrap_or_default();
+    args.push(path_str);
+    output_ok(cmd(tool).args(&args))
+}
 
-    Command::new("hyprctl")
-        .args(["hyprpaper", "preload", path_str])
-        .output()
-        .ok();
-
-    let ok = if monitors.is_empty() {
-        Command::new("hyprctl")
-            .args(["hyprpaper", "wallpaper", &format!(",{path_str}")])
-            .output()
-            .is_ok_and(|o| o.status.success())
-    } else {
-        // 逐块设置，不因某一块失败就短路后续显示器（iter().all 会在第一次失败时停止）。
-        let mut all_ok = true;
-        for monitor in &monitors {
-            let success = Command::new("hyprctl")
-                .args(["hyprpaper", "wallpaper", &format!("{monitor},{path_str}")])
-                .output()
-                .is_ok_and(|o| o.status.success());
-            if !success {
-                all_ok = false;
-            }
+/// 拉起 `<tool>-daemon` 并等它把 IPC socket 建好。
+/// 只用 spawn 不 wait：守护进程要常驻，父进程退出后它继续提供背景层。
+fn start_wallpaper_daemon(tool: &str) -> bool {
+    let daemon = format!("{tool}-daemon");
+    if !has_command(&daemon) {
+        return false;
+    }
+    match cmd(&daemon).spawn() {
+        Ok(_) => {
+            std::thread::sleep(std::time::Duration::from_millis(400));
+            true
         }
-        all_ok
-    };
-
-    ok.then(|| "\u{58c1}\u{7eb8}\u{5df2}\u{8bbe}\u{7f6e} (Hyprland)".to_string())
-}
-
-/// swww
-fn set_swww_wallpaper(path_str: &str) -> Option<String> {
-    if Command::new("swww").arg("--version").output().is_err() {
-        return None;
+        Err(_) => false,
     }
-    let output = Command::new("swww")
-        .args([
-            "img",
-            "--transition-type",
-            "fade",
-            "--transition-step",
-            "60",
-            path_str,
-        ])
-        .output()
-        .ok()?;
-    output
-        .status
-        .success()
-        .then(|| "\u{58c1}\u{7eb8}\u{5df2}\u{8bbe}\u{7f6e} (swww)".to_string())
 }
 
-/// feh（最后回退）
-fn set_feh_wallpaper(path_str: &str) -> Option<String> {
-    let output = Command::new("feh")
-        .args(["--bg-fill", path_str])
-        .output()
-        .ok()?;
-    output
-        .status
-        .success()
-        .then(|| "\u{58c1}\u{7eb8}\u{5df2}\u{8bbe}\u{7f6e} (feh)".to_string())
+/// feh（最后回退，仅 X11 有意义：它是往 X 根窗口贴图）
+fn set_feh_wallpaper(path_str: &str, monitor: Option<&str>) -> Option<String> {
+    output_ok(cmd("feh").args(["--bg-fill", path_str])).then(|| done_message("feh", monitor))
 }
 
 /// Windows — 通过 SystemParametersInfoW 设置壁纸
@@ -692,26 +874,47 @@ fn set_windows_wallpaper(path_str: &str) -> Option<String> {
 /// 失败时清空缓存并回退到全量探测，而不是永久卡在一个已失效的 backend 上。
 static LINUX_BACKEND: std::sync::Mutex<Option<&'static str>> = std::sync::Mutex::new(None);
 
-type LinuxSetter = fn(&str) -> Option<String>;
+type LinuxSetter = fn(&str, Option<&str>) -> Option<String>;
 
-fn set_with_backend(path: &str, backend: &str) -> Option<String> {
+fn set_with_backend(path: &str, monitor: Option<&str>, backend: &str) -> Option<String> {
     match backend {
-        "gnome" => set_gnome_wallpaper(path),
-        "xfce" => set_xfce_wallpaper(path),
-        "kde" => set_kde_wallpaper(path),
-        "sway" => set_sway_wallpaper(path),
-        "hyprland" => set_hyprland_wallpaper(path),
-        "swww" => set_swww_wallpaper(path),
-        "feh" => set_feh_wallpaper(path),
+        "noctalia" => set_noctalia_wallpaper(path, monitor),
+        "hyprland" => set_hyprland_wallpaper(path, monitor),
+        "sway" => set_sway_wallpaper(path, monitor),
+        "awww" => set_swww_wallpaper(path, monitor),
+        "kde" => set_kde_wallpaper(path, monitor),
+        "gnome" => set_gnome_wallpaper(path, monitor),
+        "xfce" => set_xfce_wallpaper(path, monitor),
+        "feh" => set_feh_wallpaper(path, monitor),
         _ => None,
     }
 }
 
-fn set_linux_wallpaper(path: &str) -> Result<(String, &'static str), AppError> {
+/// 后端探测顺序 = 命中优先级。
+///
+/// Noctalia 排第一：它自己画背景层，走它的 IPC 才能让壁纸和调色板主题一致；
+/// 其后是各合成器原生方案，最后才是 GNOME/KDE/XFCE 的桌面设置和 X11 的 feh。
+fn linux_backends() -> [(&'static str, LinuxSetter); 8] {
+    [
+        ("noctalia", set_noctalia_wallpaper),
+        ("hyprland", set_hyprland_wallpaper),
+        ("sway", set_sway_wallpaper),
+        ("awww", set_swww_wallpaper),
+        ("kde", set_kde_wallpaper),
+        ("gnome", set_gnome_wallpaper),
+        ("xfce", set_xfce_wallpaper),
+        ("feh", set_feh_wallpaper),
+    ]
+}
+
+fn set_linux_wallpaper(
+    path: &str,
+    monitor: Option<&str>,
+) -> Result<(String, &'static str), AppError> {
     // 快路径：用缓存的 backend 直接设置。持锁期间只读取缓存值，不调用外部命令。
     let cached = LINUX_BACKEND.lock().ok().and_then(|guard| *guard);
     if let Some(backend) = cached {
-        if let Some(message) = set_with_backend(path, backend) {
+        if let Some(message) = set_with_backend(path, monitor, backend) {
             return Ok((message, backend));
         }
         // 缓存的 backend 失效：清空，回退到下方全量探测。
@@ -720,18 +923,8 @@ fn set_linux_wallpaper(path: &str) -> Result<(String, &'static str), AppError> {
         }
     }
 
-    let backends: [(&'static str, LinuxSetter); 7] = [
-        ("gnome", set_gnome_wallpaper),
-        ("xfce", set_xfce_wallpaper),
-        ("kde", set_kde_wallpaper),
-        ("sway", set_sway_wallpaper),
-        ("hyprland", set_hyprland_wallpaper),
-        ("swww", set_swww_wallpaper),
-        ("feh", set_feh_wallpaper),
-    ];
-
-    for (name, setter) in backends {
-        if let Some(message) = setter(path) {
+    for (name, setter) in linux_backends() {
+        if let Some(message) = setter(path, monitor) {
             if let Ok(mut guard) = LINUX_BACKEND.lock() {
                 *guard = Some(name);
             }
@@ -740,17 +933,24 @@ fn set_linux_wallpaper(path: &str) -> Result<(String, &'static str), AppError> {
     }
 
     Err(AppError::Other(
-        "未检测到支持的桌面环境。支持: Windows, GNOME, KDE, XFCE, sway, Hyprland, niri(swww), swww, feh"
+        "未检测到可用的壁纸后端。支持 Windows / Noctalia / GNOME / KDE / XFCE / sway / Hyprland / awww(swww) / feh；\
+         niri 本身不画壁纸，请先启动 Noctalia，或安装并运行 awww-daemon"
             .to_string(),
     ))
 }
 
-/// 实际的壁纸设置逻辑（同步，会探测/调用桌面环境命令，调用方应放入 spawn_blocking）。
+/// 设壁纸的对外入口：设置成功后顺手失效「当前壁纸」的短缓存，
+/// 否则刚设完壁纸回到仪表盘看到的还是旧图（缓存 TTL 5 秒）。
 fn set_wallpaper_sync(path_str: &str, monitor: Option<&str>) -> Result<String, AppError> {
-    // Linux/macOS 的链式探测不使用 monitor 参数（Windows 分支在下方）。
-    #[cfg(not(target_os = "windows"))]
-    let _ = monitor;
+    let result = set_wallpaper_impl(path_str, monitor);
+    if result.is_ok() {
+        crate::commands::system::invalidate_active_wallpaper();
+    }
+    result
+}
 
+/// 实际的壁纸设置逻辑（同步，会探测/调用桌面环境命令，调用方应放入 spawn_blocking）。
+fn set_wallpaper_impl(path_str: &str, monitor: Option<&str>) -> Result<String, AppError> {
     // If a specific monitor is requested, use IDesktopWallpaper on Windows
     #[cfg(target_os = "windows")]
     if let Some(mon) = monitor {
@@ -773,7 +973,11 @@ fn set_wallpaper_sync(path_str: &str, monitor: Option<&str>) -> Result<String, A
         return Ok(result);
     }
 
-    set_linux_wallpaper(path_str).map(|(message, _)| message)
+    // Windows 的显示器参数已在上面消费掉；Linux 各后端自行决定用不用（Noctalia/Hyprland/sway 支持）。
+    #[cfg(target_os = "windows")]
+    let monitor = None::<&str>;
+
+    set_linux_wallpaper(path_str, monitor).map(|(message, _)| message)
 }
 
 #[tauri::command]
@@ -994,4 +1198,32 @@ pub(crate) async fn is_slideshow_running(
         false
     };
     Ok(running)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn done_message_includes_monitor_when_given() {
+        assert_eq!(done_message("Noctalia", None), "壁纸已设置 (Noctalia)");
+        assert_eq!(
+            done_message("Noctalia", Some("DP-1")),
+            "壁纸已设置 (Noctalia · DP-1)"
+        );
+    }
+
+    #[test]
+    fn backend_table_is_disjoint() {
+        // 缓存里存的 backend 名靠 set_with_backend 分发，重名会让快路径指向错的实现。
+        let backends = linux_backends();
+        let mut names: Vec<&str> = backends.iter().map(|(name, _)| *name).collect();
+        let total = names.len();
+        names.sort_unstable();
+        names.dedup();
+        assert_eq!(names.len(), total, "backend 名字不能重复");
+
+        // 未登记的名字必须落到兜底分支，不能误命中某个后端。
+        assert!(set_with_backend("/nonexistent/wallpaper.png", None, "不存在").is_none());
+    }
 }
