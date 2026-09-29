@@ -22,10 +22,10 @@
 
 | 页面 | 路由态 `view` | 覆盖的后端域 | 核心职责 |
 |------|--------------|--------------|----------|
-| 仪表盘 | `dashboard` | stats / download / update / slideshow | 全局总览、快捷操作、活动任务 |
+| 仪表盘 | `dashboard` | stats / download / update / system | 全局总览、当前壁纸、快捷操作、活动任务 |
 | Wallhaven | `wallhaven` | wallhaven 模块 + wallhaven_* 配置 | 搜索条件、在线预览、勾选/批量下载 |
 | Reddit | `reddit` | reddit 模块 + reddit_* 配置 | 抓取配置、一键下载 |
-| 图库 | `gallery` | gallery 模块 + wallpaper 模块 | 本地图片浏览、壁纸设置、轮播、孤儿管理 |
+| 图库 | `gallery` | gallery 模块 + system | 本地图片浏览、当前壁纸高亮、孤儿管理 |
 | 数据库 | `database` | database 模块 + 数据库生命周期 | 库状态、缺失/孤儿/记录管理、统计 |
 | 设置 | `settings` | settings 模块 + system | 目录、下载、网络、更新、外观 |
 
@@ -44,7 +44,6 @@
  │         ├─ 确认 → init_databases（Toast 报告实际创建的库）
  │         └─ 取消 → 应用保持可用，但涉及 DB 的页面显示"数据库未初始化"空态
  ├─ get_stats             → 写入 stats store
- ├─ is_slideshow_running  → 恢复轮播指示
  └─ 注册全局事件监听（见 §6）
 ```
 
@@ -70,9 +69,6 @@ downloads: Record<string, {
   lastComplete?: { success: number; total: number; message: string }
 }>
 
-// 轮播
-slideshow: { running: boolean; current?: { index: number; total: number; name: string; path: string } }
-
 // 更新
 update: { info: UpdateInfo | null; downloading: boolean; progress: number | null }
 
@@ -87,21 +83,40 @@ confirm: { visible: boolean; title: string; text: string; danger: boolean; resol
 
 ### 4.1 复用 composable（`src/composables/`）
 
-页面之间重复的表单/异步样板收敛在这两个 composable 里，新增页面优先复用而不是重写：
+页面之间重复的表单/异步/多选等样板收敛在这里，新增页面优先复用而不是重写：
 
 | composable | 用途 |
 |---|---|
-| `useConfigDraft(keys, defaults)` | 配置草稿：从 `appState.config` 拷贝出 `draft` + 计算 `isDirty` + `saving` + `persist()`。新增配置项只需改 `keys` 与 `defaults` 两处。 |
-| `useAsyncAction(fn)` | 异步按钮样板：返回 `{ run, loading }`，内置 `friendlyError` 提示与**同步** busy 去重（`loading` 是 ref，同一 tick 内连点两次都会读到 `false`）。支持参数透传，也可传 `{ onSuccess, onError, errorPrefix }`。 |
-| `useSelection()` | 图片卡片多选状态（`reactive(new Set())`，直接操作无需 `.value`），图库与 Wallhaven 页共用。 |
+| `useConfigDraft(keys, defaults)` | 配置草稿：从 `appState.config` 拷贝出 `draft` + 计算 `isDirty` + `saving` + `persist()`。新增配置项只需改 `keys` 与 `defaults` 两处。**读字符串配置前先判类型**：缺字段时 `draft.x[0]` 会在渲染期抛错、整页白屏。 |
+| `useAsyncAction(fn)` | 异步按钮样板：返回 `{ run, loading }`，内置 `friendlyError` 提示与**同步** busy 去重（`loading` 是 ref，同一 tick 内连点两次都会读到 `false`）。支持参数透传，也可传 `{ onSuccess, onError, errorPrefix }`。**弹窗/二次确认属于「用户交互」不属于「异步动作」**：先选目录/确认，再把真正的工作交给 `run`，否则按钮会在弹窗还开着时就转圈。 |
+| `useSelection()` / `useSelectionMap()` | 卡片多选。前者只记键（图库按文件名）；后者记 `Map<键, 记录>`（Wallhaven 按 id，下载 payload 需要完整 entry）。 |
+| `useClickOrDoubleClick({ onSingle, onDouble })` | 同一元素上单击/双击的延迟消歧，含「记住上一张卡片」（换卡片时按单击结算）与卸载清计时器。 |
+| `useGridDensity(key, items, fallback, scale)` | 网格密度档位：档位值按容器宽度等比缩放，产出 `--grid-cell-min` / `--grid-cell-ph`。档位表用 `densityItems({compact,normal,large})` 生成，别在视图里手写 `{value,label,min}`。 |
+| `useThumbCache(max)` | 缩略图 URL 的 LRU 缓存。`get()` 只读（模板里调用，写缓存会触发渲染中的响应式更新）。 |
+| `useContainerWidth` / `useEffectiveDpr` | 容器宽度跟踪（ResizeObserver + 换元素自动重挂）与屏幕像素比。 |
+| `useWallhavenPreview({ page, loadPage, commitPage })` | Wallhaven 大图预览的滚动缓冲：续接预取、下载后补位、搜索竞态作废。 |
+| `useGalleryDetail({ source, entries, thumbOf })` | 图库的全屏查看器 + 详情抽屉（含请求竞态守卫）。 |
+
+### 4.2 视图拆分与 scoped 样式
+
+大视图按职责抽出**展示型子组件**（`GalleryCard` / `GalleryBatchBar` / `GridSizeBar` /
+`WallhavenSearchForm` / `DbSyncPanel` / `RecordBrowserPanel`）。
+
+**搬模板必须连样式一起搬**：scoped 样式管不到子组件内部元素，留在原视图里的规则会静默失效。
+落在两者之间的共用几何（如 `.gallery-cell` 的 `aspect-ratio` / `content-visibility`，
+真卡片与加载骨架都要用）放 `src/assets/style.css`，跨组件复用的行级布局（`.tab-actions` /
+`.maint-actions` / `.db-table`）同理。
+
+**子组件若自己取数据，必须在 `onMounted` 里取一次**：父视图 `onMounted` 里的
+`childRef.value?.load()` 在首次加载时是空操作（子组件那时还没挂载），只靠父视图调用会永远空表。
 
 ---
 
 ## 5. API 层（utils/api.ts）
 
-- 全部 40 个 `invoke` 的类型化封装，函数名与后端命令一致。
+- 全部 36 个 `invoke` 的类型化封装，函数名与后端命令一致。
 - 类型定义集中 `src/types.ts`，与后端 serde 结构一一对应（snake_case 字段名原样保留）。
-- 事件封装：`onDownloadProgress(cb)` 等 10 个 `listen` 包装，返回 unlisten 函数；App 层统一注册，页面级临时监听自行注册/卸载。
+- 事件封装：`onDownloadProgress(cb)` 等 8 个 `listen` 包装，返回 unlisten 函数；App 层统一注册，页面级临时监听自行注册/卸载。
 - `assetUrl(path)`：`convertFileSrc` 包装，统一处理 `http://asset.localhost` 前缀。
   **注意**：asset 协议的静态白名单只有缩略图缓存目录（`$CACHE/rustwallhub/**`）。保存目录在启动与保存设置时由后端动态授权，自定义浏览目录在传入 `custom_dir` 时授权。新增任何"显示任意路径图片"的功能时，必须同时让后端授权该目录，否则 `<img>` 会静默加载失败。
 
@@ -111,7 +126,8 @@ confirm: { visible: boolean; title: string; text: string; danger: boolean; resol
 2. **图库两阶段加载**：`browse_image_files` 返回 `thumb_path: null` → 对当前页文件名批量 `resolve_thumbnails` → `assetUrl` 显示。切页/搜索/排序时重置。
 3. **`Source = all` 用于恢复/补下载会直接报错**：`recover_database_files("all")` 与 `download_missing_images("all")` 现在会明确拒绝。前端"全量恢复"入口必须**串行调用 wallhaven + reddit 两次**并合并提示。
 4. **`save_settings` 副作用**：清空图库文件缓存、重建 HTTP client、emit `settings-changed`。保存成功后图库页应失效重载。
-5. **显示器设置**：`set_wallpaper(file_path, monitor)`，`monitor` 省略或 `"all"` = 全部显示器；Windows 传 `list_monitors` 返回的 `id`（设备路径）。
+5. **当前壁纸是只读的**：`get_active_wallpaper` 返回 `paths: string[]`（系统正在用的壁纸，多显示器各一张；空数组 = 读不到，比如幻灯片或纯色壁纸）。它只用于图库高亮与仪表盘展示——应用不设置壁纸。这些路径不在保存目录内，后端会自动逐个授权 asset 协议。
+   - 比较时用 `utils/path.ts::pathKey` 归一化后再比：图库条目路径来自 `safe_join`，Windows 上是 `\\?\C:\...` 的 verbatim 形式，而系统回报的是普通形式，不归一化永远对不上。
 
 ---
 
@@ -126,7 +142,6 @@ confirm: { visible: boolean; title: string; text: string; danger: boolean; resol
 | `update-available` | 仪表盘 + 设置页出现更新横幅（不打断用户） |
 | `update-progress` | 更新下载进度条（total 可能为 null，此时显示不确定态） |
 | `update-installing` | 全屏遮罩"正在安装更新，应用将自动重启" |
-| `slideshow-tick` | 更新 `slideshow.current`；图库页轮播指示器显示当前张数 |
 | `sync-completed` | 数据同步成功 → Toast 提示 + 刷新统计 |
 | `sync-failed` | 数据同步失败 → Toast 显示错误原因（error 类不自动消失） |
 
@@ -138,7 +153,7 @@ confirm: { visible: boolean; title: string; text: string; danger: boolean; resol
 
 三段式：
 1. **统计区**：两张来源卡（蓝/橙标识），各显示 总数 / 在库（love=1）/ 缺失 三个数字（DataTerminal 面板样式，数字 1.625rem）。
-2. **活动区**：进行中的下载任务卡（来源、进度条、done/total、message、取消按钮）；轮播状态卡（运行中显示当前 index/total 与文件名，提供停止）；更新横幅（有更新时：版本号 + 查看更新 → 跳设置页）。
+2. **活动区**：进行中的下载任务卡（来源、进度条、done/total、message、取消按钮）；更新横幅（有更新时：版本号 + 查看更新 → 跳设置页）。
 3. **快捷操作**：主按钮"浏览图库"，次按钮"Wallhaven 下载""Reddit 下载""数据库管理"。
 
 空态：数据库未初始化时整页替换为初始化引导空态。
@@ -163,11 +178,10 @@ confirm: { visible: boolean; title: string; text: string; danger: boolean; resol
 
 1. **顶栏**：来源切换（Wallhaven / Reddit 分段按钮）、搜索框（文件名包含，防抖 300ms）、排序下拉（默认/名称/大小/日期）、刷新。
 2. **统计条**：`共 N 张 · 第 x/y 页`；存在孤儿时显示 `含 M 个孤儿文件` 警示 chip（点击筛选孤儿——前端过滤当前列表）。
-3. **网格**：缩略图卡片（asset URL），孤儿文件带橙色角标；hover 浮层操作：设为壁纸 / 详情 / 删除。多选模式：点击进入选择态，底栏批量操作（批量删除=dislike，孤儿批量收养/删除）。
+3. **网格**：缩略图卡片（asset URL），孤儿文件带橙色角标，**当前桌面壁纸那张带绿色边框 + 辉光 + 「当前壁纸」角标**（`pathKey` 匹配 `get_active_wallpaper` 的返回值，进入/切回本页时重新读一次）；hover 浮层操作：详情 / 删除。多选模式：点击进入选择态，底栏批量操作（批量删除=dislike，孤儿批量收养/删除）。
 4. **分页**：页码 + 每页数量（24/48/96）。
-5. **详情抽屉**：大图预览 + `get_image_info` 元数据（尺寸/格式/大小/来源链接[ opener 打开 ]/入库时间/标题[reddit]）；操作：设为壁纸（含显示器选择：`list_monitors` 下拉，"全部显示器"为默认）、删除/不喜欢。
-6. **轮播控制条**（页首或悬浮）：间隔秒数输入（≥5）、`使用当前筛选结果启动轮播`（取当前源全部文件名 → `start_slideshow`）、运行中显示 tick 信息与停止按钮。
-7. **全屏查看器**：固定深色（`--preview-bg`），左右切换、Esc 关闭、快捷键 ←/→。
+5. **详情抽屉**：大图预览 + `get_image_info` 元数据（尺寸/格式/大小/来源链接[ opener 打开 ]/入库时间/标题[reddit]）；操作：删除/不喜欢。
+6. **全屏查看器**：固定深色（`--preview-bg`），左右切换、Esc 关闭、快捷键 ←/→。
 
 空态分级：目录为空（引导去下载）/ 搜索无结果 / 数据库未初始化。
 
@@ -228,5 +242,5 @@ confirm: { visible: boolean; title: string; text: string; danger: boolean; resol
 | `browse_image_files.modified_date` 为近似换算 | 仅作展示，排序依赖后端 `sort_by`，不做二次精确化 |
 | `recover_database_files("all")` 返回错误 | 全量恢复 = 两源串行调用，结果合并提示 |
 | `download-progress` 与 `download-complete` 的 total 口径不同（恢复流程） | 进度条按 progress 事件渲染，完成提示用 complete 事件数字，互不混用 |
-| `is_slideshow_running` 可能假阳性 | 启动时查询仅用于恢复指示；收到 tick 才视为活跃运行 |
+| `get_active_wallpaper` 可能返回空数组（幻灯片/纯色壁纸） | 图库不高亮任何一张，仪表盘隐藏当前壁纸卡；都不当作错误提示 |
 | `save_settings` 不建库 | 保存后若库缺失，主动弹初始化确认 |

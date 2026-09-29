@@ -464,6 +464,45 @@ textarea:focus-visible {
   line-height: 1.6;
 }
 
+/* ── 跨组件复用的行级布局（数据库设置页拆分后分属多个组件） ──
+   scoped 样式管不到子组件内部，所以这些必须在全局。 */
+.tab-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-3) 0;
+  /* 缺失文件页的动作按钮已排到 4 个，窗口收窄时允许换行，
+     否则按钮会溢出到 panel-card 之外（卡片是 overflow 可见的）。 */
+  flex-wrap: wrap;
+}
+.maint-actions {
+  display: flex;
+  gap: var(--space-3);
+  flex-wrap: wrap;
+}
+/* v-data-table 默认带底色，与卡片背景叠加后会出现一块更亮的区域 */
+.db-table {
+  background: transparent !important;
+}
+
+/* ── 图库网格单元的共同几何（真卡片 GalleryCard.vue 与加载占位骨架共用） ──
+   卡片特有的交互样式（hover、选中/当前壁纸态、角标、浮层）在 GalleryCard.vue 的
+   scoped 样式里；这里只放两边必须一致、且 scoped 覆盖不到的尺寸与占位属性。 */
+.gallery-cell {
+  position: relative;
+  aspect-ratio: 16 / 10;
+  border-radius: var(--radius-md);
+  overflow: hidden;
+  background: var(--surface-elevated);
+  border: 2px solid transparent;
+  min-height: 96px;
+  /* 一页最多渲染 96 张卡片，每张含 img + 浮层 + 按钮，屏外卡片的布局与绘制是纯浪费。
+     content-visibility: auto 让浏览器跳过屏外卡片的渲染；
+     contain-intrinsic-size 提供占位尺寸，避免滚动条跳动。 */
+  content-visibility: auto;
+  contain-intrinsic-size: auto var(--grid-cell-ph, 115px);
+}
+
 /* ── 替代 vuetify/styles/utilities 的精简工具类（仅保留项目实际使用项） ── */
 .d-flex { display: flex; }
 .align-center { align-items: center; }

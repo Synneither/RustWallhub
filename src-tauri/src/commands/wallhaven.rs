@@ -6,7 +6,8 @@ use crate::commands::download_common::{
 use crate::config::Source;
 use crate::db;
 use crate::downloader;
-use crate::state::{save_image, setup_cancel_flag, AppError, AppState, ProgressThrottle};
+use crate::error::AppError;
+use crate::state::{save_image, setup_cancel_flag, AppState, ProgressThrottle};
 use crate::wallhaven;
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;

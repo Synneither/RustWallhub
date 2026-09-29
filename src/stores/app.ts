@@ -7,7 +7,6 @@ import type { UnlistenFn } from "@tauri-apps/api/event";
 import type {
   AppConfig,
   DatabaseStatus,
-  SlideshowTickPayload,
   Source,
   StatsResponse,
   UpdateInfo,
@@ -17,12 +16,10 @@ import {
   getConfig,
   getStats,
   initDatabases,
-  isSlideshowRunning,
   onDownloadComplete,
   onDownloadProgress,
   onImageDownloaded,
   onSettingsChanged,
-  onSlideshowTick,
   onSyncCompleted,
   onSyncFailed,
   onUpdateAvailable,
@@ -82,12 +79,6 @@ export const appState = reactive({
    * shallowRef：整批下载每张都触发一次 push，若用 reactive 数组会被逐元素深度代理；
    * 这里只在替换引用时触发更新，写入时用不可变替换。 */
   newImages: shallowRef<NewImageEntry[]>([]),
-
-  /* 轮播 */
-  slideshow: {
-    running: false,
-    current: null as SlideshowTickPayload | null,
-  },
 
   /* 更新 */
   update: {
@@ -228,8 +219,6 @@ export async function bootstrap() {
       await refreshStats();
     }
     // 数据库缺失时由 App.vue 弹确认框引导 initDatabases
-
-    appState.slideshow.running = await isSlideshowRunning().catch(() => false);
   } catch (e) {
     logger.error("Bootstrap", "启动初始化失败", e);
     appState.bootError = friendlyError(e);
@@ -331,11 +320,6 @@ export async function registerGlobalListeners() {
 
     onUpdateInstalling(() => {
       appState.update.installing = true;
-    }),
-
-    onSlideshowTick((p) => {
-      appState.slideshow.running = true;
-      appState.slideshow.current = p;
     }),
 
     // 启动自动拉取的结果：成功后刷新统计与图库，失败只提示

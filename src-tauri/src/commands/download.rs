@@ -4,7 +4,8 @@ use crate::commands::download_common::{emit_complete, emit_progress};
 use crate::config::Source;
 use crate::db;
 use crate::downloader;
-use crate::state::{save_image, setup_cancel_flag, AppError, AppState, ProgressThrottle};
+use crate::error::AppError;
+use crate::state::{save_image, setup_cancel_flag, AppState, ProgressThrottle};
 use std::path::Path;
 use std::sync::atomic::Ordering;
 
@@ -52,7 +53,7 @@ pub async fn recover_database_files(
                     .filter(|img| {
                         // 防快照注入的路径穿越：name 必须通过纯文件名校验，
                         // 与 download_missing_images 入口的校验保持一致。
-                        if crate::state::ensure_plain_filename(&img.name).is_err() {
+                        if crate::safe_path::ensure_plain_filename(&img.name).is_err() {
                             log::warn!("[recover] 跳过非法文件名（疑似恶意快照）: {:?}", img.name);
                             return false;
                         }
@@ -172,16 +173,18 @@ pub async fn download_missing_images(
     let requested = images.len();
     let images: Vec<db::ImageRecord> = images
         .into_iter()
-        .filter(|img| match crate::state::ensure_plain_filename(&img.name) {
-            Ok(()) => true,
-            Err(e) => {
-                log::warn!(
-                    "[download_missing_images] 跳过非法文件名 {:?}: {e}",
-                    img.name
-                );
-                false
-            }
-        })
+        .filter(
+            |img| match crate::safe_path::ensure_plain_filename(&img.name) {
+                Ok(()) => true,
+                Err(e) => {
+                    log::warn!(
+                        "[download_missing_images] 跳过非法文件名 {:?}: {e}",
+                        img.name
+                    );
+                    false
+                }
+            },
+        )
         .collect();
     if images.is_empty() {
         return Err(AppError::Other(format!(

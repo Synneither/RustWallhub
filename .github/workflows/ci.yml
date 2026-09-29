@@ -33,8 +33,38 @@ jobs:
       - name: Check formatting
         run: cargo fmt --check
 
+      # --all-targets 必须带上：默认只检查库/二进制，测试代码里的 lint 会被漏掉，
+      # 时间一长测试就会先烂。本地开发跑的也是同一条命令。
       - name: Clippy
-        run: cargo clippy -- -D warnings
+        run: cargo clippy --all-targets -- -D warnings
+
+      - name: Test
+        run: cargo test
+
+  # Windows 专用代码（winpath / trash 的 SHFileOperationW / current_wallpaper 的 COM
+  # 查询）全在 #[cfg(windows)] 分支里，ubuntu 任务根本编不到它们；而若干真机回归测试
+  # （回收站、IDesktopWallpaper 的 CLSID 与 vtable 槽位）只在 Windows 上执行。
+  # 没有这个任务，这类改动只能等到打 tag 走 release 时才炸。
+  backend-windows:
+    name: Rust backend (Windows)
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: src-tauri
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: dsherret/rust-toolchain-file@v1
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - name: Check formatting
+        run: cargo fmt --check
+
+      - name: Clippy
+        run: cargo clippy --all-targets -- -D warnings
 
       - name: Test
         run: cargo test

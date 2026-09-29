@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, reactive, ref, watch, onMounted, onBeforeUnmount } from "vue";
+import { computed, ref, watch, onMounted, onBeforeUnmount } from "vue";
 import type { WallhavenImageEntry, WallhavenSearchResult, WallhavenSelected } from "../types";
 import {
   downloadWallhavenSelected,
@@ -7,10 +7,10 @@ import {
   startWallhavenDownload,
 } from "../utils/api";
 import { clearNewImages, toast } from "../stores/app";
-import { positiveInt } from "../utils/rules";
-import { useConfigDraft } from "../composables/useConfigDraft";
 import { useAsyncAction } from "../composables/useAsyncAction";
-import { useGridDensity } from "../composables/useGridDensity";
+import { useGridDensity, densityItems } from "../composables/useGridDensity";
+import { useClickOrDoubleClick, useSelectionMap } from "../composables/useSelection";
+import { useWallhavenPreview } from "../composables/useWallhavenPreview";
 import { useEffectiveDpr } from "../composables/useEffectiveDpr";
 import { useContainerWidth } from "../composables/useContainerWidth";
 import { openUrlSafe } from "../utils/openUrl";
@@ -19,102 +19,19 @@ import { maxCoveredWidthForPixels } from "../utils/thumbSize";
 import ProgressCard from "../components/ProgressCard.vue";
 import NewImagesStrip from "../components/NewImagesStrip.vue";
 import EmptyState from "../components/EmptyState.vue";
+import GridSizeBar from "../components/GridSizeBar.vue";
 import ImageViewer from "../components/ImageViewer.vue";
+import WallhavenSearchForm from "../components/WallhavenSearchForm.vue";
 
-/* ── 搜索条件（= wallhaven_* 配置，需保存后生效） ── */
-const WALLHAVEN_DRAFT_KEYS = [
-  "wallhaven_api_key",
-  "wallhaven_q",
-  "wallhaven_categories",
-  "wallhaven_purity",
-  "wallhaven_sorting",
-  "wallhaven_top_range",
-  "wallhaven_atleast",
-  "wallhaven_ratios",
-  "wallhaven_order",
-  "wallhaven_max_images",
-] as const;
+/* ── 搜索条件 ──
+ * 草稿、校验、保存都在 WallhavenSearchForm.vue 内部（搜索条件就是下载配置）。
+ * 这里只保留一个句柄：任何下载动作前都要先落盘，否则后端用的还是旧条件。 */
+type SearchFormApi = { persist: () => Promise<boolean>; validate: () => Promise<boolean> };
+const searchForm = ref<SearchFormApi | null>(null);
 
-const { draft, saving, persist } = useConfigDraft(WALLHAVEN_DRAFT_KEYS, {
-  wallhaven_api_key: "",
-  wallhaven_q: "",
-  wallhaven_categories: "010",
-  wallhaven_purity: "100",
-  wallhaven_sorting: "toplist",
-  wallhaven_top_range: "1y",
-  wallhaven_atleast: "1920x1080",
-  wallhaven_ratios: "landscape",
-  wallhaven_order: "desc",
-  wallhaven_max_images: 100,
-});
-
-/* 三位开关辅助 */
-function flagGet(key: "wallhaven_categories" | "wallhaven_purity", i: number): boolean {
-  return draft[key][i] === "1";
-}
-function flagSet(key: "wallhaven_categories" | "wallhaven_purity", i: number, v: boolean) {
-  const arr = draft[key].split("");
-  arr[i] = v ? "1" : "0";
-  // 至少保留一位
-  if (!arr.includes("1")) return;
-  draft[key] = arr.join("");
-}
-
-const CATEGORY_FLAGS = [
-  { label: "General", i: 0 },
-  { label: "Anime", i: 1 },
-  { label: "People", i: 2 },
-];
-const PURITY_FLAGS = [
-  { label: "SFW", i: 0 },
-  { label: "Sketchy", i: 1 },
-  { label: "NSFW", i: 2 },
-];
-
-const SORTING_ITEMS = [
-  { title: "最新", value: "date_added" },
-  { title: "相关度", value: "relevance" },
-  { title: "随机", value: "random" },
-  { title: "浏览量", value: "views" },
-  { title: "收藏数", value: "favorites" },
-  { title: "排行榜", value: "toplist" },
-];
-const TOP_RANGE_ITEMS = [
-  { title: "1 天", value: "1d" },
-  { title: "3 天", value: "3d" },
-  { title: "1 周", value: "1w" },
-  { title: "1 月", value: "1M" },
-  { title: "3 月", value: "3M" },
-  { title: "6 月", value: "6M" },
-  { title: "1 年", value: "1y" },
-];
-const ORDER_ITEMS = [
-  { title: "降序", value: "desc" },
-  { title: "升序", value: "asc" },
-];
-const RATIO_ITEMS = [
-  { title: "不限制", value: "" },
-  { title: "横屏", value: "landscape" },
-  { title: "竖屏", value: "portrait" },
-  { title: "方形", value: "square" },
-  { title: "16:9", value: "16x9" },
-  { title: "16:10", value: "16x10" },
-  { title: "21:9", value: "21x9" },
-];
-const ATLEAST_ITEMS = ["", "1920x1080", "2560x1440", "2560x1600", "3440x1440", "3840x2160"];
-
-const orderDisabled = computed(
-  () => draft.wallhaven_sorting === "toplist" || draft.wallhaven_sorting === "random",
-);
-const showTopRange = computed(() => draft.wallhaven_sorting === "toplist");
-const nsfwWithoutKey = computed(
-  () => draft.wallhaven_purity[2] === "1" && !draft.wallhaven_api_key.trim(),
-);
-
-/* ── 保存 ── */
-async function onSaveOnly() {
-  if (!(await validateFilter())) return;
-  if (await persist()) toast("设置已保存", "success");
+/** 把表单里的条件落盘。没有表单或保存失败时返回 false，调用方据此中止。 */
+async function persistFilter(): Promise<boolean> {
+  return (await searchForm.value?.persist()) ?? false;
 }
 
 /* ── 结果网格密度 ──
@@ -141,11 +58,7 @@ const maxCell = computed(() => maxCoveredWidthForPixels(REMOTE_THUMB_WIDTH, devi
 
 const { density: cellSize, items: SIZE_ITEMS, gridStyle: cellStyle } = useGridDensity(
   "rustwallhub-wallhaven-cell-size",
-  [
-    { value: "compact", label: "紧凑", min: "170px" },
-    { value: "normal", label: "标准", min: "240px" },
-    { value: "large", label: "大图", min: "330px" },
-  ],
+  densityItems({ compact: "170px", normal: "240px", large: "330px" }),
   "normal",
   // minCellHeight 与 .wh-cell 的 min-height 保持一致
   { containerWidth, maxCell, minCellHeight: 90 },
@@ -157,8 +70,33 @@ const result = ref<WallhavenSearchResult | null>(null);
 const searchError = ref("");
 let searchSeq = 0;
 
-/** v-form 实例句柄，只用到 validate()。 */
-const filterForm = ref<{ validate: () => Promise<{ valid: boolean }> } | null>(null);
+/* ── 大图预览的滚动缓冲 ──
+ * 续接、下载后补位、竞态作废都在 composable 里；这里负责给它「当前页」和「取下一页」。
+ * 预览列表 = 当前页 + 已续接的后续页，索引由查看器内部维护并回传（v-model:index），
+ * 所以「下载当前图 / 选入下载」始终作用在正在看的那一张上。 */
+const {
+  index: previewIndex,
+  open: previewOpen,
+  image: previewImage,
+  list: previewList,
+  loadingMore,
+  openAt: openPreview,
+  close: closePreviewRaw,
+  advance: advancePreview,
+  reset: resetPreview,
+} = useWallhavenPreview({
+  page: () => result.value,
+  // 取下一页：期间用户重新搜索就返回 null 作废本次续接
+  loadPage: async (page) => {
+    const seq = searchSeq;
+    const next = await searchWallhaven(page);
+    return seq === searchSeq ? next : null;
+  },
+  // 续接成功时把网格也切到该页，保持两边一致
+  commitPage: (next) => {
+    result.value = next;
+  },
+});
 
 /** 跳页输入框的值：跟随当前页同步，失焦时回填真实页码。 */
 const pageInput = ref(1);
@@ -181,9 +119,7 @@ async function doSearch(page: number, keepSelection = false) {
     result.value = next;
     if (!keepSelection) selected.clear();
     // 换页后旧索引可能越界，收起预览并丢弃续接缓冲
-    previewIndex.value = -1;
-    previewItems.value = [];
-    previewExhausted.value = false;
+    resetPreview();
   } catch (e) {
     if (seq !== searchSeq) return;
     searchError.value = friendlyError(e);
@@ -193,20 +129,13 @@ async function doSearch(page: number, keepSelection = false) {
   }
 }
 
-/** 保存前先过一遍表单校验：字段下有红字却照样保存、最后只看到后端报错（清空数字框
- *  还会变成 serde 的英文原始错误）是之前最容易让人以为"存进去了"的地方。 */
-async function validateFilter(): Promise<boolean> {
-  const res = await filterForm.value?.validate();
-  if (res && !res.valid) {
-    toast("搜索条件里有不合法的字段，请按标红提示修正后再保存", "error");
-    return false;
-  }
-  return true;
-}
-
+/** 保存并搜索：失败重试按钮与搜索表单的「保存并搜索」走同一条路径。
+ *  先过表单校验（字段下有红字却照样保存、最后只看到后端报错，是之前最容易让人以为
+ *  "存进去了"的地方），再落盘，最后才发搜索请求。 */
 async function onSaveAndSearch() {
-  if (!(await validateFilter())) return;
-  if (await persist()) await doSearch(1);
+  if (!(await searchForm.value?.validate())) return;
+  if (!(await persistFilter())) return;
+  await doSearch(1);
 }
 
 /** 翻页后把结果区带回视口顶部。
@@ -246,11 +175,12 @@ async function onPage(delta: number) {
  * 选中项存 `Map<id, entry>` 而不是 `Set<id>`：翻页后要保留已选，而下载 payload 需要
  * path / resolution / short_url —— 只有 id 是拼不出来的（用 Set 就只能清空重来）。
  * Map 与 Set 共享 has/size/delete/clear，所以模板里的用法不用改。 */
-const selected = reactive(new Map<string, WallhavenImageEntry>());
+const selection = useSelectionMap<string, WallhavenImageEntry>();
+const selected = selection.selected;
 
+/** 模板与快捷键都按「一张图」调用，键从图上取。 */
 function toggleSelect(img: WallhavenImageEntry) {
-  if (selected.has(img.id)) selected.delete(img.id);
-  else selected.set(img.id, img);
+  selection.toggle(img.id, img);
 }
 
 /** 从 "2560x1440" 解析宽高比，供网格单元格按需定高（竖屏图不再被 16:10 裁切） */
@@ -262,33 +192,12 @@ function ratioOf(resolution: string): string {
   return w > 0 && h > 0 ? `${w} / ${h}` : "16 / 10";
 }
 
-/* 单击选择 / 双击预览：同一元素上直接绑 click+dblclick 会让双击先触发两次选择切换（闪烁）。
- * 这里用 250ms 延迟判定；并且必须记住计时器对应的卡片 —— 否则在 250ms 内从 A 换到 B
- * 会被当成"对 B 的双击"直接弹预览，用户想连选两张时就会误触。
- * 记的是整个 entry 而不是 id：选中集现在是 Map<id, entry>，结算上一次单击时需要 entry。 */
-let cellClickTimer: ReturnType<typeof setTimeout> | null = null;
-let cellClickEntry: WallhavenImageEntry | null = null;
-
-function onCellClick(img: WallhavenImageEntry) {
-  if (cellClickTimer) {
-    clearTimeout(cellClickTimer);
-    cellClickTimer = null;
-    const prev = cellClickEntry;
-    cellClickEntry = null;
-    if (prev?.id === img.id) {
-      openPreview(img); // 同一张连续两次点击 = 双击 → 预览
-      return;
-    }
-    // 换了一张卡片：上一张按单击结算，避免这次点击既丢失选择又误开预览
-    if (prev) toggleSelect(prev);
-  }
-  cellClickEntry = img;
-  cellClickTimer = setTimeout(() => {
-    cellClickTimer = null;
-    cellClickEntry = null;
-    toggleSelect(img);
-  }, 250);
-}
+/** 单击选择 / 双击预览：消歧逻辑（延迟判定、记住上一张卡片、卸载时清计时器）在 composable 里。
+ *  `openPreview` 是函数声明，已提升，所以这里可以先引用后定义。 */
+const { handle: onCellClick } = useClickOrDoubleClick<WallhavenImageEntry>({
+  onSingle: toggleSelect,
+  onDouble: openPreview,
+});
 
 const allPageSelected = computed(() => {
   const imgs = result.value?.images ?? [];
@@ -301,13 +210,13 @@ function toggleSelectAll() {
     imgs.forEach((i) => selected.delete(i.id));
   } else {
     // 存 entry 而不是 id：翻页后仍要能拿到 path/resolution 拼下载 payload
-    imgs.forEach((i) => selected.set(i.id, i));
+    selection.setAll(imgs.map((i) => [i.id, i] as const));
   }
 }
 
 const { run: onDownloadSelected, loading: startingSelected } = useAsyncAction(async () => {
   if (selected.size === 0) return;
-  if (!(await persist())) return;
+  if (!(await persistFilter())) return;
   // 直接取选中集里的 entry：这样才能下载跨页勾选的图（以前只过滤当前页，
   // 翻页后勾选被清空，跨页挑选根本无法完成）。
   const payload: WallhavenSelected[] = [...selected.values()].map((i) => ({
@@ -323,114 +232,22 @@ const { run: onDownloadSelected, loading: startingSelected } = useAsyncAction(as
 });
 
 const { run: onBatchDownload, loading: startingBatch } = useAsyncAction(async () => {
-  if (!(await persist())) return;
+  if (!(await persistFilter())) return;
   const msg = await startWallhavenDownload();
   clearNewImages("wallhaven");
   toast(msg, "info");
 });
 
-/* ── 大图预览：复用全屏查看器，可左右连续翻页 ──
- * 预览列表 = 当前页 + 已续接的后续页（滚动缓冲），索引由查看器内部维护并回传
- * （v-model:index），这样"下载当前图/选入下载"始终作用在正在看的那一张上。
- * 注意：不要直接拿 result.images 当预览列表——续接时会往后追加，一旦它跟着
- * 结果页重置，索引就会错位。 */
-const previewIndex = ref(-1); // -1 = 未打开
-const previewOpen = computed(() => previewIndex.value >= 0);
-const previewItems = ref<WallhavenImageEntry[]>([]);
-/** 续接加载中（底部提示用） */
-const loadingMore = ref(false);
-/** 后续页已取尽/取失败，不再尝试，避免反复请求同一页 */
-const previewExhausted = ref(false);
-/** 用户已要求前进、但缓冲刚好到边界时的补位标记（见 advancePreview） */
-let pendingAdvance = false;
-
-const previewList = computed(() =>
-  previewItems.value.map((i) => ({
-    name: i.id,
-    path: i.path,
-    rawUrl: i.path, // 远程原图，不能走 asset 协议
-    placeholderUrl: i.thumbnail_url, // 网格里已加载过，秒开
-  })),
-);
-const previewImage = computed<WallhavenImageEntry | null>(
-  () => previewItems.value[previewIndex.value] ?? null,
-);
-
-function openPreview(img: WallhavenImageEntry) {
-  pendingAdvance = false; // 清掉上一轮遗留的补位标记
-  let i = previewItems.value.findIndex((x) => x.id === img.id);
-  if (i < 0) {
-    // 不在缓冲里（如刚翻过页）：以当前页重建，索引按新表算
-    previewItems.value = [...(result.value?.images ?? [])];
-    previewExhausted.value = false;
-    i = previewItems.value.findIndex((x) => x.id === img.id);
-  }
-  if (i < 0) return;
-  previewIndex.value = i;
-}
-
+/** 关闭预览。下载中不允许关：那会让下载完成的回调找不到要前进的目标。 */
 function closePreview() {
   if (previewDownloading.value) return;
-  previewIndex.value = -1;
-}
-
-/** 距离末尾还剩几张时就预取下一页，做到无缝续接 */
-const PREFETCH_AHEAD = 2;
-
-/** 追加下一页到预览缓冲；网格也一并翻到该页，保持两边一致 */
-async function extendPreview() {
-  const cur = result.value;
-  if (!cur || loadingMore.value || previewExhausted.value) return;
-  if (cur.page >= cur.total_pages) {
-    previewExhausted.value = true;
-    return;
-  }
-  const seq = searchSeq; // 期间用户重新搜索则丢弃本次结果
-  loadingMore.value = true;
-  try {
-    const next = await searchWallhaven(cur.page + 1);
-    if (seq !== searchSeq) return;
-    if (next.images.length === 0) {
-      previewExhausted.value = true;
-      return;
-    }
-    previewItems.value = [...previewItems.value, ...next.images];
-    result.value = next;
-    // 只有用户先前明确要求前进（下载后自动跳下一张）才补位；
-    // 单纯预取完不能自动翻页，否则会把用户正在看的那张顶掉。
-    if (pendingAdvance) {
-      pendingAdvance = false;
-      previewIndex.value = Math.min(previewIndex.value + 1, previewItems.value.length - 1);
-    }
-  } catch {
-    // 静默失败：网格与分页按钮仍可正常用，这里只是不再自动续接
-    previewExhausted.value = true;
-  } finally {
-    loadingMore.value = false;
-  }
-}
-
-/* 索引变化即检查是否接近末尾 */
-watch(previewIndex, (i) => {
-  if (i < 0 || previewExhausted.value) return;
-  if (i < previewItems.value.length - PREFETCH_AHEAD) return;
-  void extendPreview();
-});
-
-/** 下载完自动跳下一张，连续挑图时不用手动翻 */
-function advancePreview() {
-  if (previewIndex.value < previewItems.value.length - 1) {
-    previewIndex.value += 1;
-  } else if (!previewExhausted.value) {
-    // 正好卡在已加载的末尾：等续接取回下一页后由 extendPreview 补位
-    pendingAdvance = true;
-  }
+  closePreviewRaw();
 }
 
 const { run: onDownloadPreview, loading: previewDownloading } = useAsyncAction(async () => {
   const img = previewImage.value;
   if (!img) return;
-  if (!(await persist())) return;
+  if (!(await persistFilter())) return;
   const payload: WallhavenSelected[] = [
     {
       id: img.id,
@@ -465,14 +282,8 @@ onMounted(() => {
 });
 onBeforeUnmount(() => {
   window.removeEventListener("keydown", onPreviewKey);
-  // ResizeObserver 的断开由 useContainerWidth 的 onBeforeUnmount 完成
-  // 250ms 的延迟判定定时器也要清掉：否则卸载后它仍会执行 toggleSelect，
-  // 在组件已销毁的状态下改动选择集。
-  if (cellClickTimer) {
-    clearTimeout(cellClickTimer);
-    cellClickTimer = null;
-    cellClickEntry = null;
-  }
+  // ResizeObserver 的断开由 useContainerWidth 的 onBeforeUnmount 完成；
+  // 单击/双击判定的 250ms 计时器由 useClickOrDoubleClick 的 onBeforeUnmount 清掉。
 });
 </script>
 
@@ -484,126 +295,12 @@ onBeforeUnmount(() => {
     </div>
 
     <!-- 搜索条件 -->
-    <v-form ref="filterForm" class="panel-card animate-in" @submit.prevent>
-      <div class="panel-card__title">
-        <v-icon icon="mdi-tune-variant" size="18" color="primary" />
-        搜索条件
-      </div>
-
-      <div class="wh-row">
-        <v-text-field
-          v-model="draft.wallhaven_q"
-          label="关键词"
-          placeholder="如 landscape、anime girl…"
-          clearable
-          hide-details
-          class="settings-field wh-row__q"
-        />
-        <v-select
-          v-model="draft.wallhaven_sorting"
-          :items="SORTING_ITEMS"
-          label="排序"
-          hide-details
-          class="settings-field"
-          style="max-width: 150px"
-        />
-        <v-select
-          v-if="showTopRange"
-          v-model="draft.wallhaven_top_range"
-          :items="TOP_RANGE_ITEMS"
-          label="排行范围"
-          hide-details
-          class="settings-field"
-          style="max-width: 130px"
-        />
-        <v-select
-          v-model="draft.wallhaven_order"
-          :items="ORDER_ITEMS"
-          label="顺序"
-          hide-details
-          :disabled="orderDisabled"
-          class="settings-field"
-          style="max-width: 110px"
-        />
-      </div>
-
-      <div class="wh-row wh-row--flags">
-        <div class="wh-flag-group">
-          <span class="stat-label">分类</span>
-          <v-chip
-            v-for="f in CATEGORY_FLAGS"
-            :key="f.label"
-            size="small"
-            :variant="flagGet('wallhaven_categories', f.i) ? 'flat' : 'outlined'"
-            :color="flagGet('wallhaven_categories', f.i) ? 'primary' : undefined"
-            @click="flagSet('wallhaven_categories', f.i, !flagGet('wallhaven_categories', f.i))"
-          >
-            {{ f.label }}
-          </v-chip>
-        </div>
-        <div class="wh-flag-group">
-          <span class="stat-label">纯度</span>
-          <v-chip
-            v-for="f in PURITY_FLAGS"
-            :key="f.label"
-            size="small"
-            :variant="flagGet('wallhaven_purity', f.i) ? 'flat' : 'outlined'"
-            :color="flagGet('wallhaven_purity', f.i) ? 'primary' : undefined"
-            @click="flagSet('wallhaven_purity', f.i, !flagGet('wallhaven_purity', f.i))"
-          >
-            {{ f.label }}
-          </v-chip>
-        </div>
-        <span v-if="nsfwWithoutKey" class="text-caption" style="color: var(--accent-warning)">
-          NSFW 内容需要填写 API Key
-        </span>
-      </div>
-
-      <div class="settings-grid">
-        <v-combobox
-          v-model="draft.wallhaven_atleast"
-          :items="ATLEAST_ITEMS"
-          label="最小分辨率"
-          hide-details
-          class="settings-field"
-        />
-        <v-select
-          v-model="draft.wallhaven_ratios"
-          :items="RATIO_ITEMS"
-          label="宽高比"
-          hide-details
-          class="settings-field"
-        />
-        <v-text-field
-          v-model.number="draft.wallhaven_max_images"
-          type="number"
-          label="批量下载目标张数"
-          hide-details
-          :rules="[(v: number) => positiveInt(v, { min: 1, max: 10000 })]"
-          class="settings-field"
-        />
-        <v-text-field
-          v-model="draft.wallhaven_api_key"
-          label="API Key（可选）"
-          type="password"
-          hide-details
-          class="settings-field"
-        />
-      </div>
-
-      <div class="wh-actions">
-        <v-btn variant="tonal" :loading="saving" @click="onSaveOnly">仅保存</v-btn>
-        <v-btn
-          color="primary"
-          variant="flat"
-          prepend-icon="mdi-magnify"
-          :loading="searching"
-          @click="onSaveAndSearch"
-        >
-          保存并搜索
-        </v-btn>
-      </div>
-    </v-form>
+    <!-- 搜索条件：草稿 / 校验 / 保存都在组件内部，父视图通过 ref 调 validate/persist -->
+    <WallhavenSearchForm
+      ref="searchForm"
+      :searching="searching"
+      @save-and-search="onSaveAndSearch"
+    />
 
     <!-- 下载进度 -->
     <ProgressCard source="wallhaven" title="Wallhaven 下载" />
@@ -633,18 +330,7 @@ onBeforeUnmount(() => {
             <template v-if="selected.size > 0"> · 已选 {{ selected.size }}</template>
           </span>
           <v-spacer />
-          <div class="wh-size">
-            <v-btn
-              v-for="s in SIZE_ITEMS"
-              :key="s.value"
-              size="x-small"
-              :variant="cellSize === s.value ? 'tonal' : 'text'"
-              :color="cellSize === s.value ? 'primary' : undefined"
-              @click="cellSize = s.value"
-            >
-              {{ s.label }}
-            </v-btn>
-          </div>
+          <GridSizeBar v-model="cellSize" :items="SIZE_ITEMS" />
           <v-btn size="small" variant="text" @click="toggleSelectAll">
             {{ allPageSelected ? "取消全选" : "全选本页" }}
           </v-btn>
@@ -813,29 +499,6 @@ onBeforeUnmount(() => {
 </template>
 
 <style scoped>
-.wh-row {
-  display: flex;
-  gap: var(--space-3);
-  flex-wrap: wrap;
-}
-.wh-row__q {
-  flex: 1;
-  min-width: 220px;
-}
-.wh-row--flags {
-  align-items: center;
-  gap: var(--space-5);
-}
-.wh-flag-group {
-  display: flex;
-  align-items: center;
-  gap: var(--space-2);
-}
-.wh-actions {
-  display: flex;
-  justify-content: flex-end;
-  gap: var(--space-3);
-}
 /* 翻页条贴在视口底边时，.view 的下内边距会在它下方再露出一条内容（实测卡片会从条
    下面探出来 40px）。设置页对同一个问题也是把根元素的 padding-bottom 归零，
    这里照做，被去掉的留白补给页面最后一个元素（本次新图条）。 */
@@ -860,10 +523,6 @@ onBeforeUnmount(() => {
   align-items: center;
   gap: var(--space-2);
   flex-wrap: wrap;
-}
-.wh-size {
-  display: flex;
-  align-items: center;
 }
 /* 翻页条：贴住结果区底边，和 .settings-save-bar 用同一套贴底做法
    （sticky + --surface-deep + 上边框），往下滚网格时始终点得到。

@@ -16,9 +16,7 @@ import type {
   ImageInfo,
   ImageRecord,
   LocalImageList,
-  MonitorInfo,
   OrphanFile,
-  SlideshowTickPayload,
   Source,
   StatsResponse,
   SyncExportResult,
@@ -93,17 +91,6 @@ export const browseImageFiles = (source: Source, opts: BrowseOptions) =>
     customDir: opts.customDir ?? null,
     search: opts.search ?? null,
     sortBy: opts.sortBy ?? null,
-  });
-
-export const listFilteredImagePaths = (
-  source: Source,
-  search?: string,
-  sortBy?: string,
-) =>
-  invoke<string[]>("list_filtered_image_paths", {
-    source,
-    search: search ?? null,
-    sortBy: sortBy ?? null,
   });
 
 export const resolveThumbnails = (
@@ -184,23 +171,6 @@ export const testOssConfig = () => invoke<string>("test_oss_config");
 export const getActiveWallpaper = () =>
   invoke<ActiveWallpaper>("get_active_wallpaper");
 
-/* ════════════ wallpaper ════════════ */
-
-export const setWallpaper = (filePath: string, monitor?: string) =>
-  invoke<string>("set_wallpaper", {
-    filePath,
-    monitor: monitor ?? null,
-  });
-
-export const startSlideshow = (filePaths: string[], intervalSecs: number) =>
-  invoke<void>("start_slideshow", { filePaths, intervalSecs });
-
-export const stopSlideshow = () => invoke<boolean>("stop_slideshow");
-
-export const isSlideshowRunning = () => invoke<boolean>("is_slideshow_running");
-
-export const listMonitors = () => invoke<MonitorInfo[]>("list_monitors");
-
 /* ════════════ asset URL ════════════ */
 
 /** 本地文件路径 → WebView 可显示的 asset URL */
@@ -241,9 +211,6 @@ export const onUpdateProgress = (
 
 export const onUpdateInstalling = (cb: () => void): Promise<UnlistenFn> =>
   listen("update-installing", () => cb());
-
-export const onSlideshowTick = (cb: (p: SlideshowTickPayload) => void): Promise<UnlistenFn> =>
-  listen<SlideshowTickPayload>("slideshow-tick", (e) => cb(e.payload));
 
 /* ════════════ 自动同步（启动拉取的结果） ════════════ */
 

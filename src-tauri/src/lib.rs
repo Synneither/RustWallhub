@@ -1,18 +1,21 @@
 mod commands;
 mod config;
+mod current_wallpaper;
 mod db;
 mod desktop_entry;
 mod downloader;
+mod error;
 mod exec;
 mod linux_env;
 mod logging;
 mod oss;
 mod reddit;
+mod safe_path;
 mod state;
 mod thumbnail;
 mod trash;
 mod wallhaven;
-mod wallpaper;
+mod winpath;
 
 use commands::*;
 use config::AppConfig;
@@ -21,9 +24,6 @@ use std::path::PathBuf;
 use std::sync::Mutex;
 use std::time::Duration;
 use tauri::Manager;
-use wallpaper::{
-    is_slideshow_running, list_monitors, set_wallpaper, start_slideshow, stop_slideshow,
-};
 
 /// 应用界面缩放（webview zoom）。
 ///
@@ -175,7 +175,6 @@ pub fn run() {
                 cancel_flag: Mutex::new(std::collections::HashMap::new()),
                 http_client: Mutex::new(client),
                 config_cache: Mutex::new(Some(std::sync::Arc::new(config))),
-                slideshow_cancel: Mutex::new(None),
             });
 
             // 界面缩放：把配置里的值同步到 webview（1.0 也要调一次，用户可能刚调回 100%）
@@ -221,7 +220,6 @@ pub fn run() {
             cancel_downloads,
             // gallery
             browse_image_files,
-            list_filtered_image_paths,
             resolve_thumbnails,
             dislike_file,
             dislike_files,
@@ -246,12 +244,6 @@ pub fn run() {
             test_oss_config,
             // system
             get_active_wallpaper,
-            // wallpaper (from wallpaper module)
-            set_wallpaper,
-            start_slideshow,
-            stop_slideshow,
-            is_slideshow_running,
-            list_monitors,
         ])
         .build(tauri::generate_context!())
         .expect("构建 Tauri 应用时出错");

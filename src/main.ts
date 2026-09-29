@@ -25,7 +25,6 @@ import { VForm } from 'vuetify/components/VForm';
 import { VIcon } from 'vuetify/components/VIcon';
 import { VList, VListItem, VListItemTitle } from 'vuetify/components/VList';
 import { VMain } from 'vuetify/components/VMain';
-import { VMenu } from 'vuetify/components/VMenu';
 import { VNavigationDrawer } from 'vuetify/components/VNavigationDrawer';
 import { VOverlay } from 'vuetify/components/VOverlay';
 import { VPagination } from 'vuetify/components/VPagination';
@@ -58,7 +57,6 @@ const components = {
   VListItem,
   VListItemTitle,
   VMain,
-  VMenu,
   VNavigationDrawer,
   VOverlay,
   VPagination,

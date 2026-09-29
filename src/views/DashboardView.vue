@@ -1,7 +1,8 @@
 <script setup lang="ts">
 import { computed, inject, onActivated, onMounted, ref } from "vue";
 import { appState, activeDownloadSources, dbReady, refreshStats, toast, toastError } from "../stores/app";
-import { assetUrl, getActiveWallpaper, resolveThumbnails, startWallhavenDownload, startRedditDownload, stopSlideshow } from "../utils/api";
+import { assetUrl, getActiveWallpaper, resolveThumbnails, startWallhavenDownload, startRedditDownload } from "../utils/api";
+import { basename } from "../utils/path";
 import StatPanel from "../components/StatPanel.vue";
 import ProgressCard from "../components/ProgressCard.vue";
 import EmptyState from "../components/EmptyState.vue";
@@ -10,7 +11,6 @@ const navigate = inject<(key: string) => void>("navigate", () => {});
 
 const starting = ref<"" | "wallhaven" | "reddit">("");
 
-const slideshow = computed(() => appState.slideshow);
 const updateInfo = computed(() => appState.update.info);
 
 async function quickDownload(source: "wallhaven" | "reddit") {
@@ -29,23 +29,12 @@ async function quickDownload(source: "wallhaven" | "reddit") {
   }
 }
 
-async function onStopSlideshow() {
-  try {
-    const stopped = await stopSlideshow();
-    appState.slideshow.running = false;
-    appState.slideshow.current = null;
-    toast(stopped ? "轮播已停止" : "轮播未在运行", "info");
-  } catch (e) {
-    toastError(e);
-  }
-}
-
 onMounted(() => {
   if (dbReady.value) refreshStats();
   loadActiveWallpaper();
 });
 
-// KeepAlive 下切走再切回时重载「当前壁纸」，否则在图库换壁纸后返回仍显示旧值。
+// KeepAlive 下切走再切回时重载「当前壁纸」：它可能在应用外被换掉，返回时不该显示旧值。
 onActivated(() => {
   loadActiveWallpaper();
 });
@@ -56,11 +45,7 @@ const wallpaperImgError = ref(false);
 /** 壁纸缩略图地址；解析不到时留空，由模板退回原图。 */
 const wallpaperThumb = ref("");
 
-const wallpaperName = computed(() => {
-  const p = wallpaperPath.value;
-  if (!p) return "";
-  return p.split(/[\\/]/).pop() ?? p;
-});
+const wallpaperName = computed(() => basename(wallpaperPath.value));
 
 /** 128px 的格子不值得为 4K 原图付出约 33MB 的驻留内存，优先用库里的缩略图。
  *  后端在源文件缺失/非 JPEG 时会把原图路径原样返回（缩略图文件名则是 name__w480.webp），
@@ -74,7 +59,7 @@ async function resolveWallpaperThumb(name: string) {
       const res = await resolveThumbnails(source, [name], dpr);
       const hit = res.items.find((it) => {
         if (it.name !== name) return false;
-        const base = it.thumb_path.split(/[\\/]/).pop() ?? "";
+        const base = basename(it.thumb_path);
         return base !== name;
       });
       if (hit) {
@@ -90,7 +75,8 @@ async function resolveWallpaperThumb(name: string) {
 async function loadActiveWallpaper() {
   try {
     const res = await getActiveWallpaper();
-    wallpaperPath.value = res.path;
+    // 多显示器各一张时只展示第一张，够表达「当前在用哪张」了。
+    wallpaperPath.value = res.paths[0] ?? null;
     wallpaperImgError.value = false;
     await resolveWallpaperThumb(wallpaperName.value);
   } catch {
@@ -157,33 +143,18 @@ async function loadActiveWallpaper() {
         </div>
         <v-spacer />
         <v-btn variant="text" size="small" prepend-icon="mdi-image-album" @click="navigate('gallery')">
-          去图库换一张
+          在图库中查看
         </v-btn>
       </div>
 
       <!-- 活动任务 -->
-      <div v-if="activeDownloadSources.length > 0 || slideshow.running" class="dash-activity">
+      <div v-if="activeDownloadSources.length > 0" class="dash-activity">
         <ProgressCard
           v-for="s in activeDownloadSources"
           :key="s"
           :source="s"
           class="animate-in"
         />
-
-        <div v-if="slideshow.running" class="data-panel progress-panel slideshow-card animate-in">
-          <div class="slideshow-card__head">
-            <v-icon icon="mdi-play-circle-outline" size="18" color="primary" />
-            <span class="text-label">壁纸轮播中</span>
-            <v-spacer />
-            <v-btn size="x-small" variant="text" color="error" @click="onStopSlideshow">停止</v-btn>
-          </div>
-          <div class="text-caption slideshow-card__current">
-            <template v-if="slideshow.current">
-              {{ slideshow.current.index + 1 }} / {{ slideshow.current.total }} · {{ slideshow.current.name }}
-            </template>
-            <template v-else>等待下一次切换…</template>
-          </div>
-        </div>
       </div>
 
       <!-- 快捷操作 -->
@@ -286,23 +257,5 @@ async function loadActiveWallpaper() {
 }
 .wallpaper-card__path {
   color: var(--text-tertiary);
-}
-.slideshow-card {
-  border-radius: var(--radius-lg);
-  padding: var(--space-3) var(--space-4);
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-2);
-}
-.slideshow-card__head {
-  display: flex;
-  align-items: center;
-  gap: var(--space-2);
-}
-.slideshow-card__current {
-  color: var(--text-secondary);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 </style>

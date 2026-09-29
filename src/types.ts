@@ -189,18 +189,12 @@ export interface SyncExportResult {
   reddit: string | null;
 }
 
-/* ── system / wallpaper ── */
+/* ── system ── */
 
+/** 当前桌面壁纸（只读；应用本身不设置壁纸，读它是为了在图库里高亮出来）。
+ *  多显示器各一张时会有多条；空数组 = 读不到（幻灯片/纯色壁纸）。 */
 export interface ActiveWallpaper {
-  path: string | null;
-}
-
-export interface MonitorInfo {
-  id: string;
-  name: string;
-  is_primary: boolean;
-  width: number;
-  height: number;
+  paths: string[];
 }
 
 /* ── 事件 payload ── */
@@ -228,11 +222,4 @@ export interface ImageDownloadedPayload {
 export interface UpdateProgressPayload {
   downloaded: number;
   total: number | null;
-}
-
-export interface SlideshowTickPayload {
-  index: number;
-  total: number;
-  name: string;
-  path: string;
 }

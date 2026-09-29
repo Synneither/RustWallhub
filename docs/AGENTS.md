@@ -4,6 +4,11 @@
 
 **RustWallhub** — Tauri 2 desktop wallpaper manager (Wallhaven + Reddit).
 
+**Scope**: the app *manages* wallpapers (download, browse, prune, DB upkeep) — it **does not set
+the wallpaper**. The only wallpaper-related system integration is read-only: `get_active_wallpaper`
+identifies the current one so the gallery can highlight it. Don't reintroduce desktop-environment
+wallpaper setters, per-monitor pickers or the slideshow.
+
 - **Frontend**: Vue 3 + TypeScript + Vuetify 4 + Vite
 - **Backend**: Rust + Tauri 2 + rusqlite (SQLite)
 - **Package manager**: Deno (`deno.lock` present; `deno task` runs npm scripts from `package.json`)
@@ -27,8 +32,19 @@ two checks that must pass before committing.
 
 - **Entry**: `src-tauri/src/lib.rs::run()` registers all Tauri commands and manages `AppState`.
   Commands are grouped by domain under `src-tauri/src/commands/` (gallery, download, settings,
-  database, wallhaven, reddit, sync, system); shared state, error type and helpers live in
-  `src-tauri/src/state.rs`.
+  database, wallhaven, reddit, sync, system). `commands/gallery/` is further split by concern
+  (`browse` / `thumbs` / `delete` / `orphan` / `info`) and re-exported from its `mod.rs`, so
+  `commands::*` still resolves every command name.
+- **Cross-cutting top-level modules** (keep these boundaries when adding code):
+  | module | 职责 |
+  |---|---|
+  | `state.rs` | `AppState`、跨 IPC 事件结构、配置读写、asset 授权 |
+  | `error.rs` | `AppError`（+ 序列化成字符串给前端） |
+  | `safe_path.rs` | 文件名/路径安全校验：`ensure_plain_filename` / `safe_join` / `safe_join_all` |
+  | `current_wallpaper.rs` | **只读**地查当前壁纸（Windows 走 `IDesktopWallpaper` COM） |
+  | `winpath.rs` | Windows verbatim 路径（`\\?\`）降级，shell/Win32 API 的适配层 |
+  | `trash.rs` | 移入回收站（Windows `SHFileOperationW` / Linux `gio`+XDG Trash） |
+  | `exec.rs` | 外部命令查找（PATH + `~/.local/bin`、Nix profile 等） |
 - **Frontend routing**: `src/App.vue` uses a `ref`-based view switcher (no vue-router, no pinia).
   **6 views**: Dashboard, Wallhaven, Reddit, Gallery, Database (`DbSettingsView.vue`), Settings.
   Views are wrapped in `<KeepAlive>`, so in-view `onMounted` runs once and refreshes go through
@@ -39,23 +55,23 @@ two checks that must pass before committing.
 - **Config**: `<config_dir>/rustwallhub/config.json` (auto-created with defaults). See
   `src-tauri/src/config.rs`. `db_dir` is the single source of truth for the two DB paths —
   `sync_db_dir()` derives them; an empty `db_dir` means legacy per-path config.
-- **Events**: 10 backend→frontend events, all listened to in `src/stores/app.ts`:
+- **Events**: 9 backend→frontend events, all listened to in `src/stores/app.ts`:
   `download-progress`, `download-complete`, `image-downloaded`, `settings-changed`,
-  `slideshow-tick`, `sync-completed`, `sync-failed`, `update-available`, `update-installing`,
+  `sync-completed`, `sync-failed`, `update-available`, `update-installing`,
   `update-progress`.
 
 ## Key details
 
-- **Gallery listing**: `browse_image_files` (`commands/gallery.rs`) scans the save directory on
-  the filesystem — it does NOT query the database. It returns `thumb_path: null`; thumbnails are
-  resolved in a second pass via `resolve_thumbnails`. Custom-directory mode passes `custom_dir`
-  and then hides the DB-dependent actions in the UI.
+- **Gallery listing**: `browse_image_files` (`commands/gallery/browse.rs`) scans the save directory
+  on the filesystem — it does NOT query the database. It returns `thumb_path: null`; thumbnails
+  are resolved in a second pass via `resolve_thumbnails`. Custom-directory mode passes
+  `custom_dir` and then hides the DB-dependent actions in the UI.
 - **Local image access**: Requires the Tauri asset protocol (`protocol-asset` feature in
   `Cargo.toml`). `tauri.conf.json` only whitelists `$CACHE/rustwallhub/**` statically; the
   configured save dirs are granted at startup via `allow_config_asset_dirs()`, and a
   user-picked custom directory is granted when `browse_image_files` receives it. Frontend turns
   paths into URLs with `convertFileSrc()`.
-- **Path safety**: every filename arriving over IPC must go through `state::safe_join()` (single)
+- **Path safety**: every filename arriving over IPC must go through `safe_path::safe_join()` (single)
   or `safe_join_all()` (batch, skips bad entries instead of aborting the whole batch). These are
   the only barrier between IPC input and disk paths — do not bypass them.
 - **Image validation**: `downloader.rs` checks magic bytes (JPEG/PNG/GIF/WebP) on download;
@@ -80,9 +96,14 @@ two checks that must pass before committing.
 - Rust error type: `AppError` (`state.rs`) using `thiserror`, serialized as a string to the
   frontend. Frontend maps raw messages to Chinese via `src/utils/errors.ts::friendlyError`.
 - All Tauri commands are `async` (even when blocking internally).
-- Reusable frontend patterns live in `src/composables/`: `useConfigDraft` (config form draft +
-  dirty tracking + persist) and `useAsyncAction` (async-button boilerplate with a synchronous
-  busy guard). Prefer these over hand-rolled `loading = true / try / catch / finally`.
+- Reusable frontend patterns live in `src/composables/` — see the table in
+  `docs/FRONTEND.md` §4.1 (config draft, async buttons, selection, grid density, thumb cache,
+  Wallhaven preview buffer, gallery viewer/detail). Prefer these over hand-rolled
+  `loading = true / try / catch / finally`.
+- Big views are decomposed into presentational components (`GalleryCard`, `GalleryBatchBar`,
+  `GridSizeBar`, `WallhavenSearchForm`, `DbSyncPanel`, `RecordBrowserPanel`). **When moving
+  markup into a child, move its styles too** — scoped CSS cannot reach inside a child component,
+  and shared geometry belongs in `src/assets/style.css` (§4.2 of FRONTEND.md).
 - Backend repetition between command modules goes into `commands/<domain>_common.rs`
   (see `download_common.rs`). Such modules are declared `pub mod` but must NOT be added to the
   `pub use` list in `commands/mod.rs`, since they export no commands.

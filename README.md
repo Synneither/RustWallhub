@@ -1,6 +1,6 @@
 # RustWallhub 🖼️
 
-**RustWallhub** 是一款桌面壁纸管理器，面向动漫壁纸收藏者与桌面美化爱好者。它把“找图 → 下载 → 浏览 → 设为壁纸 → 维护数据库”的完整流程整合在一个 Tauri 桌面应用中。
+**RustWallhub** 是一款桌面壁纸管理器，面向动漫壁纸收藏者与桌面美化爱好者。它把“找图 → 下载 → 浏览 → 整理归档 → 维护数据库”的完整流程整合在一个 Tauri 桌面应用中。
 
 后端使用 **Rust + SQLite**，前端使用 **Vue 3 + Vuetify 4**。当前发布产物覆盖 **Windows** 与 **Linux**。
 
@@ -15,8 +15,7 @@
 | ⬇️ **批量下载** | Wallhaven 按条件批量下载 / 勾选下载；Reddit 按 subreddit 列表批量抓取 |
 | 🧵 **Reddit 抓取** | 支持 i.redd.it 直链、gallery 首图、imgur 直链与相册；连续 3 批无新增自动停止 |
 | 🗂️ **本地图库** | Wallhaven / Reddit 双源浏览，搜索、排序、分页、孤儿标记，支持浏览主目录内的自定义本地目录 |
-| 🖥️ **设置壁纸** | 支持 Noctalia / GNOME / KDE / XFCE / sway / Hyprland / awww(swww) / feh；Windows 与 Noctalia/Hyprland/sway 支持按显示器设置 |
-| 🎞️ **壁纸轮播** | 使用当前筛选结果启动轮播，可设置间隔并随时停止 |
+| 🖼️ **当前壁纸高亮** | 自动标出系统正在使用的那张壁纸（只读识别，**不负责设置壁纸**——换壁纸交给你自己的桌面环境） |
 | 📋 **缺失检测** | 检测“数据库有记录但磁盘文件不存在”的图片，可选中补下载或全部恢复 |
 | 🗑️ **孤儿文件** | 检测“磁盘有文件但数据库无记录”的图片，可批量收养入库或删除 |
 | ❤️ **喜好管理** | 删除/不喜欢会写入数据库；缺失恢复时自动跳过已标记记录 |
@@ -77,20 +76,11 @@ cd .. && deno task build
 
 ## 🐧 Linux / Wayland（niri + Noctalia）
 
-Linux 侧按「谁是背景层的真正绘制者」来选壁纸后端，探测顺序即优先级：
+本应用**不设置壁纸**，只在图库里高亮「当前正在用的那张」，所以这里只涉及读取：
 
-| 顺序 | 后端 | 适用场景 |
-|------|------|----------|
-| 1 | **Noctalia** | v5 走 `noctalia msg wallpaper-set`，v4 走 `qs -c noctalia-shell ipc call wallpaper set` |
-| 2 | Hyprland (hyprpaper) | Hyprland 会话 |
-| 3 | sway (swaymsg) | sway 会话 |
-| 4 | awww / swww | 独立壁纸守护进程（守护进程没在跑时会自动拉起） |
-| 5 | KDE / GNOME / XFCE | 桌面环境自身的壁纸设置 |
-| 6 | feh | 仅 X11 有意义 |
+「当前壁纸」读取顺序：Windows 用 `IDesktopWallpaper::GetWallpaper`（只读查询，返回各显示器正在用的**原图**路径；`SystemParametersInfoW` 只能拿到系统转码副本，对不上号）→ Noctalia v5 `noctalia msg wallpaper-get` → Noctalia v4 缓存 JSON → awww/swww 守护进程缓存（`~/.cache/<工具>/<输出名>`）→ Noctalia `settings.toml` 兜底。
 
-**niri 本身不画壁纸**，所以要么跑 Noctalia（推荐，壁纸和调色板主题会一起变），要么跑 `awww-daemon`。走 Noctalia 时壁纸由外壳绘制，不要再另外启动 awww/swaybg 抢背景层。
-
-「当前壁纸」读取顺序：`noctalia msg wallpaper-get` → Noctalia v4 缓存 JSON → awww/swww 守护进程缓存 → Noctalia `settings.toml`。
+读不到时（幻灯片、纯色壁纸、或上面几条都不适用）图库就不高亮任何一张，不影响其它功能。换壁纸请直接用你自己的桌面环境（Windows 个性化设置 / Noctalia / hyprpaper / swaybg…）。
 
 ### AppImage
 
@@ -156,10 +146,10 @@ WebKitGTK 在专有 NVIDIA 驱动上有已知的空白窗口 / resize 崩溃问�
 RUST_LOG=info ./rustwallhub_*.AppImage
 ```
 
-- 设壁纸报「未检测到可用的壁纸后端」：确认 Noctalia 在跑，或 `awww-daemon` 已启动。
+- 图库没有高亮任何一张：当前壁纸读不到（幻灯片/纯色壁纸，或上面那几条来源都不适用），不影响其它功能。
 - 文件/目录选择框是**进程内 GTK 对话框**（`tauri-plugin-dialog` 默认 gtk3 后端），不需要 `xdg-desktop-portal`；打不开先看日志。
 - 打开外链/来源页走 `xdg-open`（自带 `gio open` 等回退），都没装时补一个 `xdg-utils`。
-- 明明装了 `noctalia` / `awww` 却探测不到：GUI 启动时继承的 `PATH` 可能被裁剪，应用会额外查找 `~/.local/bin`、`~/.nix-profile/bin`、`/run/current-system/sw/bin` 等目录。
+- 明明装了 `noctalia` / `awww` 却读不到当前壁纸：GUI 启动时继承的 `PATH` 可能被裁剪，应用会额外查找 `~/.local/bin`、`~/.nix-profile/bin`、`/run/current-system/sw/bin` 等目录。
 
 ## 🏗️ 项目结构
 
@@ -170,12 +160,12 @@ RustWallhub/
 │   │   ├── DashboardView.vue     # 仪表盘：统计、当前壁纸、活动任务、快捷操作
 │   │   ├── WallhavenView.vue     # Wallhaven 搜索、大图预览、勾选/批量下载
 │   │   ├── RedditView.vue        # Reddit 抓取配置与下载
-│   │   ├── GalleryView.vue       # 本地图库、详情、壁纸、轮播、孤儿管理
+│   │   ├── GalleryView.vue       # 本地图库、详情、当前壁纸高亮、孤儿管理
 │   │   ├── DbSettingsView.vue    # 数据库状态、缺失/孤儿/记录管理
 │   │   └── SettingsView.vue      # 存储、下载、网络、更新、外观
-│   ├── components/               # 进度卡、统计面板、图片查看器等
+│   ├── components/               # 进度卡、统计面板、图片查看器、网格尺寸条等
 │   ├── stores/                   # 全局 reactive store 与主题
-│   ├── utils/                    # API 封装、校验、格式化、错误处理
+│   ├── utils/                    # API 封装、路径工具、校验、格式化、错误处理
 │   └── assets/                   # 设计 token 与图标字体子集
 ├── src-tauri/                    # Rust 后端
 │   ├── src/
@@ -188,14 +178,17 @@ RustWallhub/
 │   │   ├── thumbnail.rs          # WebP 缩略图（DPR 1x/2x/3x）
 │   │   ├── wallhaven.rs          # Wallhaven API 客户端
 │   │   ├── reddit.rs             # Reddit JSON 客户端与 imgur 解析
-│   │   ├── wallpaper.rs          # 各桌面环境壁纸设置与轮播
 │   │   ├── linux_env.rs          # Linux/WebKit 启动期兼容项（NVIDIA、会话类型）
 │   │   ├── exec.rs               # 外部命令查找（PATH + ~/.local/bin、Nix profile 等）
-│   │   ├── trash.rs             # 回收站（Windows SHFileOperationW / Linux gio+XDG Trash）
+│   │   ├── winpath.rs            # Windows verbatim 路径（\\?\）降级：shell 系 API 的适配层
+│   │   ├── trash.rs              # 回收站（Windows SHFileOperationW / Linux gio+XDG Trash）
+│   │   ├── current_wallpaper.rs  # 只读地查当前壁纸（含 Windows COM 查询）
 │   │   ├── logging.rs            # 日志 tee 到文件 + 滚动
 │   │   ├── desktop_entry.rs      # --install-desktop / --uninstall-desktop
-│   │   ├── state.rs              # 应用状态、事件 payload、安全路径
-│   │   └── commands/             # settings/gallery/database/download/...
+│   │   ├── state.rs              # AppState、跨 IPC 事件、配置读写、asset 授权
+│   │   ├── error.rs              # AppError
+│   │   ├── safe_path.rs          # 文件名/路径安全校验（safe_join 等）
+│   │   └── commands/             # settings/download/database/...；gallery/ 再按职责分子模块
 │   ├── capabilities/             # Tauri capability
 │   ├── tauri.conf.json           # CSP、asset scope、updater、窗口
 │   └── Cargo.toml

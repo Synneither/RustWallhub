@@ -4,8 +4,9 @@
 //! 合并发生在记录级（见 `db::import_*_snapshot`），绝不整库替换。
 
 use crate::db::{self, ImportStats};
+use crate::error::AppError;
 use crate::oss::{self, OssConfig};
-use crate::state::{load_config, AppError, AppState};
+use crate::state::{load_config, AppState};
 use serde::Serialize;
 use tauri::{Emitter, Manager};
 
@@ -118,12 +119,16 @@ fn export_snapshot_bytes(
 ///
 /// 目标文件通常尚不存在，`canonicalize` 会失败，所以规范化**父目录**后再与文件名拼接比较；
 /// 父目录也规范化不了时退化为字符串比较（Windows 路径大小写不敏感）。
+///
+/// 两侧必须走**同一条**规范化路径：`canonicalize` 在 Windows 上返回 verbatim 路径
+/// （`\\?\C:\...`），而 `current_dir()` 返回普通形式，混用会让"同一个文件"比较不相等
+/// ——那这道防覆盖守卫就等于不存在。所以相对路径那一支也要 canonicalize 一次。
 fn is_same_db_file(db_path: &str, target: &std::path::Path) -> bool {
     fn normalize(p: &std::path::Path) -> Option<std::path::PathBuf> {
         let name = p.file_name()?;
         let parent = p.parent()?;
         let base = if parent.as_os_str().is_empty() {
-            std::env::current_dir().ok()?
+            std::env::current_dir().ok()?.canonicalize().ok()?
         } else {
             parent.canonicalize().ok()?
         };

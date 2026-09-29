@@ -10,7 +10,7 @@ import {
   watch,
 } from "vue";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
-import type { ImageInfo, LocalImageEntry, MonitorInfo, OrphanFile } from "../types";
+import type { LocalImageEntry, OrphanFile } from "../types";
 import {
   adoptOrphanFiles,
   assetUrl,
@@ -19,28 +19,26 @@ import {
   deleteOrphanFiles,
   dislikeFile,
   dislikeFiles,
-  getImageInfo,
-  listFilteredImagePaths,
-  listMonitors,
+  getActiveWallpaper,
   listOrphanFiles,
   resolveThumbnails,
-  setWallpaper,
-  startSlideshow,
-  stopSlideshow,
 } from "../utils/api";
 import { appState, activeDownloadSources, askConfirm, dbReady, toast, toastError } from "../stores/app";
 import EmptyState from "../components/EmptyState.vue";
+import GalleryCard from "../components/GalleryCard.vue";
+import GalleryBatchBar from "../components/GalleryBatchBar.vue";
+import GridSizeBar from "../components/GridSizeBar.vue";
 import ProgressCard from "../components/ProgressCard.vue";
 import ImageViewer from "../components/ImageViewer.vue";
 import ImageDetailDrawer from "../components/ImageDetailDrawer.vue";
 import { useSelection } from "../composables/useSelection";
-import { useGridDensity } from "../composables/useGridDensity";
-import { useAsyncAction } from "../composables/useAsyncAction";
+import { densityItems, useGridDensity } from "../composables/useGridDensity";
 import { useEffectiveDpr } from "../composables/useEffectiveDpr";
 import { useThumbCache } from "../composables/useThumbCache";
+import { useGalleryDetail } from "../composables/useGalleryDetail";
 import { useContainerWidth } from "../composables/useContainerWidth";
-import { openUrlSafe } from "../utils/openUrl";
 import { friendlyError } from "../utils/errors";
+import { basename, pathKey } from "../utils/path";
 import { pickThumbDpr, maxCoveredWidth, THUMB_MAX_DPR } from "../utils/thumbSize";
 
 /* ════ 浏览状态 ════ */
@@ -55,9 +53,9 @@ const orphanOnly = ref(false);
 
 /* ════ 自定义目录模式 ════
  * 后端 browse_image_files 支持 custom_dir；此模式下缩略图/删除/详情/孤儿
- * 等依赖源目录与数据库的能力不可用，仅保留浏览、设为壁纸与轮播。 */
+ * 等依赖源目录与数据库的能力不可用，仅保留浏览。 */
 const customDir = ref<string | null>(null);
-const customDirName = computed(() => customDir.value?.split(/[\\/]/).pop() ?? "");
+const customDirName = computed(() => basename(customDir.value));
 
 async function pickCustomDir() {
   try {
@@ -104,13 +102,9 @@ const maxCell = computed(() => maxCoveredWidth(THUMB_MAX_DPR, deviceDpr.value));
 
 const { density: cellSize, items: SIZE_ITEMS, gridStyle } = useGridDensity(
   "rustwallhub-gallery-cell-size",
-  [
-    { value: "compact", label: "紧凑", min: "120px" },
-    { value: "normal", label: "标准", min: "170px" },
-    { value: "large", label: "大图", min: "240px" },
-  ],
+  densityItems({ compact: "120px", normal: "170px", large: "240px" }),
   "normal",
-  // minCellHeight 与 .gallery-card 的 min-height 保持一致，用于算屏外卡片占位高度
+  // minCellHeight 与 .gallery-cell 的 min-height 保持一致（style.css），用于算屏外卡片占位高度
   { containerWidth, maxCell, minCellHeight: 96 },
 );
 
@@ -315,14 +309,14 @@ watch(
 
 onMounted(() => {
   viewActive = true;
-  loadMonitors();
+  loadActiveWallpaper();
   // 容器宽度的首次测量与 ResizeObserver 挂载由 useContainerWidth 的 onMounted 完成
 });
 onActivated(() => {
   viewActive = true;
-  // 显示器列表要重新拉：插拔外接屏 / 换主显示器后，详情抽屉与卡片菜单里的
-  // 显示器选项都会变；以前只在 onMounted 取一次，之后一直是旧的。
-  loadMonitors();
+  // 当前壁纸可能在应用外被改过（系统设置、别的工具），切回图库时重新读一次，
+  // 保证高亮的始终是眼下真正在用的那张。
+  loadActiveWallpaper();
   // 只在数据真的变过之后才重载：以前无条件 load()，每次切回图库都会整页重取一遍
   // （还把网格置灰闪一下），而绝大多数情况下数据并没有变。
   if (appState.galleryEpoch !== loadedEpoch) scheduleLoad();
@@ -401,79 +395,57 @@ async function onBatchAdopt() {
   }
 }
 
-/* ════ 查看器 ════ */
-const viewerOpen = ref(false);
-const viewerIndex = ref(0);
+/* ════ 查看器与详情 ════
+ * 两个入口（全屏查看器 / 详情抽屉）都依赖「当前页条目」与「已解析的缩略图地址」，
+ * 也都要防竞态（快速点开 A/B 两图时慢响应不得覆盖快响应），所以一并收进 composable，
+ * 视图这边只负责渲染与事件接线。 */
+const {
+  viewerOpen,
+  viewerIndex,
+  viewerImages,
+  openViewerFor,
+  detailOpen,
+  detailLoading,
+  detail,
+  detailEntry,
+  detailPreviewSrc,
+  openDetail,
+  onOpenLink,
+} = useGalleryDetail({
+  source: () => source.value,
+  entries: () => images.value,
+  thumbOf,
+});
 
-const viewerImages = computed(() => images.value.map((i) => ({ name: i.name, path: i.path })));
+/* ════ 当前壁纸（只读，用于高亮） ════ */
+/** 本应用只管理壁纸，不设置壁纸；读系统当前壁纸只是为了在图库里标出来。
+ *  多显示器可能各有一张，所以存一组归一化后的 key。 */
+const activeWallpaperKeys = shallowRef<Set<string>>(new Set());
 
-function openViewerFor(img: LocalImageEntry) {
-  const idx = images.value.findIndex((i) => i.name === img.name);
-  viewerIndex.value = Math.max(0, idx);
-  viewerOpen.value = true;
-}
-
-/* ════ 详情 ════ */
-const detailOpen = ref(false);
-const detailLoading = ref(false);
-const detail = ref<ImageInfo | null>(null);
-/** 触发详情时的原始条目，详情抽屉的预览/删除直接用它，避免用 detail 字段手工拼 entry */
-const detailEntry = ref<LocalImageEntry | null>(null);
-/** 抽屉里的预览最高 240px，用页面已经解析好的缩略图而不是原图（4K 图解码约 33MB）。
- *  未命中缓存时 thumbOf 会退回原图地址，等价于旧行为。 */
-const detailPreviewSrc = computed(() => (detailEntry.value ? thumbOf(detailEntry.value) : ""));
-/** 详情请求竞态控制：快速点开 A/B 两图时，慢响应不得覆盖快响应、也不得误关抽屉。 */
-let detailSeq = 0;
-
-async function openDetail(img: LocalImageEntry) {
-  const seq = ++detailSeq;
-  detailEntry.value = img;
-  detailOpen.value = true;
-  detailLoading.value = true;
-  detail.value = null;
+async function loadActiveWallpaper() {
   try {
-    const info = await getImageInfo(source.value, img.name);
-    if (seq !== detailSeq) return;
-    detail.value = info;
-  } catch (e) {
-    if (seq !== detailSeq) return;
-    toastError(e);
-    detailOpen.value = false;
-  } finally {
-    if (seq === detailSeq) detailLoading.value = false;
-  }
-}
-
-async function onOpenLink(url: string | null) {
-  await openUrlSafe(url);
-}
-
-/* ════ 壁纸 ════ */
-const monitors = ref<MonitorInfo[]>([]);
-const monitorChoice = ref<string>("all");
-
-async function loadMonitors() {
-  try {
-    monitors.value = await listMonitors();
+    const res = await getActiveWallpaper();
+    activeWallpaperKeys.value = new Set(res.paths.map(pathKey).filter((k) => k !== ""));
   } catch {
-    monitors.value = [];
+    // 读不到就当没有当前壁纸（幻灯片/纯色壁纸本来就给不出路径），不打扰用户。
+    activeWallpaperKeys.value = new Set();
   }
 }
 
-const monitorItems = computed(() => [
-  { title: "全部显示器", value: "all" },
-  ...monitors.value.map((m) => ({
-    title: `${m.name}${m.is_primary ? "（主）" : ""} · ${m.width}×${m.height}`,
-    value: m.id,
-  })),
-]);
-
-const { run: onSetWallpaper, loading: settingWallpaper } = useAsyncAction(
-  async (path: string, monitor?: string) => {
-    const msg = await setWallpaper(path, monitor && monitor !== "all" ? monitor : undefined);
-    toast(msg, "success");
-  },
-);
+/** 这张图是不是当前桌面壁纸（任一显示器在用就算）。
+ *
+ *  预计算成「本页文件名集合」而不是在模板里逐卡片判断：卡片会把结果用在 class 与
+ *  角标两处，一页 96 张就是每帧 ~192 次 `pathKey`（正则 + 小写化）。集合只在
+ *  本页条目或当前壁纸变化时重算。 */
+const currentWallpaperNames = computed(() => {
+  const keys = activeWallpaperKeys.value;
+  const names = new Set<string>();
+  if (keys.size === 0) return names;
+  for (const img of images.value) {
+    if (keys.has(pathKey(img.path))) names.add(img.name);
+  }
+  return names;
+});
 
 /* ════ 删除（单张） ════ */
 async function onDeleteSingle(img: LocalImageEntry) {
@@ -497,103 +469,6 @@ async function onDeleteSingle(img: LocalImageEntry) {
   }
 }
 
-/* ════ 轮播 ════ */
-const slideshowInterval = ref(60);
-const startingSlideshow = ref(false);
-/** 正在带着新间隔重启轮播 */
-const updatingInterval = ref(false);
-/** 当前轮播真正在用的图片列表与间隔：运行中改间隔要带同一份列表重启
- *  （后端 start_slideshow 会先取消旧任务，所以"重启"就是热更新）。 */
-let activeSlideshowPaths: string[] = [];
-let activeInterval = 60;
-
-const slideshow = computed(() => appState.slideshow);
-
-/** 间隔输入框失焦/回车时提交。以前输入框只在未运行时渲染，想从 60s 改 30s
- *  必须先停掉、再重新确认一遍图片集。 */
-async function onIntervalCommit() {
-  const v = Math.round(Number(slideshowInterval.value) || 0);
-  if (v < 5) {
-    slideshowInterval.value = activeInterval;
-    toast("轮播间隔不能小于 5 秒", "error");
-    return;
-  }
-  if (v === activeInterval) return;
-  // 没在运行：只记住数值，启动时用
-  if (!slideshow.value.running || activeSlideshowPaths.length === 0) {
-    activeInterval = v;
-    return;
-  }
-  updatingInterval.value = true;
-  try {
-    await startSlideshow(activeSlideshowPaths, v);
-    activeInterval = v;
-    toast(`轮播间隔已改为每 ${v} 秒`, "success");
-  } catch (e) {
-    toastError(e);
-    slideshowInterval.value = activeInterval;
-  } finally {
-    updatingInterval.value = false;
-  }
-}
-
-async function onStartSlideshow() {
-  if (startingSlideshow.value) return;
-  if (slideshowInterval.value < 5) {
-    toast("轮播间隔不能小于 5 秒", "error");
-    return;
-  }
-  startingSlideshow.value = true;
-  try {
-    // 取当前筛选（含搜索词）的全量图片
-    let paths: string[];
-    if (orphanOnly.value && !customDir.value) {
-      paths = orphanAll.value.map((i) => i.path);
-    } else if (customDir.value) {
-      // 自定义目录没有后端数据库管线，仍走 browse 全量扫描。
-      const res = await browseImageFiles(source.value, {
-        offset: 0,
-        limit: Math.max(total.value, 1),
-        customDir: customDir.value,
-        search: searchDebounced.value || undefined,
-        sortBy: sortBy.value,
-      });
-      paths = res.images.map((i) => i.path);
-    } else {
-      // 正常目录使用轻量路径列表命令，避免序列化整页元数据。
-      paths = await listFilteredImagePaths(
-        source.value,
-        searchDebounced.value || undefined,
-        sortBy.value,
-      );
-    }
-    if (paths.length === 0) {
-      toast("当前筛选没有图片", "info");
-      return;
-    }
-    await startSlideshow(paths, slideshowInterval.value);
-    activeSlideshowPaths = paths;
-    activeInterval = slideshowInterval.value;
-    appState.slideshow.running = true;
-    toast(`轮播已启动：${paths.length} 张，每 ${slideshowInterval.value} 秒切换`, "success");
-  } catch (e) {
-    toastError(e);
-  } finally {
-    startingSlideshow.value = false;
-  }
-}
-
-async function onStopSlideshow() {
-  try {
-    await stopSlideshow();
-    appState.slideshow.running = false;
-    appState.slideshow.current = null;
-    activeSlideshowPaths = [];
-    toast("轮播已停止", "info");
-  } catch (e) {
-    toastError(e);
-  }
-}
 </script>
 
 <template>
@@ -655,39 +530,6 @@ async function onStopSlideshow() {
       class="animate-in"
     />
 
-    <!-- 轮播控制条 -->
-    <div class="panel-card slideshow-bar animate-in">
-      <v-icon icon="mdi-play-circle-outline" size="18" color="primary" />
-      <span class="text-body">{{ slideshow.running ? "轮播中" : "壁纸轮播" }}</span>
-      <!-- 间隔输入框在运行中也保留：改完失焦/回车即生效（带同一份列表重启轮播） -->
-      <v-text-field
-        v-model.number="slideshowInterval"
-        type="number"
-        suffix="秒"
-        density="compact"
-        hide-details
-        class="settings-field slideshow-bar__interval"
-        :loading="updatingInterval"
-        aria-label="轮播间隔（秒）"
-        @keydown.enter="onIntervalCommit"
-        @blur="onIntervalCommit"
-      />
-      <template v-if="!slideshow.running">
-        <v-btn size="small" color="primary" variant="flat" :loading="startingSlideshow" @click="onStartSlideshow">
-          用当前筛选启动（{{ total }} 张）
-        </v-btn>
-      </template>
-      <template v-else>
-        <span class="text-caption slideshow-bar__tick">
-          <template v-if="slideshow.current">
-            {{ slideshow.current.index + 1 }} / {{ slideshow.current.total }} · {{ slideshow.current.name }}
-          </template>
-          <template v-else>等待切换…</template>
-        </span>
-        <v-btn size="small" variant="tonal" color="error" @click="onStopSlideshow">停止轮播</v-btn>
-      </template>
-    </div>
-
     <!-- 统计条 -->
     <div class="gallery-meta">
       <span class="text-caption">
@@ -709,18 +551,7 @@ async function onStopSlideshow() {
         </v-chip>
       </template>
       <v-spacer />
-      <div class="gallery-size">
-        <v-btn
-          v-for="s in SIZE_ITEMS"
-          :key="s.value"
-          size="x-small"
-          :variant="cellSize === s.value ? 'tonal' : 'text'"
-          :color="cellSize === s.value ? 'primary' : undefined"
-          @click="cellSize = s.value"
-        >
-          {{ s.label }}
-        </v-btn>
-      </div>
+      <GridSizeBar v-model="cellSize" :items="SIZE_ITEMS" />
       <v-btn
         v-if="!customDir"
         size="x-small"
@@ -741,22 +572,14 @@ async function onStopSlideshow() {
     </div>
 
     <!-- 批量操作条 -->
-    <div v-if="selectionMode && selected.size > 0" class="gallery-batch animate-in">
-      <span class="text-body">已选 {{ selected.size }} 项</span>
-      <v-spacer />
-      <v-btn
-        v-if="orphanOnly"
-        size="small"
-        variant="tonal"
-        :loading="batchRunning"
-        @click="onBatchAdopt"
-      >
-        收养入库
-      </v-btn>
-      <v-btn size="small" variant="tonal" color="error" :loading="batchRunning" @click="onBatchDelete">
-        删除
-      </v-btn>
-    </div>
+    <GalleryBatchBar
+      v-if="selectionMode && selected.size > 0"
+      :count="selected.size"
+      :orphan-mode="orphanOnly"
+      :busy="batchRunning"
+      @adopt="onBatchAdopt"
+      @remove="onBatchDelete"
+    />
 
     <!-- 内容区 -->
     <EmptyState
@@ -775,7 +598,7 @@ async function onStopSlideshow() {
       <v-btn variant="tonal" @click="load">重试</v-btn>
     </EmptyState>
     <div v-else-if="loading && images.length === 0" ref="gridEl" class="gallery-grid" :style="gridStyle">
-      <div v-for="i in pageSize" :key="i" class="gallery-card shimmer" />
+      <div v-for="i in pageSize" :key="i" class="gallery-cell shimmer" />
     </div>
     <EmptyState
       v-else-if="images.length === 0 && searchDebounced"
@@ -798,72 +621,19 @@ async function onStopSlideshow() {
       :style="gridStyle"
       :aria-busy="loading"
     >
-      <div
+      <GalleryCard
         v-for="img in images"
         :key="img.name"
-        class="gallery-card"
-        :class="{ 'gallery-card--selected': selectionMode && selected.has(img.name) }"
-        role="button"
-        tabindex="0"
-        :aria-label="img.name"
-        :aria-pressed="selectionMode ? selected.has(img.name) : undefined"
-        @click="onCardClick(img)"
-        @keydown.enter.prevent="onCardClick(img)"
-        @keydown.space.prevent="onCardClick(img)"
-      >
-        <!-- decoding="async"：让浏览器把图片解码放到后台线程，滚动时不卡主线程
-             （一页最多 96 张，同步解码会造成明显掉帧）。 -->
-        <img :src="thumbOf(img)" :alt="img.name" loading="lazy" decoding="async" />
-        <span v-if="img.is_orphan && !customDir" class="gallery-card__orphan">孤儿</span>
-
-        <!-- 选择态角标 -->
-        <span v-if="selectionMode && !customDir" class="gallery-card__check">
-          <v-icon
-            :icon="selected.has(img.name) ? 'mdi-checkbox-marked-circle' : 'mdi-checkbox-blank-circle-outline'"
-            size="20"
-            :color="selected.has(img.name) ? 'primary' : 'white'"
-          />
-        </span>
-
-        <!-- hover 操作 -->
-        <div v-if="!selectionMode" class="gallery-card__overlay" @click.stop>
-          <!-- 多显示器时给个选择：否则双屏用户从网格设壁纸永远铺满所有屏，
-               只有进详情抽屉才能指定显示器。单显示器保持一键。 -->
-          <v-menu v-if="monitors.length > 1" location="top">
-            <template #activator="{ props: menuProps }">
-              <v-btn
-                v-bind="menuProps"
-                icon="mdi-monitor"
-                size="x-small"
-                variant="flat"
-                class="overlay-btn"
-                title="设为壁纸（选择显示器）"
-              />
-            </template>
-            <v-list density="compact">
-              <v-list-item
-                v-for="m in monitorItems"
-                :key="m.value"
-                :title="m.title"
-                @click="onSetWallpaper(img.path, m.value)"
-              />
-            </v-list>
-          </v-menu>
-          <v-btn
-            v-else
-            icon="mdi-monitor"
-            size="x-small"
-            variant="flat"
-            class="overlay-btn"
-            title="设为壁纸"
-            @click="onSetWallpaper(img.path)"
-          />
-          <template v-if="!customDir">
-            <v-btn icon="mdi-information-outline" size="x-small" variant="flat" class="overlay-btn" title="详情" @click="openDetail(img)" />
-            <v-btn icon="mdi-delete-outline" size="x-small" variant="flat" class="overlay-btn overlay-btn--danger" title="删除" @click="onDeleteSingle(img)" />
-          </template>
-        </div>
-      </div>
+        :img="img"
+        :thumb-src="thumbOf(img)"
+        :selection-mode="selectionMode"
+        :selected="selected.has(img.name)"
+        :is-current="currentWallpaperNames.has(img.name)"
+        :db-mode="!customDir"
+        @activate="onCardClick"
+        @detail="openDetail"
+        @remove="onDeleteSingle"
+      />
     </div>
 
     <!-- 分页（支持跳页） -->
@@ -883,13 +653,9 @@ async function onStopSlideshow() {
       :detail="detail"
       :entry="detailEntry"
       :loading="detailLoading"
-      :monitor-items="monitorItems"
-      v-model:monitor="monitorChoice"
-      :setting-wallpaper="settingWallpaper"
       :preview-src="detailPreviewSrc"
       @open-viewer="openViewerFor"
       @open-link="onOpenLink"
-      @set-wallpaper="(path, monitor) => onSetWallpaper(path, monitor)"
       @delete="onDeleteSingle"
     />
 
@@ -926,19 +692,6 @@ async function onStopSlideshow() {
 .gallery-meta__orphan-chip {
   cursor: pointer;
 }
-.gallery-batch {
-  display: flex;
-  align-items: center;
-  gap: var(--space-3);
-  padding: var(--space-2) var(--space-4);
-  border-radius: var(--radius-md);
-  background: var(--accent-primary-dim);
-  border: var(--border-active);
-}
-.gallery-size {
-  display: flex;
-  align-items: center;
-}
 .gallery-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(var(--grid-cell-min, 170px), 1fr));
@@ -959,95 +712,14 @@ async function onStopSlideshow() {
   pointer-events: none;
   transition: opacity 0.15s;
 }
-.gallery-card {
-  position: relative;
-  aspect-ratio: 16 / 10;
-  border-radius: var(--radius-md);
-  overflow: hidden;
-  background: var(--surface-elevated);
-  border: 2px solid transparent;
-  cursor: pointer;
-  min-height: 96px;
-  /* 一页最多渲染 96 张卡片，每张含 img + 浮层 + 按钮，屏外卡片的布局与绘制是纯浪费。
-     content-visibility: auto 让浏览器跳过屏外卡片的渲染；
-     contain-intrinsic-size 提供占位尺寸，避免滚动条跳动。 */
-  content-visibility: auto;
-  contain-intrinsic-size: auto var(--grid-cell-ph, 115px);
-}
-.gallery-card img {
-  width: 100%;
-  height: 100%;
-  object-fit: cover;
-  display: block;
-  transition: transform 0.2s var(--ease-out);
-}
-.gallery-card:hover img {
-  transform: scale(1.03);
-}
-.gallery-card--selected {
-  border-color: var(--accent-primary);
-}
-.gallery-card__orphan {
-  position: absolute;
-  left: 6px;
-  top: 6px;
-  padding: 1px 7px;
-  border-radius: var(--radius-full);
-  font-size: 0.625rem;
-  background: color-mix(in srgb, var(--accent-reddit) 85%, black);
-  color: #fff;
-}
-.gallery-card__check {
-  position: absolute;
-  right: 6px;
-  top: 6px;
-  filter: drop-shadow(0 1px 2px rgba(0, 0, 0, 0.6));
-}
-.gallery-card__overlay {
-  position: absolute;
-  left: 0;
-  right: 0;
-  bottom: 0;
-  display: flex;
-  justify-content: center;
-  gap: 6px;
-  padding: 18px 6px 8px;
-  background: linear-gradient(to top, rgba(0, 0, 0, 0.72), transparent);
-  opacity: 0;
-  transition: opacity 0.15s;
-}
-.gallery-card:hover .gallery-card__overlay {
-  opacity: 1;
-}
-.overlay-btn {
-  background: rgba(30, 30, 34, 0.9) !important;
-  color: #fff !important;
-}
-.overlay-btn--danger {
-  color: var(--accent-error) !important;
-}
+/* 当前桌面壁纸：常驻边框 + 一圈克制的辉光，扫一眼就能在图里认出来。
+   放在 --selected 之前：多选是眼下更即时的操作态，两者同时命中时让选择态胜出。 */
 .gallery-pager {
   display: flex;
   align-items: center;
   justify-content: center;
   gap: var(--space-3);
   padding: var(--space-2) 0 var(--space-4);
-}
-.slideshow-bar {
-  flex-direction: row;
-  align-items: center;
-  gap: var(--space-3);
-  padding: var(--space-3) var(--space-4);
-}
-.slideshow-bar__interval {
-  max-width: 110px;
-}
-.slideshow-bar__tick {
-  color: var(--text-tertiary);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  flex: 1;
 }
 /* 注意：`.detail-*` 的样式全部放在 ImageDetailDrawer.vue 里。
  * 它们的作用元素在子组件内部，而这里的 <style scoped> 只会把作用域标记加到本组件模板的

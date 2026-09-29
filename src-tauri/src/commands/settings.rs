@@ -2,7 +2,8 @@
 
 use crate::config::AppConfig;
 use crate::db;
-use crate::state::{rebuild_http_client, AppError, AppState};
+use crate::error::AppError;
+use crate::state::{rebuild_http_client, AppState};
 use serde::Serialize;
 use tauri::Emitter;
 use tauri_plugin_updater::UpdaterExt;

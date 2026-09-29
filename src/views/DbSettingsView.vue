@@ -1,7 +1,7 @@
 <script setup lang="ts">
-import { computed, onActivated, onDeactivated, onMounted, ref, shallowRef, watch } from "vue";
+import { onActivated, onDeactivated, onMounted, ref, shallowRef, watch } from "vue";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
-import type { AppConfig, ImageRecord, OrphanFile, SyncImportResult } from "../types";
+import type { AppConfig, ImageRecord, OrphanFile } from "../types";
 import {
   adoptOrphanFiles,
   checkDatabases,
@@ -9,19 +9,13 @@ import {
   deleteMissingRecords,
   deleteOrphanFiles,
   downloadMissingImages,
-  exportSnapshots,
-  importSnapshots,
-  listDatabaseImages,
   listMissingImages,
   listOrphanFiles,
   markDislikedFiles,
   refreshFileCaches,
-  ossSyncDownload,
-  ossSyncUpload,
   recoverDatabaseFiles,
   restoreAllFiles,
   saveSettings,
-  testOssConfig,
 } from "../utils/api";
 import { appState, askConfirm, dbReady, ensureDatabases, refreshStats, toast, toastError } from "../stores/app";
 import { useAsyncAction } from "../composables/useAsyncAction";
@@ -30,10 +24,12 @@ import { formatBytes, formatDateTime } from "../utils/format";
 import StatPanel from "../components/StatPanel.vue";
 import EmptyState from "../components/EmptyState.vue";
 import ProgressCard from "../components/ProgressCard.vue";
+import DbSyncPanel from "../components/DbSyncPanel.vue";
+import RecordBrowserPanel from "../components/RecordBrowserPanel.vue";
 
 /* ════ 库状态与 db_dir ════ */
 const dbDir = ref("");
-const savingDir = ref(false);
+// savingDir / initializing 由下面各自的 useAsyncAction 提供
 
 // KeepAlive 下该视图只在首次挂载时跑一次 onMounted，之后切走再切回不会重新加载。
 // 用 viewActive 标志 + onActivated/onDeactivated + 监听 galleryEpoch，保证：
@@ -51,13 +47,6 @@ let reloadSeq = 0;
 
 onMounted(async () => {
   dbDir.value = appState.config?.db_dir ?? "";
-  ossEndpoint.value = appState.config?.oss_endpoint ?? "";
-  ossBucket.value = appState.config?.oss_bucket ?? "";
-  ossAccessKeyId.value = appState.config?.oss_access_key_id ?? "";
-  ossAccessKeySecret.value = appState.config?.oss_access_key_secret ?? "";
-  ossPrefix.value = appState.config?.oss_prefix ?? "";
-  ossAutoUpload.value = appState.config?.oss_auto_upload_on_exit ?? false;
-  ossAutoDownload.value = appState.config?.oss_auto_download_on_start ?? false;
   viewActive = true;
   await reloadAll();
 });
@@ -88,41 +77,29 @@ async function pickDbDir() {
   }
 }
 
-async function onSaveDir() {
-  if (!appState.config || savingDir.value) return;
-  savingDir.value = true;
-  try {
-    const next: AppConfig = { ...appState.config, db_dir: dbDir.value };
-    await saveSettings(next);
-    appState.config = next;
-    appState.dbStatus = await checkDatabases();
-    toast("数据库目录已保存", "success");
-    if (!dbReady.value) {
-      const ok = await askConfirm("初始化数据库", "新目录下数据库文件不存在，是否现在创建？", { confirmText: "创建" });
-      if (ok) await onInitDatabases();
-    } else {
-      await reloadAll();
-    }
-  } catch (e) {
-    toastError(e);
-  } finally {
-    savingDir.value = false;
-  }
-}
+/** 创建库文件。放在 onSaveDir 之前：后者在确认后会调用它。 */
+const { run: onInitDatabases, loading: initializing } = useAsyncAction(async () => {
+  const created = await ensureDatabases();
+  toast(created.length > 0 ? `已创建数据库：${created.join("、")}` : "数据库已就绪", "success");
+  await reloadAll();
+});
 
-const initializing = ref(false);
-async function onInitDatabases() {
-  initializing.value = true;
-  try {
-    const created = await ensureDatabases();
-    toast(created.length > 0 ? `已创建数据库：${created.join("、")}` : "数据库已就绪", "success");
+const { run: onSaveDir, loading: savingDir } = useAsyncAction(async () => {
+  if (!appState.config) return;
+  const next: AppConfig = { ...appState.config, db_dir: dbDir.value };
+  await saveSettings(next);
+  appState.config = next;
+  appState.dbStatus = await checkDatabases();
+  toast("数据库目录已保存", "success");
+  if (!dbReady.value) {
+    const ok = await askConfirm("初始化数据库", "新目录下数据库文件不存在，是否现在创建？", {
+      confirmText: "创建",
+    });
+    if (ok) await onInitDatabases();
+  } else {
     await reloadAll();
-  } catch (e) {
-    toastError(e);
-  } finally {
-    initializing.value = false;
   }
-}
+});
 
 /* ════ 数据加载 ════ */
 const loading = ref(false);
@@ -139,12 +116,6 @@ const ORPHAN_HEADERS = [
   { title: "文件名", key: "name" },
   { title: "来源", key: "source", width: 100 },
   { title: "大小", key: "size", width: 100 },
-];
-const RECORD_HEADERS = [
-  { title: "文件名", key: "name" },
-  { title: "状态", key: "love", width: 80 },
-  { title: "分辨率", key: "resolution", width: 110 },
-  { title: "入库时间", key: "created_at", width: 150 },
 ];
 const missingCount = ref(0);
 /* 这两个列表大图库下可能上千条（含 hash/url/title），且只有整批替换、没有原地改动，
@@ -169,7 +140,7 @@ async function reloadAll() {
     missing.value = m;
     orphans.value = o;
     await refreshStats();
-    await loadRecords();
+    await recordBrowser.value?.load();
     lastLoadedEpoch = appState.galleryEpoch;
   } catch (e) {
     if (seq !== reloadSeq) return;
@@ -318,154 +289,13 @@ const { run: onCleanThumbnails, loading: cleaningThumbs } = useAsyncAction(async
   toast(`已清理孤儿缩略图：Wallhaven ${r.wallhaven} 个，Reddit ${r.reddit} 个`, "success");
 });
 
-/* ════ 数据同步（快照导出/导入 + OSS） ════ */
-const ossEndpoint = ref("");
-const ossBucket = ref("");
-const ossAccessKeyId = ref("");
-const ossAccessKeySecret = ref("");
-const ossPrefix = ref("");
-const savingOss = ref(false);
-const testingOss = ref(false);
-const exporting = ref(false);
-const importing = ref(false);
-const uploading = ref(false);
-const cloudDownloading = ref(false);
-const ossAutoUpload = ref(false);
-const ossAutoDownload = ref(false);
-
-async function onSaveOss() {
-  if (!appState.config || savingOss.value) return;
-  savingOss.value = true;
-  try {
-    const next: AppConfig = {
-      ...appState.config,
-      oss_endpoint: ossEndpoint.value.trim(),
-      oss_bucket: ossBucket.value.trim(),
-      oss_access_key_id: ossAccessKeyId.value.trim(),
-      oss_access_key_secret: ossAccessKeySecret.value.trim(),
-      oss_prefix: ossPrefix.value.trim(),
-      oss_auto_upload_on_exit: ossAutoUpload.value,
-      oss_auto_download_on_start: ossAutoDownload.value,
-    };
-    await saveSettings(next);
-    appState.config = next;
-    toast("OSS 配置已保存", "success");
-  } catch (e) {
-    toastError(e);
-  } finally {
-    savingOss.value = false;
-  }
-}
-
-async function onTestOss() {
-  if (testingOss.value) return;
-  testingOss.value = true;
-  try {
-    const msg = await testOssConfig();
-    toast(msg, "success");
-  } catch (e) {
-    toastError(e);
-  } finally {
-    testingOss.value = false;
-  }
-}
-
-async function onExport() {
-  if (exporting.value) return;
-  try {
-    // 刻意不把默认目录设成 db_dir：快照文件名与数据库同名，选到那里会覆盖数据库
-    // （后端会拒绝，这里只是不把用户往坑里带）。
-    const dir = await openDialog({
-      directory: true,
-      title: "选择快照导出目录（请勿选择数据库所在目录）",
-    });
-    if (typeof dir !== "string") return;
-    exporting.value = true;
-    const r = await exportSnapshots(dir);
-    const names = [r.wallhaven ? "Wallhaven" : null, r.reddit ? "Reddit" : null]
-      .filter(Boolean)
-      .join("、");
-    toast(`已导出 ${names} 快照到 ${dir}`, "success");
-  } catch (e) {
-    toastError(e);
-  } finally {
-    exporting.value = false;
-  }
-}
-
-async function onImport() {
-  if (importing.value) return;
-  try {
-    const dir = await openDialog({
-      directory: true,
-      title: "选择包含快照文件的目录",
-      defaultPath: appState.config?.db_dir || undefined,
-    });
-    if (typeof dir !== "string") return;
-
-    const whPath = `${dir}/wallhaven_images.db`;
-    const rdPath = `${dir}/reddit_images.db`;
-    const ok = await askConfirm(
-      "从快照导入",
-      `将合并 ${dir} 下的快照到本地数据库：\n新记录会被插入，快照中标记喜欢的记录会恢复本地同条记录。\n本地已有数据不会被删除。是否继续？`,
-      { confirmText: "导入" },
-    );
-    if (!ok) return;
-
-    importing.value = true;
-    const r = await importSnapshots(whPath, rdPath);
-    toast(importResultText(r), "success");
-    await reloadAll();
-  } catch (e) {
-    toastError(e);
-  } finally {
-    importing.value = false;
-  }
-}
-
-async function onUpload() {
-  if (uploading.value) return;
-  uploading.value = true;
-  try {
-    const msg = await ossSyncUpload();
-    toast(msg, "success");
-  } catch (e) {
-    toastError(e);
-  } finally {
-    uploading.value = false;
-  }
-}
-
-async function onCloudDownload() {
-  if (cloudDownloading.value) return;
-  const ok = await askConfirm(
-    "从云端拉取",
-    "将下载 OSS 上的快照并合并到本地数据库：\n新记录会被插入，云端标记喜欢的记录会恢复本地同条记录。\n本地已有数据不会被删除。是否继续？",
-    { confirmText: "拉取并合并" },
-  );
-  if (!ok) return;
-  cloudDownloading.value = true;
-  try {
-    const r = await ossSyncDownload();
-    toast(importResultText(r), "success");
-    await reloadAll();
-  } catch (e) {
-    toastError(e);
-  } finally {
-    cloudDownloading.value = false;
-  }
-}
-
-function importResultText(r: SyncImportResult): string {
-  const parts: string[] = [];
-  if (r.wallhaven) {
-    parts.push(`Wallhaven 新增 ${r.wallhaven.inserted} 条、恢复 ${r.wallhaven.loved} 条`);
-  }
-  if (r.reddit) {
-    parts.push(`Reddit 新增 ${r.reddit.inserted} 条、恢复 ${r.reddit.loved} 条`);
-  }
-  return parts.length > 0 ? parts.join("；") : "没有可导入的内容";
-}
+/** 恢复所有 love=0 的记录（不碰文件）。
+ *  二次确认属用户交互，先确认再进入异步动作——否则按钮会在确认框还开着的时候就转圈。 */
+const { run: runRestoreAll, loading: restoringAll } = useAsyncAction(async () => {
+  const n = await restoreAllFiles("all");
+  toast(`已恢复 ${n} 条记录`, "success");
+  await reloadAll();
+});
 
 async function onRestoreAll() {
   const ok = await askConfirm(
@@ -474,65 +304,12 @@ async function onRestoreAll() {
     { confirmText: "恢复" },
   );
   if (!ok) return;
-  try {
-    const n = await restoreAllFiles("all");
-    toast(`已恢复 ${n} 条记录`, "success");
-    await reloadAll();
-  } catch (e) {
-    toastError(e);
-  }
+  await runRestoreAll();
 }
 
 /* ════ 记录浏览 ════ */
-const recordSource = ref<"wallhaven" | "reddit">("wallhaven");
-const records = ref<ImageRecord[]>([]);
-const recordPage = ref(1);
-const RECORD_PAGE_SIZE = 20;
-const recordsLoading = ref(false);
-
-const recordTotal = computed(() =>
-  recordSource.value === "wallhaven"
-    ? (appState.stats?.wallhaven.total ?? 0)
-    : (appState.stats?.reddit.total ?? 0),
-);
-const recordTotalPages = computed(() =>
-  Math.max(1, Math.ceil(recordTotal.value / RECORD_PAGE_SIZE)),
-);
-
-/** 记录列表竞态控制：快速切来源/翻页时，慢响应不得覆盖新响应。 */
-let recordSeq = 0;
-
-async function loadRecords() {
-  const seq = ++recordSeq;
-  recordsLoading.value = true;
-  try {
-    const res = await listDatabaseImages(
-      recordSource.value,
-      RECORD_PAGE_SIZE,
-      (recordPage.value - 1) * RECORD_PAGE_SIZE,
-    );
-    if (seq !== recordSeq) return;
-    records.value = res;
-  } catch (e) {
-    if (seq !== recordSeq) return;
-    toastError(e);
-  } finally {
-    if (seq === recordSeq) recordsLoading.value = false;
-  }
-}
-
-async function onRecordSourceChange(s: "wallhaven" | "reddit") {
-  recordSource.value = s;
-  recordPage.value = 1;
-  await loadRecords();
-}
-
-async function onRecordPage(delta: number) {
-  const next = recordPage.value + delta;
-  if (next < 1 || next > recordTotalPages.value) return;
-  recordPage.value = next;
-  await loadRecords();
-}
+/** 「全部记录」标签页：分页与取数都在组件内部，写库后调 load() 重新取当前页。 */
+const recordBrowser = ref<{ load: () => Promise<void> } | null>(null);
 
 const tab = ref<"missing" | "orphan" | "records">("missing");
 </script>
@@ -718,34 +495,8 @@ const tab = ref<"missing" | "orphan" | "records">("missing");
 
           <!-- 全部记录 -->
           <v-window-item value="records">
-            <div class="tab-actions">
-              <v-btn-toggle :model-value="recordSource" mandatory density="compact" color="primary" @update:model-value="onRecordSourceChange">
-                <v-btn value="wallhaven" size="small">Wallhaven</v-btn>
-                <v-btn value="reddit" size="small">Reddit</v-btn>
-              </v-btn-toggle>
-              <v-spacer />
-              <span class="text-caption">第 {{ recordPage }} / {{ recordTotalPages }} 页 · 共 {{ recordTotal }} 条</span>
-              <v-btn size="small" variant="text" icon="mdi-chevron-left" :disabled="recordPage <= 1 || recordsLoading" @click="onRecordPage(-1)" />
-              <v-btn size="small" variant="text" icon="mdi-chevron-right" :disabled="recordPage >= recordTotalPages || recordsLoading" @click="onRecordPage(1)" />
-            </div>
-            <v-data-table
-              :items="records"
-              :loading="recordsLoading"
-              density="compact"
-              class="db-table"
-              :headers="RECORD_HEADERS"
-              :items-per-page="20"
-              hide-default-footer
-            >
-              <template #[`item.love`]="{ item }">
-                <v-chip size="x-small" :color="item.love === 1 ? 'success' : 'error'" variant="tonal">
-                  {{ item.love === 1 ? "正常" : "标记" }}
-                </v-chip>
-              </template>
-              <template #[`item.created_at`]="{ item }">
-                <span class="text-caption">{{ formatDateTime(item.created_at) }}</span>
-              </template>
-            </v-data-table>
+            <!-- 分页与取数都在组件内部；写库后由 reloadAll 调它的 load() -->
+            <RecordBrowserPanel ref="recordBrowser" />
           </v-window-item>
         </v-window>
       </div>
@@ -757,99 +508,15 @@ const tab = ref<"missing" | "orphan" | "records">("missing");
           <v-btn variant="tonal" prepend-icon="mdi-image-off-outline" @click="onCleanThumbnails" :loading="cleaningThumbs">
             清理孤儿缩略图
           </v-btn>
-          <v-btn variant="tonal" prepend-icon="mdi-restore" @click="onRestoreAll">
+          <v-btn variant="tonal" prepend-icon="mdi-restore" :loading="restoringAll" @click="onRestoreAll">
             恢复所有已标记
           </v-btn>
         </div>
       </div>
 
-      <!-- 数据同步 -->
-      <div class="panel-card animate-in stagger-4">
-        <div class="panel-card__title">
-          <v-icon icon="mdi-cloud-sync-outline" size="18" color="primary" />数据同步
-        </div>
-        <p class="sync-desc text-body-2">
-          快照导出为单文件（VACUUM INTO），合并按记录进行：新记录插入、喜欢的记录恢复，本地数据不会被删除。多设备同步推荐上传 OSS 后在另一台电脑拉取。
-        </p>
-
-        <div class="sync-grid">
-          <v-text-field
-            v-model="ossEndpoint"
-            label="OSS Endpoint"
-            placeholder="oss-cn-beijing.aliyuncs.com"
-            density="compact"
-            class="settings-field"
-          />
-          <v-text-field
-            v-model="ossBucket"
-            label="Bucket"
-            density="compact"
-            class="settings-field"
-          />
-          <v-text-field
-            v-model="ossAccessKeyId"
-            label="AccessKey ID"
-            hint="建议使用 RAM 子账号，仅授权本前缀读写"
-            persistent-hint
-            density="compact"
-            class="settings-field"
-          />
-          <v-text-field
-            v-model="ossAccessKeySecret"
-            label="AccessKey Secret"
-            type="password"
-            density="compact"
-            class="settings-field"
-          />
-          <v-text-field
-            v-model="ossPrefix"
-            label="对象前缀（可选）"
-            placeholder="rustwallhub/"
-            density="compact"
-            class="settings-field"
-          />
-        </div>
-        <div class="sync-switches">
-          <v-switch
-            v-model="ossAutoUpload"
-            color="primary"
-            density="compact"
-            hide-details
-            label="退出应用时自动上传快照"
-          />
-          <v-switch
-            v-model="ossAutoDownload"
-            color="primary"
-            density="compact"
-            hide-details
-            label="启动时自动从云端拉取并合并"
-          />
-        </div>
-
-        <div class="sync-oss-actions">
-          <v-btn color="primary" variant="flat" :loading="savingOss" @click="onSaveOss">保存配置</v-btn>
-          <v-btn variant="tonal" prepend-icon="mdi-lan-check" :loading="testingOss" @click="onTestOss">
-            测试连接
-          </v-btn>
-        </div>
-
-        <v-divider class="my-4" />
-
-        <div class="maint-actions">
-          <v-btn variant="tonal" prepend-icon="mdi-file-export-outline" :loading="exporting" @click="onExport">
-            导出到文件夹
-          </v-btn>
-          <v-btn variant="tonal" prepend-icon="mdi-file-import-outline" :loading="importing" @click="onImport">
-            从文件夹导入
-          </v-btn>
-          <v-btn variant="tonal" prepend-icon="mdi-cloud-upload-outline" :loading="uploading" @click="onUpload">
-            上传到云端
-          </v-btn>
-          <v-btn variant="tonal" prepend-icon="mdi-cloud-download-outline" :loading="cloudDownloading" @click="onCloudDownload">
-            从云端拉取并合并
-          </v-btn>
-        </div>
-      </div>
+      <!-- 数据同步（OSS 配置、快照导出/导入、云端上传拉取）都在组件内部；
+           导入或拉取成功后它发 imported，由这里统一重载缺失/孤儿/统计/记录 -->
+      <DbSyncPanel @imported="reloadAll" />
     </template>
   </div>
 </template>
@@ -882,42 +549,5 @@ const tab = ref<"missing" | "orphan" | "records">("missing");
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
   gap: var(--space-4);
-}
-.tab-actions {
-  display: flex;
-  align-items: center;
-  gap: var(--space-2);
-  padding: var(--space-3) 0;
-  /* 缺失文件页的动作按钮已排到 4 个，窗口收窄时允许换行，
-     否则按钮会溢出到 panel-card 之外（卡片是 overflow 可见的）。 */
-  flex-wrap: wrap;
-}
-.db-table {
-  background: transparent !important;
-}
-.maint-actions {
-  display: flex;
-  gap: var(--space-3);
-  flex-wrap: wrap;
-}
-.sync-desc {
-  color: var(--text-secondary);
-  margin-bottom: var(--space-3);
-}
-.sync-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
-  gap: var(--space-2) var(--space-3);
-}
-.sync-switches {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  margin-top: var(--space-2);
-}
-.sync-oss-actions {
-  display: flex;
-  gap: var(--space-3);
-  margin-top: var(--space-2);
 }
 </style>

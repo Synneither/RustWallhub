@@ -9,13 +9,17 @@
 //! - Linux：优先调 `gio trash`（由 glib 实现，会处理每设备回收站目录、挂载点与权限），
 //!   不可用或失败时退回本模块自带的 XDG Trash 实现。
 //! - Windows：`SHFileOperationW` + `FOF_ALLOWUNDO`（即资源管理器那套回收站）。
+//!   两个坑都在 `windows` 模块里写清了：① 它**不认 `\\?\` 前缀**，而 `canonicalize`
+//!   给出来的恰好是这种路径，收到就返回 `DE_INVALIDFILES (0x7C = 124)`——降级前缀的
+//!   公用逻辑在 [`crate::winpath`]；② 它的返回码不能当成功判据——成功删进回收站时
+//!   也可能返回 2，只能看源文件是否消失。
 //!
 //! 缩略图缓存仍走 `thumbnail::remove_thumbnails` 真删：它可再生，进回收站只会堆垃圾。
 //!
 //! 自带的 XDG 实现刻意写成纯 std、不依赖平台 API，这样在 macOS/Windows 上也会被编译，
 //! 单测能本地跑到（否则这块只有 CI 的 Linux job 才会编到）。
 
-use crate::state::AppError;
+use crate::error::AppError;
 use std::path::{Path, PathBuf};
 
 /// 把 `path` 移入回收站。文件本就不存在时视为成功（调用方是幂等的删除流程）。
@@ -161,7 +165,7 @@ mod xdg {
     fn write_trashinfo(info_path: &Path, source: &Path) -> io::Result<()> {
         let content = format!(
             "[Trash Info]\nPath={}\nDeletionDate={}\n",
-            crate::state::escape_path_percent(&source.to_string_lossy()),
+            crate::safe_path::escape_path_percent(&source.to_string_lossy()),
             deletion_date(),
         );
         std::fs::write(info_path, content)
@@ -204,6 +208,38 @@ mod windows {
     const FOF_ALLOWUNDO: u16 = 0x0040;
     const FOF_NOERRORUI: u16 = 0x0400;
 
+    /// SHFileOperationW 不支持长路径（`\\?\` 也一样）：单条路径到或超过这个长度就必失败。
+    /// 用作失败信息里的提示，不做预检（让它照常报错，错误里带上原因更清楚）。
+    const MAX_PATH_CHARS: usize = 260;
+
+    /// SHFileOperationW 的返回码 → 中文说明。
+    ///
+    /// 表取自 MSDN 的 `DE_*` 列表，但文档同时明确警告：这些取值沿用 Win32 之前的错误码，
+    /// "与 Winerror.h 同值不同义"、会随版本变化、也不完整。所以这里只当**排查线索**，
+    /// 绝不用它判成败。
+    pub(super) fn describe(code: i32) -> &'static str {
+        match code as u32 & 0xFFFF {
+            0x71 => "源与目标是同一个文件",
+            0x72 => "源列表里有多个路径但只给了一个目标",
+            0x73 => "重命名不能跨目录",
+            0x74 => "源是根目录，无法移动或重命名",
+            0x75 => "操作被取消",
+            0x76 => "目标是源的子目录",
+            0x78 => "安全设置拒绝访问源文件",
+            0x79 => "路径超出 MAX_PATH（260 字符）",
+            0x7A => "涉及多个目标路径",
+            0x7C => "源或目标路径无效",
+            0x7D => "源与目标在同一父目录下",
+            0x7E => "目标路径是一个已存在的文件",
+            0x80 => "目标路径是一个已存在的文件夹",
+            0x81 => "文件名超出 MAX_PATH",
+            0x85 => "文件对目标介质或文件系统来说太大",
+            0xB7 => "操作过程中超出 MAX_PATH",
+            0x402 => "未知错误，通常是源或目标路径无效",
+            _ => "未知原因",
+        }
+    }
+
     #[repr(C)]
     struct ShFileOpStructW {
         hwnd: *mut std::ffi::c_void,
@@ -226,7 +262,13 @@ mod windows {
 
     /// 回收站（FOF_ALLOWUNDO）。`pFrom` 是**双 NUL 结尾**的宽字符路径列表。
     pub(super) fn recycle(path: &Path) -> Result<(), AppError> {
-        let mut from: Vec<u16> = path.as_os_str().encode_wide().collect();
+        // 先摘掉 `\\?\`：这个 API 不认 verbatim 前缀，不摘就一律返回 124
+        // （降级与安全校验在 `crate::winpath`，跨 API 共用）。
+        let shell_path = crate::winpath::plain_path(path);
+        let target = shell_path.as_deref().unwrap_or(path);
+
+        let mut from: Vec<u16> = target.as_os_str().encode_wide().collect();
+        let path_chars = from.len();
         from.push(0);
         from.push(0);
 
@@ -245,15 +287,75 @@ mod windows {
         // SAFETY: `from` 在调用期间存活且以双 NUL 结尾；op 中所有指针都指向有效数据，
         // 其余字段按 API 契约置空/置位。
         let code = unsafe { sh_file_operation_w(&mut op) };
-        if code != 0 {
-            return Err(AppError::Other(format!(
-                "移入回收站失败（SHFileOperationW 返回 {code}）"
-            )));
+
+        // **返回值不能当成功判据**：文档自己就说它"部分取值沿用 Win32 之前的错误码、
+        // 与 Winerror.h 同值不同义"，实测成功删除到回收站时返回 2（已用探针核对过：
+        // 返回 2 时文件确实带着原始路径进了回收站）。所以只认结果——源文件没了就是成功，
+        // 还在才算失败，返回码只用来写错误信息。
+        if !path.exists() {
+            return Ok(());
         }
         if op.f_any_operations_aborted != 0 {
-            return Err(AppError::Other("移入回收站被中断".into()));
+            return Err(AppError::Other(format!(
+                "移入回收站被中断: {}",
+                path.display()
+            )));
         }
-        Ok(())
+
+        let long_hint = if path_chars >= MAX_PATH_CHARS {
+            format!("；该路径 {path_chars} 字符，系统的回收站接口不支持超过 260 字符")
+        } else {
+            String::new()
+        };
+        let on_dest = if code as u32 & 0x10000 != 0 {
+            "，且错误发生在目标端"
+        } else {
+            ""
+        };
+        Err(AppError::Other(format!(
+            "移入回收站失败（{}，SHFileOperationW 返回 {code}{on_dest}）: {}{long_hint}",
+            describe(code),
+            path.display()
+        )))
+    }
+}
+
+#[cfg(all(test, windows))]
+mod windows_tests {
+    use super::move_to_trash;
+    use super::windows::describe;
+
+    /// 端到端回归：`safe_join` 交出来的 verbatim 路径以前会被 SHFileOperationW
+    /// 用 124 拒绝，文件纹丝不动（Windows 上图库删除全线失效）。
+    ///
+    /// **注意：这个测试会把两个临时文件真的丢进回收站**——故意的，只有走完整个
+    /// API 才能发现这类问题。文件名叫「回收站-*」，清理回收站时不必犹豫。
+    #[test]
+    fn recycles_files_end_to_end() {
+        let dir = tempfile::TempDir::new().unwrap();
+        for (name, canonical) in [("回收站-普通.png", false), ("回收站-verbatim.png", true)]
+        {
+            let file = dir.path().join(name);
+            std::fs::write(&file, b"x").unwrap();
+            // canonicalize 的结果就是 safe_join 实际交出来的那种形式
+            let path = if canonical {
+                file.canonicalize().unwrap()
+            } else {
+                file.clone()
+            };
+            move_to_trash(&path)
+                .unwrap_or_else(|e| panic!("{name}（canonical={canonical}）移入回收站失败: {e}"));
+            assert!(!file.exists(), "{name} 应当已被移出原位置");
+        }
+    }
+
+    #[test]
+    fn describes_known_codes() {
+        assert_eq!(describe(124), "源或目标路径无效");
+        assert_eq!(describe(121), "路径超出 MAX_PATH（260 字符）");
+        assert_eq!(describe(2), "未知原因");
+        // 高位 0x10000 是 ERRORONDEST，低 16 位仍是错误码本身
+        assert_eq!(describe(0x10074), "源是根目录，无法移动或重命名");
     }
 }
 
@@ -282,7 +384,7 @@ mod tests {
         .unwrap();
         assert!(info.starts_with("[Trash Info]\n"), "格式不对: {info}");
         // Path 必须 percent-encode，否则含空格/中文的路径在还原时会被解析错
-        let expected = crate::state::escape_path_percent(&file.to_string_lossy());
+        let expected = crate::safe_path::escape_path_percent(&file.to_string_lossy());
         assert!(
             info.contains(&format!("Path={expected}")),
             "info 里的原始路径应被编码: {info}"

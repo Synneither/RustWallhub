@@ -6,7 +6,7 @@
 //! - 凭据来自用户配置的 RAM 子账号，建议只授权本应用前缀的读写
 
 use crate::config::AppConfig;
-use crate::state::AppError;
+use crate::error::AppError;
 use base64::engine::general_purpose::STANDARD as BASE64;
 use base64::Engine;
 use hmac::{Hmac, Mac};

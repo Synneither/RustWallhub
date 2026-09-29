@@ -12,10 +12,6 @@ const props = defineProps<{
   /** 触发详情时的原始图库条目（避免用 detail 字段手工拼 LocalImageEntry） */
   entry: LocalImageEntry | null;
   loading: boolean;
-  monitorItems: { title: string; value: string }[];
-  /** 选中的显示器（v-model） */
-  monitor: string;
-  settingWallpaper: boolean;
   /** 可选：小尺寸预览地址（缩略图）。抽屉里的预览最高只有 240px，
    *  不传的话会退回原图，为一个小方块付整张 4K 图的解码代价。 */
   previewSrc?: string;
@@ -23,20 +19,14 @@ const props = defineProps<{
 
 const emit = defineEmits<{
   (e: "update:detailOpen", v: boolean): void;
-  (e: "update:monitor", v: string): void;
   (e: "openViewer", img: LocalImageEntry): void;
   (e: "openLink", url: string | null): void;
-  (e: "setWallpaper", path: string, monitor?: string): void;
   (e: "delete", img: LocalImageEntry): void;
 }>();
 
 const detailOpen = computed({
   get: () => props.detailOpen,
   set: (v) => emit("update:detailOpen", v),
-});
-const monitor = computed({
-  get: () => props.monitor,
-  set: (v) => emit("update:monitor", v),
 });
 /** 预览优先用缩略图；`previewSrc` 未提供时退回原图，
  *  detail 还没回来之前先用 entry.path，这样抽屉一打开就能看到图。 */
@@ -82,23 +72,6 @@ const previewImage = computed(() => {
         </div>
       </div>
       <div class="detail-actions">
-        <v-select
-          v-model="monitor"
-          :items="monitorItems"
-          label="显示器"
-          density="compact"
-          hide-details
-          class="settings-field"
-        />
-        <v-btn
-          color="primary"
-          variant="flat"
-          prepend-icon="mdi-monitor"
-          :loading="settingWallpaper"
-          @click="emit('setWallpaper', entry.path, monitor)"
-        >
-          设为壁纸
-        </v-btn>
         <v-btn variant="tonal" color="error" prepend-icon="mdi-delete-outline" @click="emit('delete', entry)">
           删除
         </v-btn>

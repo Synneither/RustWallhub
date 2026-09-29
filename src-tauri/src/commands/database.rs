@@ -5,7 +5,9 @@
 use crate::config::Source;
 use crate::db;
 use crate::downloader;
-use crate::state::{ensure_plain_filename, AppError, AppState};
+use crate::error::AppError;
+use crate::safe_path::ensure_plain_filename;
+use crate::state::AppState;
 use crate::thumbnail;
 use serde::Serialize;
 use std::collections::HashSet;

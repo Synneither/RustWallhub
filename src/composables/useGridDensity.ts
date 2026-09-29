@@ -10,6 +10,23 @@ export interface DensityOption {
   min: string;
 }
 
+/** 三个档位的标签与顺序。图库与 Wallhaven 用同一套语义，只有参考列宽不同。 */
+const DENSITY_LABELS: { value: GridDensity; label: string }[] = [
+  { value: "compact", label: "紧凑" },
+  { value: "normal", label: "标准" },
+  { value: "large", label: "大图" },
+];
+
+/**
+ * 用各档的参考列宽拼出一张档位表。
+ *
+ * 之所以收成函数：以前两个视图各自手写一遍 `{ value, label, min }`，标签重复三遍，
+ * 档位顺序还得靠两边「记得保持一致」。现在视图只声明数值，键名也让顺序不可能写反。
+ */
+export function densityItems(mins: Record<GridDensity, string>): DensityOption[] {
+  return DENSITY_LABELS.map((level) => ({ ...level, min: mins[level.value] }));
+}
+
 /**
  * 档位标称值对应的参考容器内容宽度 —— 大约等于 1440 宽窗口（减去侧栏与内边距）的内容宽度。
  * 档位表里的 120/170/240 都是这个宽度下的列宽，实际列宽按容器宽度**等比向上缩放**。
