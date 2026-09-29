@@ -3,6 +3,8 @@
   "tasks": {
     "dev": "vite",
     "build": "vue-tsc --noEmit && vite build",
-    "tauri": "tauri"
+    "tauri": "tauri",
+    "test:unit": "vitest run",
+    "test:render": "node tests/render-check.mjs"
   }
 }

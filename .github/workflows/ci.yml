@@ -82,5 +82,17 @@ jobs:
       - name: Install deps
         run: deno install
 
-      - name: Type-check
+      - name: Build (type-check + bundle)
         run: deno task build
+
+      - name: Unit tests
+        run: deno task test:unit
+
+      - name: Install chromium (for the render check)
+        run: npx playwright install --with-deps chromium
+
+      # 把刚构建出来的产物真正加载起来跑一遍：断言每个视图都渲染出来了、没有未解析的
+      # 组件标签、Vuetify 的 defaults 仍生效。Vue 的渲染期异常只走 console.error，
+      # 光看 pageerror 抓不到整页白屏（ci 里加这一步就是为了这类问题不再漏网）。
+      - name: Render check
+        run: deno task test:render

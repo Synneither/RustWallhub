@@ -3,6 +3,15 @@ import App from "./App.vue";
 import { createVuetify } from 'vuetify';
 import "./assets/style.css";
 
+// ── Vuetify 组件的注册策略 ──
+// 这里**只注册首屏就会用到的组件**（App.vue / ConfirmDialog 及其子组件）。只在懒加载视图里
+// 用到的组件改为在各 SFC 里局部导入：挂在这张全局表上会让首屏无条件背上它们
+// （单是 v-data-table 就顶几百 KB），而 vite.config.ts 里已不再按 vuetify 强制归堆，
+// 局部导入才能真正落进各自的异步 chunk。
+//
+// 新增视图/组件时：先用全局注册把功能跑通可以，但**别把只在一个懒加载视图里用的组件留在这里**。
+// 反过来的坑同样存在——用了没注册的组件不会报错，只会静默不渲染（v-divider 就这么漏了一整轮）。
+//
 // Vuetify core + 项目内 MDI 图标子集。组件按**单个组件目录**导入：
 // barrel 形式 `from 'vuetify/components'` 虽然 JS 侧能被 tree-shake 干净，但 vuetify 的
 // package.json 把 `*.css` 声明为 sideEffects，导致未使用组件的样式照样进包
@@ -15,43 +24,26 @@ import './assets/fonts.css';
 
 import { VApp } from 'vuetify/components/VApp';
 import { VBtn } from 'vuetify/components/VBtn';
-import { VBtnToggle } from 'vuetify/components/VBtnToggle';
 import { VCard, VCardActions, VCardText, VCardTitle } from 'vuetify/components/VCard';
-import { VChip } from 'vuetify/components/VChip';
-import { VCombobox } from 'vuetify/components/VCombobox';
-import { VDataTable } from 'vuetify/components/VDataTable';
 import { VDialog } from 'vuetify/components/VDialog';
-import { VForm } from 'vuetify/components/VForm';
 import { VIcon } from 'vuetify/components/VIcon';
 import { VList, VListItem, VListItemTitle } from 'vuetify/components/VList';
 import { VMain } from 'vuetify/components/VMain';
 import { VNavigationDrawer } from 'vuetify/components/VNavigationDrawer';
 import { VOverlay } from 'vuetify/components/VOverlay';
-import { VPagination } from 'vuetify/components/VPagination';
 import { VProgressCircular } from 'vuetify/components/VProgressCircular';
-import { VProgressLinear } from 'vuetify/components/VProgressLinear';
-import { VSelect } from 'vuetify/components/VSelect';
 // VSpacer 虽然语义上属于网格布局，但它的目录是 VGrid。
 import { VSpacer } from 'vuetify/components/VGrid';
-import { VSwitch } from 'vuetify/components/VSwitch';
-import { VTab, VTabs } from 'vuetify/components/VTabs';
-import { VTextField } from 'vuetify/components/VTextField';
-import { VWindow, VWindowItem } from 'vuetify/components/VWindow';
 import { Ripple } from 'vuetify/directives';
 
 const components = {
   VApp,
   VBtn,
-  VBtnToggle,
   VCard,
   VCardActions,
   VCardText,
   VCardTitle,
-  VChip,
-  VCombobox,
-  VDataTable,
   VDialog,
-  VForm,
   VIcon,
   VList,
   VListItem,
@@ -59,17 +51,8 @@ const components = {
   VMain,
   VNavigationDrawer,
   VOverlay,
-  VPagination,
   VProgressCircular,
-  VProgressLinear,
-  VSelect,
   VSpacer,
-  VSwitch,
-  VTab,
-  VTabs,
-  VTextField,
-  VWindow,
-  VWindowItem,
 };
 
 const vuetify = createVuetify({

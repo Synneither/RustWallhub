@@ -23,6 +23,12 @@ import {
 import { appState, askConfirm, toast } from "../stores/app";
 import { useAsyncAction } from "../composables/useAsyncAction";
 
+// Vuetify 组件按需局部导入（见 main.ts 的注册策略说明）：只在这个视图/组件里用到，
+// 挂全局注册会让首屏无条件背上它们。
+import { VDivider } from "vuetify/components/VDivider";
+import { VSwitch } from "vuetify/components/VSwitch";
+import { VTextField } from "vuetify/components/VTextField";
+
 const emit = defineEmits<{ imported: [] }>();
 
 const ossEndpoint = ref("");

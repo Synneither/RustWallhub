@@ -5,6 +5,10 @@ import { cancelDownloads } from "../utils/api";
 import { useAsyncAction } from "../composables/useAsyncAction";
 import type { Source } from "../types";
 
+// Vuetify 组件按需局部导入（见 main.ts 的注册策略说明）：只在这个视图/组件里用到，
+// 挂全局注册会让首屏无条件背上它们。
+import { VProgressLinear } from "vuetify/components/VProgressLinear";
+
 /** 下载任务进度卡（仪表盘 / 源页面 / 图库 / 设置页复用） */
 const props = defineProps<{ source: Source; title?: string }>();
 

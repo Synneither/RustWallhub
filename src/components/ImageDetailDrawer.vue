@@ -4,6 +4,10 @@ import type { ImageInfo, LocalImageEntry } from "../types";
 import { assetUrl } from "../utils/api";
 import { formatBytes } from "../utils/format";
 
+// Vuetify 组件按需局部导入（见 main.ts 的注册策略说明）：只在这个视图/组件里用到，
+// 挂全局注册会让首屏无条件背上它们。
+import { VProgressLinear } from "vuetify/components/VProgressLinear";
+
 const props = defineProps<{
   /** 抽屉开关（v-model） */
   detailOpen: boolean;

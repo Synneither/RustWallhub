@@ -11,6 +11,14 @@ import { useConfigDraft } from "../composables/useConfigDraft";
 import { toast } from "../stores/app";
 import { positiveInt } from "../utils/rules";
 
+// Vuetify 组件按需局部导入（见 main.ts 的注册策略说明）：只在这个视图/组件里用到，
+// 挂全局注册会让首屏无条件背上它们。
+import { VChip } from "vuetify/components/VChip";
+import { VCombobox } from "vuetify/components/VCombobox";
+import { VForm } from "vuetify/components/VForm";
+import { VSelect } from "vuetify/components/VSelect";
+import { VTextField } from "vuetify/components/VTextField";
+
 const props = defineProps<{
   /** 父视图的搜索请求是否进行中（决定「保存并搜索」的 loading） */
   searching: boolean;

@@ -11,13 +11,16 @@ export default defineConfig(async () => ({
   build: {
     rollupOptions: {
       output: {
-        // 按依赖来源拆包：vuetify 体量最大（当前约 290KB / gzip 93KB），单独成块可与
-        // 业务代码分开缓存。桌面端资源都在本地磁盘，加载耗时可忽略，分块主要是为了
-        // 改业务代码时不必重新打包框架、构建更快。
-        // @tauri-apps/* 是稳定依赖，同理独立成块。
+        // 按依赖来源拆包。**这里刻意不按 vuetify 归堆**：那会把所有 vuetify 模块（不论谁引用）
+        // 强制塞进一个 chunk，而入口引用了它 → 整个 chunk 进首屏，懒加载视图里的重组件照样被
+        // 首屏背上（实测：放开后首屏 gzip 131.3 → 121.1KB，-7.8%）。代价只是框架代码与业务代码
+        // 同属入口 chunk，改业务代码会连带失效框架缓存——桌面端资源在本地磁盘，这个代价很小。
+        // @tauri-apps/* 是稳定依赖，独立成块仍划算。
         manualChunks(id: string) {
           if (id.includes("node_modules")) {
-            if (id.includes("vuetify")) return "vuetify";
+            // 注意顺序：vuetify 必须显式返回 undefined，否则会被下面的 vendor 兜住 ——
+            // vendor 被入口引用，一样会把懒加载视图的组件拉进首屏。
+            if (id.includes("vuetify")) return undefined;
             if (id.includes("@tauri-apps")) return "tauri";
             return "vendor";
           }

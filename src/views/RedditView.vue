@@ -8,6 +8,11 @@ import { useAsyncAction } from "../composables/useAsyncAction";
 import ProgressCard from "../components/ProgressCard.vue";
 import NewImagesStrip from "../components/NewImagesStrip.vue";
 
+// Vuetify 组件按需局部导入（见 main.ts 的注册策略说明）：只在这个视图/组件里用到，
+// 挂全局注册会让首屏无条件背上它们。
+import { VForm } from "vuetify/components/VForm";
+import { VTextField } from "vuetify/components/VTextField";
+
 const REDDIT_DRAFT_KEYS = [
   "reddit_url",
   "reddit_max_posts",

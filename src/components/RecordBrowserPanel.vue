@@ -16,6 +16,12 @@ import { listDatabaseImages } from "../utils/api";
 import { appState, toastError } from "../stores/app";
 import { formatDateTime } from "../utils/format";
 
+// Vuetify 组件按需局部导入（见 main.ts 的注册策略说明）：只在这个视图/组件里用到，
+// 挂全局注册会让首屏无条件背上它们。
+import { VBtnToggle } from "vuetify/components/VBtnToggle";
+import { VChip } from "vuetify/components/VChip";
+import { VDataTable } from "vuetify/components/VDataTable";
+
 const RECORD_PAGE_SIZE = 20;
 // 表头定义提到模块级常量：写成内联字面量的话每次渲染都会生成新数组，
 // v-data-table 会当成 props 变化重新计算列。

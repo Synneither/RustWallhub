@@ -22,11 +22,16 @@ wallpaper setters, per-monitor pickers or the slideshow.
 | Full Tauri dev | `deno task tauri dev` |
 | Build desktop app | `deno task tauri build` |
 | Backend tests | `cargo test` (in `src-tauri/`) |
+| Backend fmt / lint | `cargo fmt --check` / `cargo clippy --all-targets -- -D warnings` |
 | Frontend typecheck only | `npx vue-tsc --noEmit` |
-| Frontend e2e (optional) | `npx playwright test` |
+| Frontend unit tests | `deno task test:unit`（vitest，`tests/unit/`） |
+| Frontend render self-check | `deno task test:render`（真实 serve `dist/` + 打桩 IPC） |
 
-There is no lint or formatter config in the repo. `cargo test` and `vue-tsc --noEmit` are the
-two checks that must pass before committing.
+There is no JS lint/formatter config. Commit-time gate:
+`cargo fmt --check` + `cargo clippy --all-targets -- -D warnings` + `cargo test`（后端）与
+`vue-tsc --noEmit` + `deno task test:unit` + `deno task test:render`（前端）都必须通过。
+CI（`.github/workflows/ci.yml`）里的 `backend-windows` job 会在 windows-latest 上跑同一套后端门禁 ——
+这是 `#[cfg(windows)]` 代码（COM / `SHFileOperationW` / verbatim 路径）唯一的编译+测试覆盖，别删。
 
 ## Architecture
 
@@ -110,6 +115,13 @@ two checks that must pass before committing.
 - Comments explain *why*, not *what* — several non-obvious decisions are documented inline.
 
 ## Gotchas
+
+- **Vuetify 组件必须按需注册，且别在 `manualChunks` 里强制归堆**（见 `docs/FRONTEND.md` §4.3）。
+  `src/main.ts` **只全局注册首屏就要用的组件**；其余在每个 SFC 里
+  `import { X } from "vuetify/components/X"`。两项同时做到才能让 Vuetify 随各自异步 chunk 走 ——
+  首屏关键路径 JS 因此从 132KB 降到 96KB（gzip）。
+  漏注册的标签**不会报错**，只是静默渲染成普通元素（出现过 `VDivider` 从未注册、`v-tab`/`v-window-item`
+  只导入了父容器的情况），所以新增组件后要跑 `deno task test:render` —— 它会断言页面上没有未解析的标签。
 
 - `tauri.conf.json` build commands use `deno task` — do not switch to `npm run` without updating
   the config.

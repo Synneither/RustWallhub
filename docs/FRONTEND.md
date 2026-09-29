@@ -1,6 +1,6 @@
 # RustWallhub 前端设计文档
 
-> 版本：2.0 · 2026-08-02
+> 版本：2.1 · 2026-09-29（补齐 §4.3 组件注册/分包策略、子组件清单与 §11 验证手段；结构与 §1–§10 不变）
 > 本文档完全以后端 40 个 Tauri 命令、10 种事件为依据重新设计前端，不继承旧版界面结构。
 > 技术栈：Vue 3.5 + Vuetify 4 + TypeScript（无 vue-router、无 pinia，视图切换与全局状态由 App 层与 reactive store 承担）。
 
@@ -96,6 +96,34 @@ confirm: { visible: boolean; title: string; text: string; danger: boolean; resol
 | `useContainerWidth` / `useEffectiveDpr` | 容器宽度跟踪（ResizeObserver + 换元素自动重挂）与屏幕像素比。 |
 | `useWallhavenPreview({ page, loadPage, commitPage })` | Wallhaven 大图预览的滚动缓冲：续接预取、下载后补位、搜索竞态作废。 |
 | `useGalleryDetail({ source, entries, thumbOf })` | 图库的全屏查看器 + 详情抽屉（含请求竞态守卫）。 |
+
+`useAsyncAction` 的 `options` 是泛型的：`onSuccess` 的入参按 `fn` 的返回类型精确推导，
+不需要手写 `as`。哪些动作**不适合**套用它：
+
+- 纯用户交互（目录选择弹窗、二次确认）—— 转圈没有意义，且它区分不了"用户取消"和"失败"；
+- 成功后会**重启进程**的动作（安装更新）—— `useAsyncAction` 会在 `finally` 里复位 loading，
+  成功路径让它转圈到进程退出必须手写（`SettingsView::onInstall` 就是这么处理的，别"顺手重构"掉）。
+
+### 4.3 Vuetify 按需注册与分包
+
+**组件注册**：`src/main.ts` 只全局注册首屏（App 外壳 + 仪表盘）要用的组件；其余按单组件目录
+导入到用到的 SFC：
+
+```ts
+import { VSelect } from "vuetify/components/VSelect";
+import { VTab, VTabs } from "vuetify/components/VTabs"; // VTab/VTabs 在同一目录，但不是同一个
+```
+
+- 禁止 barrel 导入 `vuetify/components`（会把整个组件库拉进首屏）。
+- 导入名不总是等于标签名：`VSpacer` → `vuetify/components/VGrid`；`VTab`/`VTabs` → `VTabs`；
+  `VWindow`/`VWindowItem` → `VWindow`；`VBtnToggle` → `VBtnToggle`。
+- **漏注册不会报错**：未解析的标签只是渲染成同名普通元素，`v-divider` 缺样式、`v-tab` 变成
+  空 `<div>` 都是"安静地坏"。所以结论是 —— 改动组件后跑一次 `deno task test:render`。
+
+**分包**：`vite.config.ts` 的 `manualChunks` 只保留 `@tauri-apps` 一个强制归堆（几乎所有视图都要用，
+单独成 chunk 才不会被重复打进多个异步 chunk）。其余依赖（含 vuetify）返回 `undefined`，让 Rollup
+按引用关系自然切分 —— 曾经把 vuetify 归成一个 `vuetify` chunk，结果它成了首屏依赖，
+视图的懒加载等于失效，`VSelect` 这类只有个别页面用的组件也被所有人无条件下载。
 
 ### 4.2 视图拆分与 scoped 样式
 
@@ -218,6 +246,12 @@ confirm: { visible: boolean; title: string; text: string; danger: boolean; resol
 | `ProgressCard.vue` | 下载任务进度卡（仪表盘/源页复用） |
 | `NewImagesStrip.vue` | "本次新图"横向预览条（Wallhaven/Reddit 复用） |
 | `ImageDetailDrawer.vue` | 图片详情抽屉（分辨率、格式、来源、路径；见 §7.4.5） |
+| `GalleryCard.vue` | 图库单张卡片（含 hover 浮层、孤儿角标、当前壁纸标识与其样式） |
+| `GalleryBatchBar.vue` | 图库多选批量操作底栏 |
+| `GridSizeBar.vue` | 网格密度切换条（图库 / Wallhaven 共用） |
+| `WallhavenSearchForm.vue` | Wallhaven 搜索条件表单（`defineExpose({ persist, validate })`） |
+| `DbSyncPanel.vue` | 数据库的云同步 / 快照导出导入面板 |
+| `RecordBrowserPanel.vue` | 数据库记录浏览表格（自己 `onMounted` 加载一次） |
 
 ---
 
@@ -244,3 +278,24 @@ confirm: { visible: boolean; title: string; text: string; danger: boolean; resol
 | `download-progress` 与 `download-complete` 的 total 口径不同（恢复流程） | 进度条按 progress 事件渲染，完成提示用 complete 事件数字，互不混用 |
 | `get_active_wallpaper` 可能返回空数组（幻灯片/纯色壁纸） | 图库不高亮任何一张，仪表盘隐藏当前壁纸卡；都不当作错误提示 |
 | `save_settings` 不建库 | 保存后若库缺失，主动弹初始化确认 |
+
+---
+
+## 11. 前端验证手段
+
+以前的 `tests/smoke.spec.ts` 是**死设施**：既不在 CI 里跑，也因为 target 用的是别 related 的
+选择器年年无人维护，最后直接删掉。现在分两层：
+
+| 层 | 命令 | 覆盖 |
+|---|------|------|
+| 单元测试 | `deno task test:unit`（vitest ≥3，版本须匹配项目 vite 6，v2 会自己拖一份 vite 5 进来） | `tests/unit/`：`pathKey` 归一化、`pickThumbDpr`/`maxCoveredWidth` 档位边界、表单校验、`formatBytes`。纯函数、无环境依赖 |
+| 渲染自检 | `deno task test:render`（`tests/render-check.mjs`） | serve 真实 `dist/` + `tests/ipc-stub.js` 打桩 IPC，逐个视图断言：标题存在、内容长度、**未解析的 `v-*` 标签数为 0**、无 `console.error` |
+
+两个要点：
+
+- Vue 的渲染期错误走 **`console.error` 而不是 `pageerror`**，只监听 `pageerror` 会漏掉
+  `undefined[0]` 这类白屏元凶（`get_config` 打桩缺字段时真实发生过）。
+- IPC 打桩要**按后端结构给全字段**。少一个字段，视图不会报错，而是渲染出半张白屏。
+
+布局类的伪影（`.view` flex 下的 overflow 容器被压塌、贴底条下面探头等）这套脚本抓不到，
+用技能 `tauri-webview-layout-probe` 做真实窗口实测。

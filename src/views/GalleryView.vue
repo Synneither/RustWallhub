@@ -41,6 +41,14 @@ import { friendlyError } from "../utils/errors";
 import { basename, pathKey } from "../utils/path";
 import { pickThumbDpr, maxCoveredWidth, THUMB_MAX_DPR } from "../utils/thumbSize";
 
+// Vuetify 组件按需局部导入（见 main.ts 的注册策略说明）：只在这个视图/组件里用到，
+// 挂全局注册会让首屏无条件背上它们。
+import { VBtnToggle } from "vuetify/components/VBtnToggle";
+import { VChip } from "vuetify/components/VChip";
+import { VPagination } from "vuetify/components/VPagination";
+import { VSelect } from "vuetify/components/VSelect";
+import { VTextField } from "vuetify/components/VTextField";
+
 /* ════ 浏览状态 ════ */
 type SourceTab = "wallhaven" | "reddit";
 const source = ref<SourceTab>("wallhaven");

@@ -27,6 +27,14 @@ import ProgressCard from "../components/ProgressCard.vue";
 import DbSyncPanel from "../components/DbSyncPanel.vue";
 import RecordBrowserPanel from "../components/RecordBrowserPanel.vue";
 
+// Vuetify 组件按需局部导入（见 main.ts 的注册策略说明）：只在这个视图/组件里用到，
+// 挂全局注册会让首屏无条件背上它们。
+import { VChip } from "vuetify/components/VChip";
+import { VDataTable } from "vuetify/components/VDataTable";
+import { VTab, VTabs } from "vuetify/components/VTabs";
+import { VTextField } from "vuetify/components/VTextField";
+import { VWindow, VWindowItem } from "vuetify/components/VWindow";
+
 /* ════ 库状态与 db_dir ════ */
 const dbDir = ref("");
 // savingDir / initializing 由下面各自的 useAsyncAction 提供

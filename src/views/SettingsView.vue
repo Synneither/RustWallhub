@@ -9,6 +9,16 @@ import { positiveInt, requiredRule } from "../utils/rules";
 import { useTheme, type Theme } from "../stores/theme";
 import { formatBytes } from "../utils/format";
 import { useConfigDraft } from "../composables/useConfigDraft";
+import { useAsyncAction } from "../composables/useAsyncAction";
+import { THUMB_BASE_WIDTH } from "../utils/thumbSize";
+
+// Vuetify 组件按需局部导入（见 main.ts 的注册策略说明）：只在这个视图/组件里用到，
+// 挂全局注册会让首屏无条件背上它们。
+import { VForm } from "vuetify/components/VForm";
+import { VProgressLinear } from "vuetify/components/VProgressLinear";
+import { VSelect } from "vuetify/components/VSelect";
+import { VSwitch } from "vuetify/components/VSwitch";
+import { VTextField } from "vuetify/components/VTextField";
 
 const { theme, userOverride, set: setTheme, resetToSystem } = useTheme();
 // 与 store 实际状态派生：手动指定过则高亮对应主题，否则高亮"跟随系统"
@@ -49,11 +59,11 @@ const DIR_FIELDS: readonly { key: DirFieldKey; label: string }[] = [
   { key: "thumbnails_dir", label: "缩略图目录" },
 ];
 
-const DPR_ITEMS = [
-  { title: "1x（240px）", value: 1 },
-  { title: "2x（480px）", value: 2 },
-  { title: "3x（720px）", value: 3 },
-];
+/* 选项文案里的像素由基准宽算出，避免改了后端档位后这里的数字变成过时信息 */
+const DPR_ITEMS = [1, 2, 3].map((value) => ({
+  title: `${value}x（${THUMB_BASE_WIDTH * value}px）`,
+  value,
+}));
 
 /* 界面缩放档位。分数缩放（如 niri 的 1.25/1.5）下 WebKitGTK 不支持 fractional-scale，
  * 界面会被合成器整体放大而发虚，用这里的档位在应用侧补偿。 */
@@ -75,6 +85,8 @@ const THEME_ITEMS: readonly { key: ThemeChoiceKey; label: string; icon: string }
   { key: "light", label: "浅色", icon: "mdi-white-balance-sunny" },
 ];
 
+/* pickDir 是一次原生目录选择弹窗，不是"需要等待的操作"：转圈没有意义，
+ * 用户取消也不算错误，所以不套 useAsyncAction（它没法区分取消与失败）。 */
 async function pickDir(field: DirFieldKey) {
   try {
     const selected = await openDialog({ directory: true, defaultPath: draft[field] || undefined });
@@ -123,7 +135,6 @@ async function onSave() {
 }
 
 /* ── 更新 ── */
-const checking = ref(false);
 const installing = ref(false);
 const checkDone = ref(false);
 
@@ -134,21 +145,22 @@ const updatePercent = computed(() => {
   return Math.min(100, Math.round((u.downloaded / u.total) * 100));
 });
 
-async function onCheckUpdate() {
-  checking.value = true;
-  checkDone.value = false;
-  try {
-    const info = await checkUpdate();
-    appState.update.info = info;
-    checkDone.value = true;
-    if (!info.has_update) toast("已是最新版本", "success");
-  } catch (e) {
-    toastError(e);
-  } finally {
-    checking.value = false;
-  }
-}
+const { run: onCheckUpdate, loading: checking } = useAsyncAction(
+  async () => {
+    checkDone.value = false; // 重新检查期间不要露出上一次的结论
+    return checkUpdate();
+  },
+  {
+    onSuccess: (info) => {
+      appState.update.info = info;
+      checkDone.value = true;
+      if (!info.has_update) toast("已是最新版本", "success");
+    },
+  },
+);
 
+/* onInstall 故意保留手写 loading：成功路径**不能**复位 —— 安装成功后应用会重启，
+ * 按钮要一直转圈到进程退出；只有失败路径才复位（顺带清掉由全局事件置位的 persistent 遮罩）。 */
 async function onInstall() {
   installing.value = true;
   appState.update.installing = false; // 清掉上一次失败可能残留的安装遮罩

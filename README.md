@@ -72,7 +72,18 @@ cargo test
 
 # 前端类型检查 + 构建
 cd .. && deno task build
+
+# 前端单元测试（vitest，tests/unit/）
+deno task test:unit
+
+# 前端渲染自检：serve dist + 打桩 IPC，逐个视图断言真渲染且没有未解析的组件标签
+deno task test:render
 ```
+
+> 提交前建议跑全套：后端 `cargo fmt --check` + `cargo clippy --all-targets -- -D warnings` +
+> `cargo test`，前端 `vue-tsc --noEmit` + `test:unit` + `test:render`。CI 里还有一个
+> windows-latest 的后端门禁 job —— 它是 `#[cfg(windows)]` 代码（COM / 回收站 / verbatim 路径）
+> 唯一的编译与测试覆盖。
 
 ## 🐧 Linux / Wayland（niri + Noctalia）
 
