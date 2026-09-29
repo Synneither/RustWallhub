@@ -15,6 +15,10 @@ mod state;
 mod thumbnail;
 mod trash;
 mod wallhaven;
+// Windows-only：整个模块只在 `#[cfg(windows)]` 的调用点用到（trash / current_wallpaper）。
+// 不加这个 cfg 的话，Linux 构建里它全是死代码 —— `cargo clippy -D warnings` 会把
+// dead_code 当错误，而 Windows 本地跑 clippy 永远看不到（本地它确实被用着）。
+#[cfg(windows)]
 mod winpath;
 
 use commands::*;

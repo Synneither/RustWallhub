@@ -184,8 +184,11 @@ mod tests {
                 "Windows 上应拒绝含反斜杠的文件名: {evil:?}"
             );
         }
+        // 非 Windows 平台反斜杠是合法文件名字符，拼出来仍落在 base 内，应当接受。
+        // （单元素 for 循环会被 clippy 的 single_element_loop 拦下，直接写断言。）
         #[cfg(not(windows))]
-        for legal in ["sub\\name.jpg"] {
+        {
+            let legal = "sub\\name.jpg";
             assert!(
                 safe_join(base, legal).is_ok(),
                 "非 Windows 平台反斜杠是合法文件名字符: {legal:?}"
