@@ -58,6 +58,15 @@ const MIME = {
   ".webp": "image/webp",
 };
 
+/**
+ * 静态服务器句柄。
+ *
+ * `main()` 是「先起服务器、再启浏览器」的顺序，浏览器启动失败时会在服务器已监听的状态下抛出。
+ * 那种情况下如果只设 `process.exitCode` 而不关服务器，事件循环永远不会空 —— 脚本会一直挂着
+ * 不退出（实测挂了 20 分钟以上，在 CI 里等于挂死）。所以句柄提到模块级，早退路径也能收掉。
+ */
+let httpServer = null;
+
 function serve() {
   const server = http.createServer((req, res) => {
     let p = decodeURIComponent(req.url.split("?")[0]);
@@ -76,7 +85,12 @@ function serve() {
     res.setHeader("Content-Type", MIME[path.extname(file)] || "application/octet-stream");
     fs.createReadStream(file).pipe(res);
   });
-  return new Promise((resolve) => server.listen(PORT, "127.0.0.1", () => resolve(server)));
+  return new Promise((resolve) =>
+    server.listen(PORT, "127.0.0.1", () => {
+      httpServer = server;
+      resolve(server);
+    }),
+  );
 }
 
 /**
@@ -220,7 +234,14 @@ async function main() {
   console.log(`\n渲染自检通过：${VIEWS.length} 个视图都正常渲染，且没有未解析的组件标签。`);
 }
 
-main().catch((e) => {
-  console.error("渲染自检无法执行：" + e.message);
-  process.exitCode = 1;
-});
+main()
+  .catch((e) => {
+    console.error("渲染自检无法执行：" + e.message);
+    process.exitCode = 1;
+  })
+  .finally(() => {
+    // 收干净再退。除了静态服务器，可能还有半启动的浏览器进程等句柄挂着，
+    // 继续等事件循环 = 永久挂起，所以这里留一点时间刷输出后明确退出。
+    httpServer?.close();
+    setTimeout(() => process.exit(process.exitCode ?? 0), 100);
+  });
