@@ -595,11 +595,14 @@ fn test_clean_stale_thumbnails_keeps_valid() {
     let thumb_dir = TempDir::new().unwrap();
     let td = thumb_dir.path().to_path_buf();
     std::fs::write(save_dir.path().join("valid.jpg"), b"data").unwrap();
-    std::fs::write(td.join("valid.jpg"), b"thumb").unwrap();
+    // 必须用**当前**编码标记的文件名：无标记/旧格式一律按过期清理（见下条测试）
+    std::fs::write(td.join("valid__w480.q85.webp"), b"thumb").unwrap();
     assert_eq!(
         clean_stale_thumbnails(&td.to_string_lossy(), &save_dir.path().to_string_lossy()),
-        0
+        0,
+        "原图存在且编码为当前的缩略图不应被清理"
     );
+    assert!(td.join("valid__w480.q85.webp").exists());
 }
 
 #[test]
@@ -608,15 +611,74 @@ fn test_clean_stale_thumbnails_keeps_dpr_format() {
     let thumb_dir = TempDir::new().unwrap();
     let td = thumb_dir.path().to_path_buf();
     std::fs::write(save_dir.path().join("valid.jpg"), b"data").unwrap();
-    std::fs::write(td.join("valid__w480.webp"), b"thumb").unwrap();
-    std::fs::write(td.join("orphan__w480.webp"), b"thumb").unwrap();
+    std::fs::write(td.join("valid__w480.q85.webp"), b"thumb").unwrap();
+    std::fs::write(td.join("orphan__w480.q85.webp"), b"thumb").unwrap();
     assert_eq!(
         clean_stale_thumbnails(&td.to_string_lossy(), &save_dir.path().to_string_lossy()),
         1,
-        "DPR 格式缩略图对应的原图存在时不应被清理，孤儿缩略图应被清理"
+        "原图存在的缩略图不应被清理，孤儿缩略图应被清理"
     );
-    assert!(td.join("valid__w480.webp").exists());
-    assert!(!td.join("orphan__w480.webp").exists());
+    assert!(td.join("valid__w480.q85.webp").exists());
+    assert!(!td.join("orphan__w480.q85.webp").exists());
+}
+
+/// 换有损编码前生成的无标记缓存必须被回收：新参数下它们永远不会再被读取
+/// （`ensure_thumbnail_inner` 查的是带标记的新文件名），留着只会白占磁盘。
+#[test]
+fn test_clean_stale_thumbnails_removes_legacy_encoding() {
+    let save_dir = TempDir::new().unwrap();
+    let thumb_dir = TempDir::new().unwrap();
+    let td = thumb_dir.path().to_path_buf();
+    // 原图都在，差别只在编码标记：过期标记必须清、当前标记必须留
+    for name in ["a.jpg", "b.jpg"] {
+        std::fs::write(save_dir.path().join(name), b"data").unwrap();
+    }
+    std::fs::write(td.join("a__w720.webp"), b"legacy-lossless").unwrap(); // 无标记
+    std::fs::write(td.join("a__w720.q70.webp"), b"old-quality").unwrap(); // 旧质量参数
+    std::fs::write(td.join("a__w720.q85.webp"), b"current").unwrap();
+    std::fs::write(td.join("b.jpg"), b"ancient-format").unwrap(); // 更早的格式
+
+    let cleaned = clean_stale_thumbnails(&td.to_string_lossy(), &save_dir.path().to_string_lossy());
+
+    assert_eq!(cleaned, 3, "无标记、旧质量、旧格式各一个应被清理");
+    assert!(
+        td.join("a__w720.q85.webp").exists(),
+        "当前编码的缩略图不能被误删"
+    );
+    assert!(!td.join("a__w720.webp").exists());
+    assert!(!td.join("a__w720.q70.webp").exists());
+    assert!(!td.join("b.jpg").exists());
+}
+
+/// 档位清理只在显式传 `keep_min_dpr`（用户点「清理缩略图」）时生效；
+/// 传 `None`（启动时的自动清理）不能碰档位——用户换个网格密度可能马上要用到。
+#[test]
+fn test_clean_stale_thumbnails_floor_is_opt_in() {
+    let save_dir = TempDir::new().unwrap();
+    let thumb_dir = TempDir::new().unwrap();
+    let td = thumb_dir.path().to_path_buf();
+    std::fs::write(save_dir.path().join("a.jpg"), b"data").unwrap();
+    for w in [240, 480, 720] {
+        std::fs::write(td.join(format!("a__w{w}.q85.webp")), b"thumb").unwrap();
+    }
+
+    // 保守模式：三档都是当前编码 + 原图存在 → 一个都不删
+    assert_eq!(
+        clean_stale_thumbnails(&td.to_string_lossy(), &save_dir.path().to_string_lossy()),
+        0
+    );
+    assert_eq!(std::fs::read_dir(&td).unwrap().count(), 3);
+
+    // 积极模式（floor = dpr3 → 720）：w240 / w480 被回收
+    let cleaned = clean_stale_thumbnails_keeping(
+        &td.to_string_lossy(),
+        &save_dir.path().to_string_lossy(),
+        Some(3),
+    );
+    assert_eq!(cleaned, 2);
+    assert!(td.join("a__w720.q85.webp").exists());
+    assert!(!td.join("a__w240.q85.webp").exists());
+    assert!(!td.join("a__w480.q85.webp").exists());
 }
 
 #[test]
@@ -910,3 +972,4 @@ fn test_import_snapshot_rejects_non_database_file() {
     let result = import_wallhaven_snapshot(db.path(), &bogus.to_string_lossy());
     assert!(result.is_err(), "导入非数据库文件应报错");
 }
+

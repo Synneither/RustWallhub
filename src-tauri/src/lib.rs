@@ -168,6 +168,11 @@ pub fn run() {
             let auto_update = config.auto_update;
             let auto_sync_start = config.oss_auto_download_on_start;
             let ui_zoom = config.ui_zoom;
+            // 启动清理孤儿缩略图要用；config 紧接着就被 move 进 AppState 了。
+            let wh_thumb_for_cleanup = config.wallhaven_thumb_dir().to_string_lossy().to_string();
+            let wh_save_for_cleanup = config.wallhaven_save_dir.clone();
+            let rd_thumb_for_cleanup = config.reddit_thumb_dir().to_string_lossy().to_string();
+            let rd_save_for_cleanup = config.reddit_save_dir.clone();
 
             // asset 协议白名单：静态 scope 只含缩略图缓存目录，用户配置的保存目录
             // 在这里按实际路径授权，避免为了显示图片而把整个 $HOME 暴露给 asset 协议。
@@ -200,6 +205,33 @@ pub fn run() {
                     commands::sync::auto_sync_on_startup(&app_handle).await;
                 });
             }
+
+            // 启动清理失效缩略图。
+            //
+            // 删除路径（`dislike_file` / `delete_orphan_*`）里都会调 `remove_thumbnails`，
+            // 但**外部删除**（用户在资源管理器里删、同步工具清目录）应用感知不到，那些
+            // 缩略图就成了孤儿。实测本机 reddit 保存目录已空，却留着 208 个 / 30.7 MB
+            // 的孤儿缩略图，占全部缓存的 23%。这里延后到首屏与数据库引导之后再扫一遍。
+            //
+            // 只做保守清理（孤儿 + 过期编码），不传 `keep_min_dpr`：档位取决于网格密度，
+            // 用户下一刻可能就要用，交给设置页的「清理缩略图」按当前档位积极回收。
+            tauri::async_runtime::spawn(async move {
+                tokio::time::sleep(Duration::from_secs(12)).await;
+                let result = tokio::task::spawn_blocking(move || {
+                    (
+                        db::clean_stale_thumbnails(&wh_thumb_for_cleanup, &wh_save_for_cleanup),
+                        db::clean_stale_thumbnails(&rd_thumb_for_cleanup, &rd_save_for_cleanup),
+                    )
+                })
+                .await;
+                match result {
+                    Ok((wh, rd)) if wh + rd > 0 => {
+                        log::info!("[startup] 清理失效缩略图: wallhaven={wh} reddit={rd}");
+                    }
+                    Ok(_) => log::debug!("[startup] 没有需要清理的缩略图"),
+                    Err(e) => log::warn!("[startup] 清理缩略图任务异常: {e}"),
+                }
+            });
 
             Ok(())
         })

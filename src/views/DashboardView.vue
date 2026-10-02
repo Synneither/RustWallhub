@@ -48,7 +48,7 @@ const wallpaperThumb = ref("");
 const wallpaperName = computed(() => basename(wallpaperPath.value));
 
 /** 128px 的格子不值得为 4K 原图付出约 33MB 的驻留内存，优先用库里的缩略图。
- *  后端在源文件缺失/非 JPEG 时会把原图路径原样返回（缩略图文件名则是 name__w480.webp），
+ *  后端在源文件缺失/非 JPEG 时会把原图路径原样返回（缩略图文件名则是 name__w480.q85.webp），
  *  所以用「返回的文件名与原名不同」判断是否真的拿到了缩略图。 */
 async function resolveWallpaperThumb(name: string) {
   wallpaperThumb.value = "";

@@ -50,6 +50,7 @@ tauri-plugin-single-instance = "2"
 # 关掉默认 feature（rayon）：单张内部再并行没意义，我们已在外层用线程池并行处理多张图，
 # 嵌套线程池只会增加调度开销。
 jpeg-decoder = { version = "0.3", default-features = false }
+webp = { version = "0.3.1", default-features = false }
 
 [dev-dependencies]
 tempfile = "3"

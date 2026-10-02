@@ -186,7 +186,7 @@ RustWallhub/
 │   │   ├── db/                   # SQLite schema、缓存连接、CRUD、统计、快照同步
 │   │   ├── downloader.rs         # HTTP 下载、流式大小限制、并发与退避重试
 │   │   ├── oss.rs                # 阿里云 OSS V1 签名（手写，无 SDK 依赖）
-│   │   ├── thumbnail.rs          # WebP 缩略图（DPR 1x/2x/3x）
+│   │   ├── thumbnail.rs          # 有损 WebP 缩略图（libwebp，DPR 1x/2x/3x）
 │   │   ├── wallhaven.rs          # Wallhaven API 客户端
 │   │   ├── reddit.rs             # Reddit JSON 客户端与 imgur 解析
 │   │   ├── linux_env.rs          # Linux/WebKit 启动期兼容项（NVIDIA、会话类型）
@@ -272,7 +272,7 @@ RustWallhub/
 - **后端**：Rust + tokio + reqwest + rusqlite + image + rayon
 - **数据库**：SQLite（WAL、连接缓存、统计短缓存、旧 schema 自动清理冗余索引）
 - **下载**：流式大小限制（单图 256MB）、分批下载、批量事务入库、进度事件节流
-- **缩略图**：WebP + DPR 适配，按需惰性生成
+- **缩略图**：有损 WebP（q85，走 libwebp 绑定）+ DPR 适配，按需惰性生成；文件名带编码版本标记，换编码参数后旧缓存自动回收
 - **图标**：Material Design Icons 子集化，仅保留实际使用图标（约 5KB woff2）
 - **主题**：柔灰暗色 / 暖白亮色 / 跟随系统
 - **更新**：Tauri updater，Release 资产含 `latest.json`

@@ -74,10 +74,16 @@ pub async fn clean_thumbnails(
     let rd_thumb_dir = config.reddit_thumb_dir().to_string_lossy().to_string();
     let wh_save_dir = config.wallhaven_save_dir.clone();
     let rd_save_dir = config.reddit_save_dir.clone();
+    // 用户主动清理：顺带回收低于当前最低档位的缩略图。`thumbnail_dpr` 是「最低档位」
+    // 语义（见前端 thumbSize.ts 的 pickThumbDpr），所以 floor=3 时 w240/w480 用不上。
+    // 启动时的自动清理走 `clean_stale_thumbnails`（不传档位），避免误删下一刻要用的档位。
+    let keep_min_dpr = config.thumbnail_dpr;
 
     tokio::task::spawn_blocking(move || {
-        let wallhaven = db::clean_stale_thumbnails(&wh_thumb_dir, &wh_save_dir);
-        let reddit = db::clean_stale_thumbnails(&rd_thumb_dir, &rd_save_dir);
+        let wallhaven =
+            db::clean_stale_thumbnails_keeping(&wh_thumb_dir, &wh_save_dir, Some(keep_min_dpr));
+        let reddit =
+            db::clean_stale_thumbnails_keeping(&rd_thumb_dir, &rd_save_dir, Some(keep_min_dpr));
         CleanThumbnailsResult { wallhaven, reddit }
     })
     .await

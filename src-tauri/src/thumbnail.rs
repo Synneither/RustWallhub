@@ -2,10 +2,29 @@ use rayon::prelude::*;
 use std::path::{Path, PathBuf};
 
 /// 基础缩略图宽度（按 1x DPR）。前端传入 devicePixelRatio 后按比例放大。
-const THUMB_BASE_WIDTH: u32 = 240;
+///
+/// `pub` 是给 `db::clean_stale_thumbnails` 用的：它要按档位宽度判断某个缩略图
+/// 是否低于当前配置的最低档位（见该函数注释）。
+pub const THUMB_BASE_WIDTH: u32 = 240;
 
 /// 允许的最大 DPR 档位（与前端 thumbnail_dpr 的 1-3 约束一致）。
-const MAX_DPR: u32 = 3;
+pub const MAX_DPR: u32 = 3;
+
+/// 有损 WebP 编码质量（0–100）。
+///
+/// 缩略图最宽只有 720px（DPR 3）、仅用于网格展示，q85 与无损在肉眼上无可感知差异，
+/// 而体积只有无损的 1/6 左右（实测 720px：392KB → 49KB）。
+const THUMB_WEBP_QUALITY: f32 = 85.0;
+
+/// 缩略图文件名里的编码版本标记，形如 `photo__w720.q85.webp`。
+///
+/// **改动编码器或质量参数时必须同步修改这个标记**：`ensure_thumbnail_inner` 一看到
+/// `dst.exists()` 就直接复用旧文件，不带版本标记的话新参数对已有缓存永远不生效。
+/// 带旧标记（或无标记）的文件由 `db::clean_stale_thumbnails` 判为过期并回收。
+///
+/// 历史：无标记的是 `image` 0.25 的无损 VP8L 编码（此前走 `DynamicImage::save()`，
+/// 而它只支持无损），体积是有损的 5~8 倍。
+pub const THUMB_ENCODING_TAG: &str = "q85";
 
 /// 单张缩略图解码时的内存预算估算值。
 ///
@@ -50,11 +69,25 @@ pub fn thumb_filename_for_dpr(filename: &str, dpr: u32) -> String {
 fn thumb_filename(filename: &str, dpr: u32) -> String {
     let dpr = dpr.max(1);
     let width = THUMB_BASE_WIDTH * dpr;
-    if let Some(dot) = filename.rfind('.') {
-        format!("{}__w{}.webp", &filename[..dot], width)
-    } else {
-        format!("{filename}__w{width}.webp")
-    }
+    let stem = match filename.rfind('.') {
+        Some(dot) => &filename[..dot],
+        None => filename,
+    };
+    format!("{stem}__w{width}.{THUMB_ENCODING_TAG}.webp")
+}
+
+/// 同一档位在**加编码标记之前**的旧文件名（`photo__w720.webp`）。
+///
+/// 只用于删除：换有损编码后这些文件不会再被读取，但会一直占着磁盘，
+/// 所以 `remove_thumbnails` 要把它们一并清掉。
+fn legacy_thumb_filename(filename: &str, dpr: u32) -> String {
+    let dpr = dpr.max(1);
+    let width = THUMB_BASE_WIDTH * dpr;
+    let stem = match filename.rfind('.') {
+        Some(dot) => &filename[..dot],
+        None => filename,
+    };
+    format!("{stem}__w{width}.webp")
 }
 
 fn thumb_max_width(dpr: u32) -> u32 {
@@ -132,6 +165,33 @@ fn decode_jpeg_scaled(src: &Path, target_width: u32) -> Option<image::DynamicIma
     }
 }
 
+/// 用有损 WebP 写盘（libwebp 绑定）。
+///
+/// 之所以绕开 `DynamicImage::save()`：`image` 0.25 的 WebP 编码器**只实现了无损
+/// （VP8L）**，其依赖 `image-webp` 0.2.4 同样没有有损编码器（见其
+/// `codecs/webp/encoder.rs` 的 "Only lossless encoding is currently supported"）。
+/// 对照片类内容，无损体积是有损的 5~8 倍，编码还要慢 3~11 倍。
+fn encode_webp_lossy(img: &image::DynamicImage, dst: &Path) -> Result<(), String> {
+    let (w, h) = (img.width(), img.height());
+    if w == 0 || h == 0 {
+        return Err(format!("缩略图尺寸非法: {w}x{h}"));
+    }
+    let mem = match img {
+        // 直接走 RGB，省一次整图格式转换
+        image::DynamicImage::ImageRgb8(buf) => {
+            webp::Encoder::from_rgb(buf.as_raw(), w, h).encode(THUMB_WEBP_QUALITY)
+        }
+        // 其余色型（含带 alpha 的 PNG）转 RGBA 保留透明通道：
+        // 转 RGB 会把透明区压成黑色。
+        other => {
+            let rgba = other.to_rgba8();
+            webp::Encoder::from_rgba(rgba.as_raw(), w, h).encode(THUMB_WEBP_QUALITY)
+        }
+    };
+    std::fs::write(dst, &*mem)
+        .map_err(|e| format!("save thumbnail ({}) failed: {e}", dst.display()))
+}
+
 fn resize_and_save(img: image::DynamicImage, dst: &Path, max_width: u32) -> Result<(), String> {
     let (w, _h) = (img.width(), img.height());
     let thumb = if w > max_width {
@@ -141,9 +201,7 @@ fn resize_and_save(img: image::DynamicImage, dst: &Path, max_width: u32) -> Resu
         img
     };
 
-    thumb
-        .save(dst)
-        .map_err(|e| format!("save thumbnail ({}) failed: {e}", dst.display()))
+    encode_webp_lossy(&thumb, dst)
 }
 
 /// 生成单张缩略图，**假定 `thumb_dir` 已存在**。
@@ -209,12 +267,14 @@ pub fn save_thumbnail_from_bytes(
     Ok(dst)
 }
 
-/// 删除某文件的所有缩略图（兼容新旧格式 + 多 DPR）
+/// 删除某文件的所有缩略图（兼容新旧编码标记 + 多 DPR）
 pub fn remove_thumbnails(thumb_dir: &Path, filename: &str) {
     let _ = std::fs::remove_file(thumb_dir.join(filename));
     // thumbnail_dpr 允许 1-3，这里覆盖全部档位；用常量替代魔法数字 [1,2,3]。
     for dpr in 1..=MAX_DPR {
         let _ = std::fs::remove_file(thumb_dir.join(thumb_filename_for_dpr(filename, dpr)));
+        // 换有损编码前生成的无标记缓存：已不再被读取，但不清就一直占着磁盘。
+        let _ = std::fs::remove_file(thumb_dir.join(legacy_thumb_filename(filename, dpr)));
     }
 }
 
@@ -257,23 +317,103 @@ mod tests {
     #[test]
     fn test_thumb_filename() {
         let name = thumb_filename("photo.jpg", 1);
-        assert_eq!(name, "photo__w240.webp");
+        assert_eq!(name, "photo__w240.q85.webp");
         let name = thumb_filename("photo.jpg", 2);
-        assert_eq!(name, "photo__w480.webp");
+        assert_eq!(name, "photo__w480.q85.webp");
+    }
+
+    /// 旧的无标记文件名（换有损编码之前的缓存），删除时要能一并覆盖到。
+    #[test]
+    fn test_legacy_thumb_filename() {
+        assert_eq!(legacy_thumb_filename("photo.jpg", 1), "photo__w240.webp");
+        assert_eq!(legacy_thumb_filename("photo.jpg", 3), "photo__w720.webp");
     }
 
     #[test]
     fn test_thumb_path() {
         let dir = Path::new("/tmp/images");
         let tp = thumb_path(dir, "photo.jpg", 1);
-        assert_eq!(tp, dir.join("photo__w240.webp"));
+        assert_eq!(tp, dir.join("photo__w240.q85.webp"));
     }
 
     #[test]
     fn test_thumb_path_dpr2() {
         let dir = Path::new("/tmp/images");
         let tp = thumb_path(dir, "photo.jpg", 2);
-        assert_eq!(tp, dir.join("photo__w480.webp"));
+        assert_eq!(tp, dir.join("photo__w480.q85.webp"));
+    }
+
+    /// 关键回归防线：缩略图必须是**有损** WebP（VP8）。
+    ///
+    /// 退回无损（VP8L）会让体积膨胀 5~8 倍——`image` 0.25 的 `DynamicImage::save()`
+    /// 就是这个坑（它的 WebP 编码器只支持无损），所以这里直接查文件头的 fourcc，
+    /// 而不是只断言"文件能打开"。
+    #[test]
+    fn test_thumbnail_is_lossy_webp() {
+        let dir = tempfile::tempdir().unwrap();
+        let src_dir = tempfile::tempdir().unwrap();
+        // 渐变噪声：纯色会被压得极小，测不出编码器之间的差异
+        let mut rgb = image::RgbImage::new(640, 360);
+        for (x, y, px) in rgb.enumerate_pixels_mut() {
+            *px = image::Rgb([
+                ((x * 7 + y * 13) % 256) as u8,
+                ((x * 11 + y * 3) % 256) as u8,
+                ((x * 5 + y * 17) % 256) as u8,
+            ]);
+        }
+        let src = src_dir.path().join("photo.png");
+        image::DynamicImage::ImageRgb8(rgb).save(&src).unwrap();
+
+        let out =
+            ensure_batch_thumbnails(dir.path(), src_dir.path(), &["photo.png".to_string()], 1);
+        assert_eq!(out.len(), 1);
+        let bytes = std::fs::read(&out[0].1).unwrap();
+        assert!(bytes.len() >= 16, "写出的文件过小: {} 字节", bytes.len());
+        // RIFF....WEBP + 4 字节 fourcc：`VP8 ` = 有损，`VP8L` = 无损
+        assert_eq!(&bytes[0..4], b"RIFF");
+        assert_eq!(&bytes[8..12], b"WEBP");
+        assert_eq!(
+            &bytes[12..16],
+            b"VP8 ",
+            "缩略图必须是有损 WebP（VP8），实际 fourcc 是 {:?} —— VP8L 即无损，体积会大 5~8 倍",
+            String::from_utf8_lossy(&bytes[12..16])
+        );
+    }
+
+    /// 换编码后旧的无标记缓存必须能被 `remove_thumbnails` 清掉，否则会一直残留占盘。
+    #[test]
+    fn test_remove_thumbnails_covers_legacy_names() {
+        let dir = tempfile::tempdir().unwrap();
+        // 新格式（带编码标记）与旧格式各造几档
+        for name in [
+            "photo.jpg",        // 更早的非 DPR 格式：缩略图名 == 原图名
+            "photo__w240.webp", // 旧格式
+            "photo__w720.webp", // 旧格式
+            "photo__w240.q85.webp",
+            "photo__w720.q85.webp",
+        ] {
+            std::fs::write(dir.path().join(name), b"x").unwrap();
+        }
+        // 干扰项：别的文件的缩略图不能被误删
+        std::fs::write(dir.path().join("other__w240.q85.webp"), b"x").unwrap();
+
+        remove_thumbnails(dir.path(), "photo.jpg");
+
+        for name in [
+            "photo.jpg",
+            "photo__w240.webp",
+            "photo__w480.webp",
+            "photo__w720.webp",
+            "photo__w240.q85.webp",
+            "photo__w480.q85.webp",
+            "photo__w720.q85.webp",
+        ] {
+            assert!(!dir.path().join(name).exists(), "{name} 应被删除但仍在");
+        }
+        assert!(
+            dir.path().join("other__w240.q85.webp").exists(),
+            "不该误删其它文件的缩略图"
+        );
     }
 
     #[test]
@@ -484,15 +624,19 @@ mod tests {
             let thumb = decoded.thumbnail(480, u32::MAX);
             let resize_ms = t.elapsed().as_millis();
             let t = Instant::now();
-            thumb.save(thumb_dir.join(format!("{label}.webp"))).unwrap();
+            // 走生产路径的有损编码器：`DynamicImage::save()` 是**无损**的，
+            // 用它测出来的编码耗时和体积都不代表实际行为。
+            let out_path = thumb_dir.join(format!("{label}.webp"));
+            encode_webp_lossy(&thumb, &out_path).unwrap();
             let save_ms = t.elapsed().as_millis();
+            let out_kib = std::fs::metadata(&out_path).map_or(0, |m| m.len() / 1024);
 
             let total = (decode_ms + resize_ms + save_ms).max(1);
             println!(
                 "{label} {w}x{h}: jpeg {file_kib} KiB\n  \
                  读尺寸 {dims_us}us | 常规解码 {decode_ms}ms (驻留 {decoded_mib} MiB)\n  \
                  JPEG 降采样解码 {fast_ms}ms → {scaled_desc}\n  \
-                 缩放 {resize_ms}ms | 编码存盘 {save_ms}ms\n  \
+                 缩放 {resize_ms}ms | 编码存盘 {save_ms}ms ({out_kib} KiB, 有损 q85)\n  \
                  → 解码占全链路 {}%",
                 decode_ms * 100 / total
             );
