@@ -12,7 +12,7 @@
 |------|------|
 | 🔍 **Wallhaven 搜索** | 关键词、分类、纯度、排序、分辨率、比例等条件搜索；条件保存到配置文件 |
 | 🖼️ **Wallhaven 大图预览** | 单击卡片勾选，双击或悬停按钮预览原图；可打开来源页或直接下载当前大图 |
-| ⬇️ **批量下载** | Wallhaven 按条件批量下载 / 勾选下载；Reddit 按 subreddit 列表批量抓取 |
+| ⬇️ **批量下载** | Wallhaven 在搜索结果里勾选下载（可跨页累积）；Reddit 按 subreddit 列表批量抓取 |
 | 🧵 **Reddit 抓取** | 支持 i.redd.it 直链、gallery 首图、imgur 直链与相册；连续 3 批无新增自动停止 |
 | 🗂️ **本地图库** | Wallhaven / Reddit 双源浏览，搜索、排序、分页、孤儿标记，支持浏览主目录内的自定义本地目录 |
 | 🖼️ **当前壁纸高亮** | 自动标出系统正在使用的那张壁纸（只读识别，**不负责设置壁纸**——换壁纸交给你自己的桌面环境） |
@@ -169,7 +169,7 @@ RustWallhub/
 ├── src/                          # Vue 3 前端
 │   ├── views/
 │   │   ├── DashboardView.vue     # 仪表盘：统计、当前壁纸、活动任务、快捷操作
-│   │   ├── WallhavenView.vue     # Wallhaven 搜索、大图预览、勾选/批量下载
+│   │   ├── WallhavenView.vue     # Wallhaven 搜索、大图预览、勾选下载
 │   │   ├── RedditView.vue        # Reddit 抓取配置与下载
 │   │   ├── GalleryView.vue       # 本地图库、详情、当前壁纸高亮、孤儿管理
 │   │   ├── DbSettingsView.vue    # 数据库状态、缺失/孤儿/记录管理
@@ -246,7 +246,6 @@ RustWallhub/
 | `wallhaven_order` | `desc` | 排序方向 |
 | `wallhaven_atleast` | `1920x1080` | 最小分辨率 |
 | `wallhaven_ratios` | `landscape` | 宽高比 |
-| `wallhaven_max_images` | `100` | 按条件批量下载目标张数 |
 
 ### Reddit
 

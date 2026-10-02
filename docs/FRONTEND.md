@@ -23,7 +23,7 @@
 | 页面 | 路由态 `view` | 覆盖的后端域 | 核心职责 |
 |------|--------------|--------------|----------|
 | 仪表盘 | `dashboard` | stats / download / update / system | 全局总览、当前壁纸、快捷操作、活动任务 |
-| Wallhaven | `wallhaven` | wallhaven 模块 + wallhaven_* 配置 | 搜索条件、在线预览、勾选/批量下载 |
+| Wallhaven | `wallhaven` | wallhaven 模块 + wallhaven_* 配置 | 搜索条件、在线预览、勾选下载 |
 | Reddit | `reddit` | reddit 模块 + reddit_* 配置 | 抓取配置、一键下载 |
 | 图库 | `gallery` | gallery 模块 + system | 本地图片浏览、当前壁纸高亮、孤儿管理 |
 | 数据库 | `database` | database 模块 + 数据库生命周期 | 库状态、缺失/孤儿/记录管理、统计 |
@@ -182,16 +182,16 @@ import { VTab, VTabs } from "vuetify/components/VTabs"; // VTab/VTabs 在同一�
 三段式：
 1. **统计区**：两张来源卡（蓝/橙标识），各显示 总数 / 在库（love=1）/ 缺失 三个数字（DataTerminal 面板样式，数字 1.625rem）。
 2. **活动区**：进行中的下载任务卡（来源、进度条、done/total、message、取消按钮）；更新横幅（有更新时：版本号 + 查看更新 → 跳设置页）。
-3. **快捷操作**：主按钮"浏览图库"，次按钮"Wallhaven 下载""Reddit 下载""数据库管理"。
+3. **快捷操作**：主按钮"浏览图库"，次按钮"Reddit 下载""数据库管理"。
 
 空态：数据库未初始化时整页替换为初始化引导空态。
 
 ### 7.2 Wallhaven 页
 
 上下两区（可滚动单列）：
-1. **搜索条件卡**：关键词 `q`、分类三位开关（general/anime/people）、纯度三位开关（sfw/sketchy/nsfw，NSFW 需 API Key 提示）、排序（date/favorites/toplist/random，toplist 时展开 topRange 选择且禁用 order；random 时禁用 order）、最小分辨率 `atleast`、比例 `ratios`、单次下载目标 `wallhaven_max_images`、API Key（password 输入）。
+1. **搜索条件卡**：关键词 `q`、分类三位开关（general/anime/people）、纯度三位开关（sfw/sketchy/nsfw，NSFW 需 API Key 提示）、排序（date/favorites/toplist/random，toplist 时展开 topRange 选择且禁用 order；random 时禁用 order）、最小分辨率 `atleast`、比例 `ratios`、API Key（password 输入）。
    - 底部操作条：`保存并搜索`（主按钮，先 `save_settings` 再 `search_wallhaven(1)`）、`仅保存`。
-2. **结果区**（`.wh-results` 一层 wrapper，含工具栏 / 网格 / 翻页条）：在线缩略图网格（`thumbnail_url` 直链，CSP 已允许 `th.wallhaven.cc` / `w.wallhaven.cc`），卡片显示分辨率角标 + 勾选框；单击选择，双击或悬停按钮打开大图预览（原图 URL 直载，可打开来源页 / 直接下载当前大图）；工具栏：`共 z 张`、卡片尺寸档、`全选本页`、`下载选中`（`download_wallhaven_selected`）、`按条件批量下载`（`start_wallhaven_download`，说明文案"最多 100 页直到凑满 N 张"）；**底部翻页条**（`.wh-pager`，`position: sticky; bottom: 0`）承载上一页 / 跳页输入框 / 下一页，往下滚网格时始终贴在视口底边（sticky 的包含块是 `.wh-results`，滚出结果区就跟着一起走，不会浮在搜索条件卡上）；翻页后 `scrollResultsToTop()` 把结果区带回视口顶部。
+2. **结果区**（`.wh-results` 一层 wrapper，含工具栏 / 网格 / 翻页条）：在线缩略图网格（`thumbnail_url` 直链，CSP 已允许 `th.wallhaven.cc` / `w.wallhaven.cc`），卡片显示分辨率角标 + 勾选框；单击选择，双击或悬停按钮打开大图预览（原图 URL 直载，可打开来源页 / 直接下载当前大图）；工具栏：`共 z 张`、卡片尺寸档、`全选本页`、`下载选中`（`download_wallhaven_selected`）；**底部翻页条**（`.wh-pager`，`position: sticky; bottom: 0`）承载上一页 / 跳页输入框 / 下一页，往下滚网格时始终贴在视口底边（sticky 的包含块是 `.wh-results`，滚出结果区就跟着一起走，不会浮在搜索条件卡上）；翻页后 `scrollResultsToTop()` 把结果区带回视口顶部。
 3. 下载中：结果区顶部进度条；`image-downloaded` 累积"本次新图"横向预览条。
 
 ### 7.3 Reddit 页
