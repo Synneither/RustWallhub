@@ -21,7 +21,6 @@ export interface AppConfig {
   wallhaven_ratios: string; // landscape | portrait | square | 16x9 ...
   wallhaven_q: string;
   wallhaven_order: string; // desc | asc（toplist 时后端不下发）
-  wallhaven_max_images: number;
   // Reddit
   reddit_save_dir: string;
   reddit_db_path: string;

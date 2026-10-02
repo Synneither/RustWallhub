@@ -2,14 +2,13 @@
 /**
  * Wallhaven 搜索条件表单。
  *
- * 搜索条件就是下载配置（后端从 config.json 读），所以这块的草稿、校验、保存都在组件内部，
- * 通过 `defineExpose` 把 `persist()` / `validate()` 交给父视图——父视图在发起下载前必须
- * 先落盘，否则下载用的还是旧条件。
+ * 条件保存到 config.json（后端搜索时从这里读），所以草稿与保存都在组件内部，
+ * 通过 `defineExpose` 把 `persist()` / `validate()` 交给父视图——父视图在发起搜索前
+ * 必须先落盘，否则搜的还是旧条件。
  */
 import { computed, ref } from "vue";
 import { useConfigDraft } from "../composables/useConfigDraft";
 import { toast } from "../stores/app";
-import { positiveInt } from "../utils/rules";
 
 // Vuetify 组件按需局部导入（见 main.ts 的注册策略说明）：只在这个视图/组件里用到，
 // 挂全局注册会让首屏无条件背上它们。
@@ -35,7 +34,6 @@ const WALLHAVEN_DRAFT_KEYS = [
   "wallhaven_atleast",
   "wallhaven_ratios",
   "wallhaven_order",
-  "wallhaven_max_images",
 ] as const;
 
 const WALLHAVEN_DEFAULTS = {
@@ -48,7 +46,6 @@ const WALLHAVEN_DEFAULTS = {
   wallhaven_atleast: "1920x1080",
   wallhaven_ratios: "landscape",
   wallhaven_order: "desc",
-  wallhaven_max_images: 100,
 };
 
 const { draft, saving, persist } = useConfigDraft(WALLHAVEN_DRAFT_KEYS, WALLHAVEN_DEFAULTS);
@@ -246,14 +243,6 @@ defineExpose({ persist, validate });
         :items="RATIO_ITEMS"
         label="宽高比"
         hide-details
-        class="settings-field"
-      />
-      <v-text-field
-        v-model.number="draft.wallhaven_max_images"
-        type="number"
-        label="批量下载目标张数"
-        hide-details
-        :rules="[(v: number) => positiveInt(v, { min: 1, max: 10000 })]"
         class="settings-field"
       />
       <v-text-field

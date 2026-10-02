@@ -50,9 +50,6 @@ export const installUpdate = () => invoke<void>("install_update");
 export const searchWallhaven = (page = 1) =>
   invoke<WallhavenSearchResult>("search_wallhaven", { page });
 
-export const startWallhavenDownload = () =>
-  invoke<string>("start_wallhaven_download");
-
 export const downloadWallhavenSelected = (images: WallhavenSelected[]) =>
   invoke<string>("download_wallhaven_selected", { images });
 

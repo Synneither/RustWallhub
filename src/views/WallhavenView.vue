@@ -1,11 +1,7 @@
 <script setup lang="ts">
 import { computed, ref, watch, onMounted, onBeforeUnmount } from "vue";
 import type { WallhavenImageEntry, WallhavenSearchResult, WallhavenSelected } from "../types";
-import {
-  downloadWallhavenSelected,
-  searchWallhaven,
-  startWallhavenDownload,
-} from "../utils/api";
+import { downloadWallhavenSelected, searchWallhaven } from "../utils/api";
 import { clearNewImages, toast } from "../stores/app";
 import { useAsyncAction } from "../composables/useAsyncAction";
 import { useGridDensity, densityItems } from "../composables/useGridDensity";
@@ -24,8 +20,8 @@ import ImageViewer from "../components/ImageViewer.vue";
 import WallhavenSearchForm from "../components/WallhavenSearchForm.vue";
 
 /* ── 搜索条件 ──
- * 草稿、校验、保存都在 WallhavenSearchForm.vue 内部（搜索条件就是下载配置）。
- * 这里只保留一个句柄：任何下载动作前都要先落盘，否则后端用的还是旧条件。 */
+ * 草稿、校验、保存都在 WallhavenSearchForm.vue 内部。
+ * 这里只保留一个句柄：发起搜索前要先落盘，否则后端用的还是旧条件。 */
 type SearchFormApi = { persist: () => Promise<boolean>; validate: () => Promise<boolean> };
 const searchForm = ref<SearchFormApi | null>(null);
 
@@ -231,13 +227,6 @@ const { run: onDownloadSelected, loading: startingSelected } = useAsyncAction(as
   selected.clear();
 });
 
-const { run: onBatchDownload, loading: startingBatch } = useAsyncAction(async () => {
-  if (!(await persistFilter())) return;
-  const msg = await startWallhavenDownload();
-  clearNewImages("wallhaven");
-  toast(msg, "info");
-});
-
 /** 关闭预览。下载中不允许关：那会让下载完成的回调找不到要前进的目标。 */
 function closePreview() {
   if (previewDownloading.value) return;
@@ -291,7 +280,7 @@ onBeforeUnmount(() => {
   <div ref="viewRoot" class="view wh-view">
     <div class="view-header">
       <span class="view-header__title">Wallhaven</span>
-      <span class="view-header__sub">搜索条件即下载配置，保存后生效</span>
+      <span class="view-header__sub">搜索条件保存后生效</span>
     </div>
 
     <!-- 搜索条件 -->
@@ -342,15 +331,6 @@ onBeforeUnmount(() => {
             @click="onDownloadSelected"
           >
             下载选中（{{ selected.size }}）
-          </v-btn>
-          <v-btn
-            size="small"
-            color="primary"
-            variant="flat"
-            :loading="startingBatch"
-            @click="onBatchDownload"
-          >
-            按条件批量下载
           </v-btn>
         </div>
 
@@ -436,7 +416,7 @@ onBeforeUnmount(() => {
       v-else
       icon="mdi-image-search-outline"
       title="设置条件后开始搜索"
-      desc="搜索结果可勾选下载，也可按条件批量下载到本地"
+      desc="搜索结果可勾选下载到本地"
     />
 
     <NewImagesStrip source="wallhaven" />

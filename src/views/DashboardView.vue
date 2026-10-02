@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, inject, onActivated, onMounted, ref } from "vue";
 import { appState, activeDownloadSources, dbReady, refreshStats, toast, toastError } from "../stores/app";
-import { assetUrl, getActiveWallpaper, resolveThumbnails, startWallhavenDownload, startRedditDownload } from "../utils/api";
+import { assetUrl, getActiveWallpaper, resolveThumbnails, startRedditDownload } from "../utils/api";
 import { basename } from "../utils/path";
 import StatPanel from "../components/StatPanel.vue";
 import ProgressCard from "../components/ProgressCard.vue";
@@ -9,23 +9,19 @@ import EmptyState from "../components/EmptyState.vue";
 
 const navigate = inject<(key: string) => void>("navigate", () => {});
 
-const starting = ref<"" | "wallhaven" | "reddit">("");
+const startingReddit = ref(false);
 
 const updateInfo = computed(() => appState.update.info);
 
-async function quickDownload(source: "wallhaven" | "reddit") {
-  if (starting.value) return;
-  starting.value = source;
+async function startReddit() {
+  if (startingReddit.value) return;
+  startingReddit.value = true;
   try {
-    const msg =
-      source === "wallhaven"
-        ? await startWallhavenDownload()
-        : await startRedditDownload();
-    toast(msg, "info");
+    toast(await startRedditDownload(), "info");
   } catch (e) {
     toastError(e);
   } finally {
-    starting.value = "";
+    startingReddit.value = false;
   }
 }
 
@@ -166,19 +162,9 @@ async function loadActiveWallpaper() {
           </v-btn>
           <v-btn
             variant="tonal"
-            prepend-icon="mdi-download-outline"
-            :loading="starting === 'wallhaven'"
-            :disabled="!!starting"
-            @click="quickDownload('wallhaven')"
-          >
-            Wallhaven 下载
-          </v-btn>
-          <v-btn
-            variant="tonal"
             prepend-icon="mdi-reddit"
-            :loading="starting === 'reddit'"
-            :disabled="!!starting"
-            @click="quickDownload('reddit')"
+            :loading="startingReddit"
+            @click="startReddit"
           >
             Reddit 下载
           </v-btn>

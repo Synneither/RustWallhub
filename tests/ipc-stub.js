@@ -81,7 +81,6 @@
             wallhaven_ratios: "landscape",
             wallhaven_order: "desc",
             wallhaven_api_key: "",
-            wallhaven_max_images: 24,
             reddit_save_dir: "D:\\Wallpapers\\reddit",
             reddit_db_path: "D:\\Wallpapers\\db\\reddit_images.db",
             reddit_subreddit: "Animewallpaper",
