@@ -131,6 +131,7 @@ async function onCloudDownload() {
 }
 
 function importResultText(r: SyncImportResult): string {
+  if (r.skipped) return "云端快照无变化，已跳过";
   const parts: string[] = [];
   if (r.wallhaven) {
     parts.push(`Wallhaven 新增 ${r.wallhaven.inserted} 条、恢复 ${r.wallhaven.loved} 条`);

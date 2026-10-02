@@ -44,14 +44,11 @@ pub fn init(default_filter: &str) -> Option<PathBuf> {
     }
 }
 
-/// 日志落盘目录：Linux/macOS 走 XDG 的 `~/.local/state`，Windows 落在
-/// `%LOCALAPPDATA%\state`（`dirs::state_dir()` 在 Windows 上返回 None）。
+/// 日志落盘目录：与其它应用状态（同步簿记等）共用 `state::app_state_dir()`，
+/// 避免两处各写一份「XDG state / %LOCALAPPDATA%\state」的解析逻辑。
 fn log_file_path() -> Option<PathBuf> {
-    let base = dirs::state_dir()
-        .or_else(|| dirs::data_local_dir().map(|dir| dir.join("state")))
-        .or_else(|| dirs::home_dir().map(|home| home.join(".local/state")))?;
     Some(
-        base.join("rustwallhub")
+        crate::state::app_state_dir()?
             .join("logs")
             .join("rustwallhub.log"),
     )

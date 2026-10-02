@@ -7,6 +7,7 @@ use crate::db::{self, ImportStats};
 use crate::error::AppError;
 use crate::oss::{self, OssConfig};
 use crate::state::{load_config, AppState};
+use crate::sync_state::{self, FileMark, SyncState};
 use serde::Serialize;
 use tauri::{Emitter, Manager};
 
@@ -68,6 +69,8 @@ where
 pub struct SyncImportResult {
     pub wallhaven: Option<ImportStats>,
     pub reddit: Option<ImportStats>,
+    /// 远端快照与上次导入的一致，整段跳过（没下载、没合并）
+    pub skipped: bool,
 }
 
 #[derive(Serialize)]
@@ -77,10 +80,20 @@ pub struct SyncExportResult {
     pub reddit: Option<String>,
 }
 
-/// 上传到 OSS 前在内存中持有的两个快照字节
+/// 待上传的一份快照：字节 + **导出时刻**该库的文件标记。
+///
+/// 标记采样点跟着导出走：快照内容对应的正是那一刻的库状态。导出之后若库又被改动，
+/// 标记自然与当前 mtime 不符，下次退出会照常上传——方向是保守的。
+struct PendingUpload {
+    db_path: String,
+    bytes: Vec<u8>,
+    mark: Option<FileMark>,
+}
+
+/// 上传到 OSS 前在内存中持有的两个快照
 struct SnapshotBytes {
-    wallhaven: Option<Vec<u8>>,
-    reddit: Option<Vec<u8>>,
+    wallhaven: Option<PendingUpload>,
+    reddit: Option<PendingUpload>,
 }
 
 /// 导出单个库的快照到临时目录并读回字节；库不存在时返回 Ok(None)。
@@ -92,17 +105,21 @@ fn export_snapshot_bytes(
     db_path: &str,
     file_name: &str,
     temp_dir: &std::path::Path,
-) -> Result<Option<Vec<u8>>, AppError> {
+) -> Result<Option<PendingUpload>, AppError> {
     if !db::db_exists(db_path) {
         return Ok(None);
     }
     let path = temp_dir.join(file_name);
-    let result = (|| -> Result<Option<Vec<u8>>, AppError> {
+    let result = (|| -> Result<Option<PendingUpload>, AppError> {
         db::export_snapshot(db_path, &path.to_string_lossy())
             .map_err(|e| AppError::Other(format!("导出快照失败 ({file_name}): {e}")))?;
         let bytes = std::fs::read(&path)
             .map_err(|e| AppError::Other(format!("读取快照失败 ({file_name}): {e}")))?;
-        Ok(Some(bytes))
+        Ok(Some(PendingUpload {
+            db_path: db_path.to_string(),
+            bytes,
+            mark: sync_state::file_mark(db_path),
+        }))
     })();
     // 成败都清：读取失败时同样不该把明文快照留在盘上。
     if let Err(e) = std::fs::remove_file(&path) {
@@ -252,7 +269,11 @@ pub async fn import_snapshots(
                 "所选目录下没有找到快照文件（wallhaven_images.db / reddit_images.db）".into(),
             ));
         }
-        Ok(SyncImportResult { wallhaven, reddit })
+        Ok(SyncImportResult {
+            wallhaven,
+            reddit,
+            skipped: false,
+        })
     })
     .await
 }
@@ -294,13 +315,29 @@ pub async fn run_oss_upload(state: &AppState) -> Result<String, AppError> {
 
     let (wh_key, rd_key) = oss.snapshot_keys();
     let mut done = Vec::new();
-    if let Some(bytes) = snapshots.wallhaven {
-        oss::put_object(&client, &oss, &wh_key, bytes).await?;
+    // 上传成功的库才更新簿记：中途某一份失败时整体保持原值，下次仍会重传，
+    // 不会出现"以为传过了"却其实没传上去的情况。
+    let mut marks: Vec<(String, FileMark)> = Vec::new();
+    if let Some(p) = snapshots.wallhaven {
+        oss::put_object(&client, &oss, &wh_key, p.bytes).await?;
         done.push("Wallhaven");
+        if let Some(m) = p.mark {
+            marks.push((p.db_path, m));
+        }
     }
-    if let Some(bytes) = snapshots.reddit {
-        oss::put_object(&client, &oss, &rd_key, bytes).await?;
+    if let Some(p) = snapshots.reddit {
+        oss::put_object(&client, &oss, &rd_key, p.bytes).await?;
         done.push("Reddit");
+        if let Some(m) = p.mark {
+            marks.push((p.db_path, m));
+        }
+    }
+    if !marks.is_empty() {
+        sync_state::update(|s| {
+            for (path, mark) in marks {
+                s.uploaded_marks.insert(path, mark);
+            }
+        });
     }
     Ok(format!("已上传 {} 快照到 OSS", done.join("、")))
 }
@@ -311,11 +348,19 @@ pub async fn oss_sync_download(
     state: tauri::State<'_, AppState>,
 ) -> Result<SyncImportResult, AppError> {
     log::info!("[CMD] oss_sync_download");
-    run_oss_download(&state).await
+    // 手动拉取不跳过：用户可能刚重置过本地库，而 ETag 簿记还在。
+    run_oss_download(&state, false).await
 }
 
 /// 拉取并合并的实现，命令与启动钩子共用。
-pub async fn run_oss_download(state: &AppState) -> Result<SyncImportResult, AppError> {
+///
+/// `allow_skip`：远端快照与上次导入一致时，是否允许整段跳过下载与合并。
+/// **只有启动时的自动拉取能传 `true`。** 用户手点"从云端拉取"必须传 `false`：
+/// 他可能刚把本地库重置/重建过，而 ETag 簿记还在，跳过就会变成"点了拉取却什么都没有"。
+pub async fn run_oss_download(
+    state: &AppState,
+    allow_skip: bool,
+) -> Result<SyncImportResult, AppError> {
     let config = load_config(state)?;
     let oss = OssConfig::from_config(&config)?;
 
@@ -326,20 +371,36 @@ pub async fn run_oss_download(state: &AppState) -> Result<SyncImportResult, AppE
         .clone();
 
     let (wh_key, rd_key) = oss.snapshot_keys();
-    let wh_exists = oss::head_object(&client, &oss, &wh_key).await?;
-    let rd_exists = oss::head_object(&client, &oss, &rd_key).await?;
-    if !wh_exists && !rd_exists {
+    let wh_head = oss::head_object(&client, &oss, &wh_key).await?;
+    let rd_head = oss::head_object(&client, &oss, &rd_key).await?;
+    if !wh_head.exists && !rd_head.exists {
         return Err(AppError::Other(
             "云端没有任何快照，请先在其他电脑上上传".into(),
         ));
     }
 
-    let wh_bytes = if wh_exists {
+    // 远端两份都还是上次成功导入的那一份 → 下载 + 合并必然是空操作，整段跳过。
+    // 合并虽然幂等，但**提交会写库**（见 `db::sync::commit_or_rollback`），所以不能指望
+    // "合并结果没变化"来兜底：那既多一次无谓写入，又会让退出上传的 mtime 判据永远失效。
+    let known = sync_state::load();
+    if allow_skip
+        && remote_unchanged(&wh_head, &wh_key, &known)
+        && remote_unchanged(&rd_head, &rd_key, &known)
+    {
+        log::info!("[sync] 远端快照与上次导入一致，跳过下载与合并");
+        return Ok(SyncImportResult {
+            wallhaven: None,
+            reddit: None,
+            skipped: true,
+        });
+    }
+
+    let wh_bytes = if wh_head.exists {
         Some(oss::get_object(&client, &oss, &wh_key).await?)
     } else {
         None
     };
-    let rd_bytes = if rd_exists {
+    let rd_bytes = if rd_head.exists {
         Some(oss::get_object(&client, &oss, &rd_key).await?)
     } else {
         None
@@ -390,9 +451,62 @@ pub async fn run_oss_download(state: &AppState) -> Result<SyncImportResult, AppE
             None => None,
         };
 
-        Ok(SyncImportResult { wallhaven, reddit })
+        Ok(SyncImportResult {
+            wallhaven,
+            reddit,
+            skipped: false,
+        })
     })
     .await
+    .inspect(|_| {
+        // 只有整段导入成功后才记 ETag；失败时保持原值，下次仍会重试下载。
+        sync_state::update(|s| {
+            if wh_head.exists {
+                if let Some(e) = &wh_head.etag {
+                    s.remote_etags.insert(wh_key.clone(), e.clone());
+                }
+            }
+            if rd_head.exists {
+                if let Some(e) = &rd_head.etag {
+                    s.remote_etags.insert(rd_key.clone(), e.clone());
+                }
+            }
+        });
+    })
+}
+
+/// 远端这一份快照是否就是上次成功导入的那一份。
+///
+/// 远端对象不存在时算"无变化"（没有内容可导）；服务端没给 ETag、或本地没有基线记录时
+/// 一律返回 `false`，即保守地重新下载——这个方向判错只会多跑一次同步，不会漏掉数据。
+fn remote_unchanged(head: &oss::HeadInfo, key: &str, state: &SyncState) -> bool {
+    if !head.exists {
+        return true;
+    }
+    match (head.etag.as_deref(), state.remote_etags.get(key)) {
+        (Some(remote), Some(known)) => remote == known,
+        _ => false,
+    }
+}
+
+/// 本地这些库自上次成功上传以来是否都没变过。
+///
+/// 判据是 `(mtime, size)`：任何真实写入都会改 mtime——WAL 里的变更也会在
+/// `maintain_on_exit` 的 checkpoint 之后落到主库上（调用点必须在那之后采样，见 `run_exit_tasks`）。
+/// 所以误判方向只会是"以为变了、其实没变"，最多多传一次，**不会漏传**。
+fn local_unchanged(db_paths: &[String], state: &SyncState) -> bool {
+    let existing: Vec<&String> = db_paths.iter().filter(|p| db::db_exists(p)).collect();
+    if existing.is_empty() {
+        // 两个库都不存在，本来就没什么可上传的，让调用方走原有的"无内容"分支。
+        return false;
+    }
+    existing.iter().all(|path| {
+        match (sync_state::file_mark(path), state.uploaded_marks.get(*path)) {
+            (Some(now), Some(prev)) => now == *prev,
+            // 没有基线记录（首次上传、路径改过、簿记被删）→ 必须上传
+            _ => false,
+        }
+    })
 }
 
 /// 测试 OSS 配置连通性（HEAD 探测快照对象）。
@@ -410,7 +524,7 @@ pub async fn test_oss_config(state: tauri::State<'_, AppState>) -> Result<String
         .clone();
 
     let (wh_key, _) = oss.snapshot_keys();
-    let exists = oss::head_object(&client, &oss, &wh_key).await?;
+    let exists = oss::head_object(&client, &oss, &wh_key).await?.exists;
     Ok(if exists {
         "连接成功，云端已有快照".into()
     } else {
@@ -427,6 +541,9 @@ static EXIT_SYNC_DONE: std::sync::atomic::AtomicBool = std::sync::atomic::Atomic
 
 /// 把合并结果转成一句人类可读的摘要（事件与日志共用）
 pub fn format_import_result(r: &SyncImportResult) -> String {
+    if r.skipped {
+        return "云端快照无变化，已跳过".to_string();
+    }
     let mut parts = Vec::new();
     if let Some(s) = r.wallhaven {
         parts.push(format!(
@@ -494,6 +611,17 @@ pub async fn run_exit_tasks(handle: tauri::AppHandle) {
         return;
     }
 
+    // 本地库自上次成功上传以来没变过 → 没有新数据可传，直接跳过。
+    // 采样点必须在上面第 2 步（WAL checkpoint）**之后**：WAL 模式下主库文件的 mtime
+    // 要等 checkpoint 才会更新，提前采样会读到滞后状态。
+    if let Some(cfg) = &config {
+        let db_paths = vec![cfg.wallhaven_db_path.clone(), cfg.reddit_db_path.clone()];
+        if local_unchanged(&db_paths, &sync_state::load()) {
+            log::info!("[sync] 本地数据库自上次上传后无变化，跳过退出上传");
+            return;
+        }
+    }
+
     log::info!("[sync] 退出自动上传开始");
     let result =
         tokio::time::timeout(std::time::Duration::from_secs(15), run_oss_upload(&state)).await;
@@ -528,7 +656,7 @@ pub async fn auto_sync_on_startup(handle: &tauri::AppHandle) {
     }
 
     log::info!("[sync] 启动自动拉取开始");
-    match run_oss_download(&state).await {
+    match run_oss_download(&state, true).await {
         Ok(r) => {
             let msg = format_import_result(&r);
             log::info!("[sync] 启动自动拉取完成：{msg}");
@@ -543,7 +671,7 @@ pub async fn auto_sync_on_startup(handle: &tauri::AppHandle) {
 
 #[cfg(test)]
 mod tests {
-    use super::is_same_db_file;
+    use super::*;
 
     /// 同目录 + 同文件名必须被识别出来（这正是"导出到 db_dir 会覆盖数据库"的场景）。
     /// 目标路径写法刻意与 db 路径不同，用来验证走的不是字符串比较而是规范化比较。
@@ -563,5 +691,72 @@ mod tests {
         let db = base.join("rustwallhub-guard-a").join("wallhaven_images.db");
         let target = base.join("rustwallhub-guard-b").join("wallhaven_images.db");
         assert!(!is_same_db_file(&db.to_string_lossy(), &target));
+    }
+
+    /// 远端"是否与上次导入一致"的判断：任何不确定的情况都必须保守地判为"变了"。
+    #[test]
+    fn remote_unchanged_only_when_etag_matches() {
+        const KEY: &str = "prefix/wallhaven_images.db";
+        let head = |etag: Option<&str>| oss::HeadInfo {
+            exists: true,
+            etag: etag.map(str::to_string),
+        };
+
+        let mut st = SyncState::default();
+        // 首次同步：没有基线 → 必须下载
+        assert!(!remote_unchanged(&head(Some("e1")), KEY, &st));
+
+        st.remote_etags.insert(KEY.into(), "e1".into());
+        assert!(remote_unchanged(&head(Some("e1")), KEY, &st), "一致 → 跳过");
+        assert!(
+            !remote_unchanged(&head(Some("e2")), KEY, &st),
+            "远端变了 → 必须下载"
+        );
+        assert!(
+            !remote_unchanged(&head(None), KEY, &st),
+            "服务端没给 ETag → 保守重下"
+        );
+        assert!(
+            !remote_unchanged(&head(Some("e1")), "other/wallhaven_images.db", &st),
+            "改了 prefix 后不能命中旧记录"
+        );
+        assert!(
+            remote_unchanged(&oss::HeadInfo::default(), KEY, &st),
+            "远端对象不存在 → 没有内容可导，视为无变化"
+        );
+    }
+
+    /// 退出上传的跳过判据：只有**每个存在的库**都有对得上的标记才允许跳过。
+    #[test]
+    fn local_unchanged_requires_matching_marks_for_every_existing_db() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let a = dir.path().join("a.db");
+        let b = dir.path().join("b.db");
+        std::fs::write(&a, b"x").unwrap();
+        std::fs::write(&b, b"y").unwrap();
+        let paths = vec![
+            a.to_string_lossy().to_string(),
+            b.to_string_lossy().to_string(),
+        ];
+
+        let mut st = SyncState::default();
+        assert!(!local_unchanged(&paths, &st), "没有基线 → 必须上传");
+
+        st.uploaded_marks
+            .insert(paths[0].clone(), sync_state::file_mark(&paths[0]).unwrap());
+        assert!(!local_unchanged(&paths, &st), "只记了一半 → 仍必须上传");
+
+        st.uploaded_marks
+            .insert(paths[1].clone(), sync_state::file_mark(&paths[1]).unwrap());
+        assert!(local_unchanged(&paths, &st), "两个库都对得上才跳过");
+
+        std::fs::write(&b, b"yy").unwrap();
+        assert!(!local_unchanged(&paths, &st), "有一个库变了 → 必须上传");
+
+        let missing = dir.path().join("missing.db").to_string_lossy().to_string();
+        assert!(
+            !local_unchanged(&[missing], &st),
+            "库都不存在时返回 false，交给原有的\"无内容\"分支处理"
+        );
     }
 }

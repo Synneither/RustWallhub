@@ -973,3 +973,92 @@ fn test_import_snapshot_rejects_non_database_file() {
     assert!(result.is_err(), "导入非数据库文件应报错");
 }
 
+/// 主库内容签名：先 checkpoint 把 WAL 落进主库，再对文件字节取 sha1。
+///
+/// **必须先 checkpoint**：写入先落在 WAL 里，不 checkpoint 的话主库文件看起来"没变"，
+/// 下面那两个测试就永远抓不到问题。
+fn db_signature(path: &str) -> String {
+    maintain_on_exit(path).expect("checkpoint 失败");
+    raw_signature(path)
+}
+
+/// 不做任何收尾，直接读文件字节的 sha1。
+fn raw_signature(path: &str) -> String {
+    use sha1::{Digest, Sha1};
+    let mut h = Sha1::new();
+    h.update(std::fs::read(path).expect("读取数据库文件失败"));
+    format!("{:x}", h.finalize())
+}
+
+/// 无变化的导入不能写库。
+///
+/// 合并的两条语句本身是幂等的，但"跑过语句 + COMMIT"即使一条行都没改也会改写数据库文件
+/// （实测 `COMMIT` 会改、`ROLLBACK` 不会）。那个写入会让上游基于 mtime 的"无需上传"判断
+/// 永远失效——每次拉取都把本地库标记成已改动，于是退出时又传一遍，多设备之间来回互传。
+#[test]
+fn test_import_unchanged_wallhaven_snapshot_does_not_write_db() {
+    let db = TestDb::wallhaven();
+    insert_wallhaven_images_batch(
+        db.path(),
+        &[(
+            "id1".into(),
+            "a.jpg".into(),
+            "h1".into(),
+            "u1".into(),
+            "s1".into(),
+            "1920x1080".into(),
+        )],
+    )
+    .unwrap();
+
+    // 快照就是本地库自己的拷贝 → 合并必然 0 变化
+    let snap_dir = TempDir::new().unwrap();
+    let snap = snap_dir
+        .path()
+        .join("snap.db")
+        .to_string_lossy()
+        .to_string();
+    export_snapshot(db.path(), &snap).unwrap();
+
+    let before = db_signature(db.path());
+    let stats = import_wallhaven_snapshot(db.path(), &snap).unwrap();
+    assert_eq!(
+        (stats.inserted, stats.loved),
+        (0, 0),
+        "快照与本地完全一致，应报告 0 变化"
+    );
+    assert_eq!(
+        db_signature(db.path()),
+        before,
+        "无变化的导入不应改写数据库文件（否则退出上传的 mtime 判据会永远失效）"
+    );
+}
+
+/// 同上，覆盖 Reddit 那条独立调用路径。
+#[test]
+fn test_import_unchanged_reddit_snapshot_does_not_write_db() {
+    let db = TestDb::reddit();
+    db.conn()
+        .execute(
+            "INSERT INTO images (name, hash, url) VALUES ('a.jpg', 'h1', 'u1')",
+            [],
+        )
+        .unwrap();
+
+    let snap_dir = TempDir::new().unwrap();
+    let snap = snap_dir
+        .path()
+        .join("snap.db")
+        .to_string_lossy()
+        .to_string();
+    export_snapshot(db.path(), &snap).unwrap();
+
+    let before = db_signature(db.path());
+    let stats = import_reddit_snapshot(db.path(), &snap).unwrap();
+    assert_eq!((stats.inserted, stats.loved), (0, 0));
+    assert_eq!(
+        db_signature(db.path()),
+        before,
+        "无变化的导入不应改写数据库文件"
+    );
+}

@@ -197,6 +197,7 @@ RustWallhub/
 │   │   ├── logging.rs            # 日志 tee 到文件 + 滚动
 │   │   ├── desktop_entry.rs      # --install-desktop / --uninstall-desktop
 │   │   ├── state.rs              # AppState、跨 IPC 事件、配置读写、asset 授权
+│   │   ├── sync_state.rs         # 同步簿记（远端 ETag / 本地库 mtime），跳过无变化的同步
 │   │   ├── error.rs              # AppError
 │   │   ├── safe_path.rs          # 文件名/路径安全校验（safe_join 等）
 │   │   └── commands/             # settings/download/database/...；gallery/ 再按职责分子模块

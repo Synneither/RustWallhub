@@ -182,6 +182,8 @@ export interface ImportStats {
 export interface SyncImportResult {
   wallhaven: ImportStats | null;
   reddit: ImportStats | null;
+  /** 远端快照与上次导入的一致，整段跳过（没下载、没合并） */
+  skipped: boolean;
 }
 
 export interface SyncExportResult {

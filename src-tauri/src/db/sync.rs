@@ -66,7 +66,7 @@ pub fn import_wallhaven_snapshot(db_path: &str, snapshot_path: &str) -> SqlResul
                  FROM incoming.images",
                 [],
             )? as i64;
-            tx.commit()?;
+            commit_or_rollback(tx, inserted, loved)?;
             Ok(ImportStats { inserted, loved })
         })
     })
@@ -93,10 +93,26 @@ pub fn import_reddit_snapshot(db_path: &str, snapshot_path: &str) -> SqlResult<I
                  FROM incoming.images",
                 [],
             )? as i64;
-            tx.commit()?;
+            commit_or_rollback(tx, inserted, loved)?;
             Ok(ImportStats { inserted, loved })
         })
     })
+}
+
+/// 无实际变化时**回滚**而不是提交。
+///
+/// 两条合并语句本身是幂等的，但"跑过语句 + COMMIT"即使一条行都没改，SQLite 也会改写主库文件
+/// （实测：`COMMIT` 会让 `.db` 字节变化，`ROLLBACK` 不会；`ATTACH`/`DETACH`、空事务都不写）。
+/// 那个写入是纯粹的浪费，更麻烦的是它会让上游基于文件 `mtime` 的"无需上传"判断永远失效——
+/// 每次拉取都把本地库标记成"已改动"，于是下次退出又传一遍，多设备之间来回互传。
+///
+/// 所以只在真的改到了行时才提交。
+fn commit_or_rollback(tx: rusqlite::Transaction<'_>, inserted: i64, loved: i64) -> SqlResult<()> {
+    if inserted == 0 && loved == 0 {
+        tx.rollback()
+    } else {
+        tx.commit()
+    }
 }
 
 /// ATTACH 快照库执行闭包，退出前保证 DETACH（即使闭包出错）。

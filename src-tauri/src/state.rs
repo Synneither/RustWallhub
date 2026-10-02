@@ -308,6 +308,21 @@ pub async fn save_image(
         .map_err(|e| format!("重命名文件失败 {}: {e}", save_path.display()))
 }
 
+// ---------------------------------------------------------------------------
+// 应用本地状态目录
+// ---------------------------------------------------------------------------
+
+/// 应用本地状态目录，日志与同步簿记都放这里（**机器本地**，不参与任何云同步）。
+///
+/// Linux/macOS 走 XDG 的 `~/.local/state`；Windows 上 `dirs::state_dir()` 返回 None，
+/// 退到 `%LOCALAPPDATA%\state`。
+pub fn app_state_dir() -> Option<PathBuf> {
+    let base = dirs::state_dir()
+        .or_else(|| dirs::data_local_dir().map(|dir| dir.join("state")))
+        .or_else(|| dirs::home_dir().map(|home| home.join(".local/state")))?;
+    Some(base.join("rustwallhub"))
+}
+
 /// 把目录加进 asset 协议白名单，让前端能通过 `convertFileSrc` 显示其中的图片。
 ///
 /// `tauri.conf.json` 的静态 scope 只保留缩略图缓存目录，其余目录在运行时按需授权：

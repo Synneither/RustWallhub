@@ -430,11 +430,21 @@ fn ensure_created_at_index(conn: &Connection) -> SqlResult<()> {
 /// 不做这件事的后果：
 /// - 直接复制 `.db` 做备份会漏掉尚未 checkpoint 的事务（WAL 里的内容）
 /// - 小写入永远触发不到 SQLite 默认的 1000 页自动 checkpoint，WAL 会一直原地增长
+///
+/// **末尾那次 checkpoint 不能省。** `PRAGMA optimize` 一旦真的要更新统计信息，它自己也会写库，
+/// 而那些写入同样落在 WAL 里——只做"先 checkpoint 再 optimize"的话，函数返回时 `.db` 依然不是
+/// 完整状态、WAL 也没归零，上面两条目的都没达成。实测（2026-10-02）：连读两次本函数，第二次读到的
+/// 主库内容与第一次不同，说明第一次的 optimize 写入是滞后一次才落盘的。补一次收尾 checkpoint 后
+/// 单次调用即可稳定。
 pub fn maintain_on_exit(db_path: &str) -> SqlResult<()> {
     if !db_exists(db_path) {
         return Ok(());
     }
     with_cached_connection(db_path, |conn| {
-        conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE); PRAGMA optimize;")
+        conn.execute_batch(
+            "PRAGMA wal_checkpoint(TRUNCATE);
+             PRAGMA optimize;
+             PRAGMA wal_checkpoint(TRUNCATE);",
+        )
     })
 }

@@ -180,7 +180,22 @@ pub async fn get_object(client: &Client, oss: &OssConfig, key: &str) -> Result<V
 
 /// 探测对象是否存在（HEAD）。
 /// 返回 Ok(true/false)；签名或权限错误返回 Err。
-pub async fn head_object(client: &Client, oss: &OssConfig, key: &str) -> Result<bool, AppError> {
+/// HEAD 一个对象的元信息。
+///
+/// 除"在不在"之外还带出 `ETag`：调用方靠它判断远端内容是否变过，从而跳过无谓的全量下载。
+#[derive(Clone, Debug, Default)]
+pub struct HeadInfo {
+    pub exists: bool,
+    /// OSS 返回的 ETag（已去掉首尾引号）。普通 `PUT` 上传时它就是对象的 MD5。
+    /// 服务端没给、或给了空值时是 `None`——调用方必须当作"无法判断"，保守地重下。
+    pub etag: Option<String>,
+}
+
+pub async fn head_object(
+    client: &Client,
+    oss: &OssConfig,
+    key: &str,
+) -> Result<HeadInfo, AppError> {
     let date = httpdate::fmt_http_date(std::time::SystemTime::now());
     let resource = format!("/{}/{}", oss.bucket, key);
     let auth = authorization(oss, "HEAD", "", &date, &resource);
@@ -193,8 +208,18 @@ pub async fn head_object(client: &Client, oss: &OssConfig, key: &str) -> Result<
         .await
         .map_err(|e| AppError::Other(format!("OSS 连接失败: {e}")))?;
     match resp.status().as_u16() {
-        200 | 204 => Ok(true),
-        404 => Ok(false),
+        200 | 204 => {
+            // ETag 在 HTTP 里是带引号的字符串字面量（`"abc"`），这里统一去掉引号再比对，
+            // 避免两端一方带引号一方不带就被判成"变了"。
+            let etag = resp
+                .headers()
+                .get(reqwest::header::ETAG)
+                .and_then(|v| v.to_str().ok())
+                .map(|s| s.trim().trim_matches('"').to_string())
+                .filter(|s| !s.is_empty());
+            Ok(HeadInfo { exists: true, etag })
+        }
+        404 => Ok(HeadInfo::default()),
         status => {
             let body = resp.text().await.unwrap_or_default();
             Err(AppError::Other(format!(

@@ -12,6 +12,7 @@ mod oss;
 mod reddit;
 mod safe_path;
 mod state;
+mod sync_state;
 mod thumbnail;
 mod trash;
 mod wallhaven;
