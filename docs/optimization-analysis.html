@@ -1,0 +1,490 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>RustWallhub 优化分析报告</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+<style>
+  :root{
+    --bg:#f5f6f8; --card:#ffffff; --ink:#1a1b23; --ink2:#5c6075; --ink3:#8b8fa3;
+    --line:#e3e5ea; --blue:#2563eb; --blue-soft:#eff4ff;
+    --red:#dc2626; --green:#16a34a; --amber:#d97706; --purple:#7c3aed;
+    --code-bg:#f7f8fa;
+  }
+  *{box-sizing:border-box}
+  body{
+    margin:0; background:var(--bg); color:var(--ink);
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Hiragino Sans GB","Microsoft YaHei",sans-serif;
+    line-height:1.65; font-size:15px;
+  }
+  .wrap{max-width:1080px; margin:0 auto; padding:40px 28px 80px}
+  header{margin-bottom:36px}
+  h1{font-size:29px; margin:0 0 10px; letter-spacing:-.4px}
+  .sub{color:var(--ink2); font-size:14.5px}
+  .meta{margin-top:14px; font-size:13px; color:var(--ink3); display:flex; gap:18px; flex-wrap:wrap}
+  .meta b{color:var(--ink2); font-weight:600}
+
+  .verdict{
+    background:linear-gradient(135deg,#eff4ff 0%,#f8faff 100%);
+    border:1px solid #d3e0ff; border-radius:12px; padding:20px 24px; margin:26px 0 34px;
+  }
+  .verdict h2{margin:0 0 8px; font-size:16px; color:var(--blue)}
+  .verdict p{margin:0; color:var(--ink2); font-size:14.5px}
+  .verdict b{color:var(--ink)}
+
+  h2.sec{
+    font-size:20px; margin:44px 0 6px; padding-bottom:10px; border-bottom:2px solid var(--line);
+    display:flex; align-items:center; gap:10px;
+  }
+  h2.sec .tag{
+    font-size:11.5px; font-weight:700; letter-spacing:.6px; padding:3px 9px; border-radius:5px;
+    color:#fff; background:var(--ink3);
+  }
+  .tag.p0{background:var(--red)} .tag.p1{background:var(--amber)}
+  .tag.p2{background:var(--purple)} .tag.p3{background:var(--ink3)}
+  h3{font-size:15.5px; margin:26px 0 10px; color:var(--ink)}
+  p{margin:10px 0}
+  .lead{color:var(--ink2); font-size:14.5px}
+
+  .kpis{display:grid; grid-template-columns:repeat(auto-fit,minmax(180px,1fr)); gap:14px; margin:24px 0}
+  .kpi{background:var(--card); border:1px solid var(--line); border-radius:10px; padding:16px 18px}
+  .kpi .v{font-size:24px; font-weight:700; letter-spacing:-.5px; font-variant-numeric:tabular-nums}
+  .kpi .l{font-size:12.5px; color:var(--ink3); margin-top:3px}
+  .kpi .n{font-size:11.5px; color:var(--ink3); margin-top:6px; font-style:italic}
+  .kpi.hot .v{color:var(--red)}
+
+  .card{background:var(--card); border:1px solid var(--line); border-radius:12px; padding:22px 24px; margin:18px 0}
+  .card.tint{background:#fffdf7; border-color:#f0e2c0}
+  .card.tint2{background:#faf8ff; border-color:#e4dcf7}
+
+  table{width:100%; border-collapse:collapse; margin:16px 0; font-size:13.5px}
+  th,td{text-align:left; padding:9px 12px; border-bottom:1px solid var(--line)}
+  th{background:var(--code-bg); font-weight:600; font-size:12.5px; color:var(--ink2); white-space:nowrap}
+  td.num{text-align:right; font-variant-numeric:tabular-nums; white-space:nowrap}
+  tr:last-child td{border-bottom:none}
+  tr.total td{font-weight:700; background:var(--code-bg)}
+  .down{color:var(--green); font-weight:600}
+  .up{color:var(--red); font-weight:600}
+
+  code{background:var(--code-bg); padding:2px 6px; border-radius:4px; font-size:12.5px;
+       font-family:"SFMono-Regular",Consolas,"Liberation Mono",monospace; border:1px solid var(--line)}
+  pre{background:var(--code-bg); border:1px solid var(--line); border-radius:8px; padding:14px 16px;
+      overflow-x:auto; font-size:12.5px; line-height:1.55; margin:12px 0}
+  pre code{background:none; border:none; padding:0}
+
+  .chartbox{background:var(--card); border:1px solid var(--line); border-radius:12px; padding:20px 22px; margin:18px 0}
+  .chartbox h4{margin:0 0 4px; font-size:14.5px}
+  .chartbox .hint{margin:0 0 14px; font-size:12.5px; color:var(--ink3)}
+  .chartwrap{position:relative; height:300px}
+  .chartwrap.tall{height:340px}
+
+  .badge{display:inline-block; font-size:11px; font-weight:600; padding:2px 7px; border-radius:4px; vertical-align:1px}
+  .b-meas{background:#e7f6ee; color:#116b3d; border:1px solid #bfe6d2}
+  .b-est{background:#fdf0e3; color:#8a5209; border:1px solid #f2d9b8}
+
+  ul{margin:10px 0; padding-left:22px} li{margin:6px 0}
+  .footnote{margin-top:46px; padding-top:18px; border-top:1px solid var(--line); font-size:12.5px; color:var(--ink3)}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header>
+  <h1>RustWallhub 优化分析报告</h1>
+  <div class="sub">基于当前工作区代码（v2.10.0）与用户本机真实数据的实测分析</div>
+  <div class="meta">
+    <span><b>日期</b> 2026-10-02</span>
+    <span><b>代码规模</b> Rust 10,730 行 / 前端 7,027 行</span>
+    <span><b>数据来源</b> 本机 WallHub 数据库 + 缩略图缓存</span>
+  </div>
+</header>
+
+<div class="verdict">
+  <h2>结论</h2>
+  <p>项目整体工程质量很高——首屏体积、SQLite 分页、JPEG 降采样解码等常见瓶颈<b>都已优化到位</b>，继续在这些方向投入收益甚微。<br>
+  但存在一个<b>被忽视的架构级问题：缩略图使用无损 WebP 编码</b>，导致缩略图缓存膨胀到 <b>130.8 MB</b>（其中 92% 是可回收或可压缩的），
+  同时拖慢了首次浏览时的缩略图生成速度。这是本次分析中<b>收益最大、且易于修复</b>的一项。</p>
+  <p style="margin-top:14px;padding-top:12px;border-top:1px solid #d3e0ff">
+  <b>实施状态：已完成</b> —— P0 / P1 / P2 已落地并通过全部验证（后端 129 测试 + clippy 0 警告，前端 39 测试 + 6 视图渲染自检），
+  P3 经核实后判定不采纳。详见第五节。</p>
+</div>
+
+<h2 class="sec">一、体检基线</h2>
+<div class="kpis">
+  <div class="kpi">
+    <div class="v">800 KB</div>
+    <div class="l">前端构建产物（dist）</div>
+    <div class="n">首屏 JS 约 99 KB gzip，已相当精简</div>
+  </div>
+  <div class="kpi">
+    <div class="v">35 / 589</div>
+    <div class="l">Rust 直接 / 传递依赖</div>
+    <div class="n">依赖面干净，无冗余重量级 crate</div>
+  </div>
+  <div class="kpi">
+    <div class="v">653</div>
+    <div class="l">图库数据库记录</div>
+    <div class="n">wallhaven 316 + reddit 337</div>
+  </div>
+  <div class="kpi hot">
+    <div class="v">130.8 MB</div>
+    <div class="l">缩略图缓存（678 文件）</div>
+    <div class="n">源图仅 175 张 —— 比例严重失衡</div>
+  </div>
+</div>
+
+<h2 class="sec"><span class="tag p0">P0</span>缩略图使用无损 WebP 编码</h2>
+
+<p class="lead">这是本次分析中收益最大的发现。缩略图缓存 130.8 MB，而实际源图只有 175 张（约 1 GB），缩略图占源图的 13%——对"缩略图"而言这个比例高得异常。</p>
+
+<h3>根因</h3>
+<p>项目的缩略图以 <code>.webp</code> 扩展名保存，最终走 <code>DynamicImage::save()</code>。而 <code>image</code> 0.25 的 WebP 编码器<b>只实现了无损编码（VP8L）</b>，其依赖 <code>image-webp</code> 0.2.4 同样只有 <code>lossless.rs</code>，没有有损编码器：</p>
+<pre><code>// image-0.25.10/src/lib.rs:219
+/// | `webp`  | WebP     | Only lossless encoding is currently supported.
+
+// image-0.25.10/src/codecs/webp/encoder.rs:12
+/// Right now only **lossless** encoding is supported.
+/// However, it does not reach the full potential of lossless WebP for reducing file size.</code></pre>
+<p>实测验证了这一点——抽样检查 470 个缩略图，<b>469 个的文件头是 <code>VP8L</code>（无损）</b>，仅 1 个例外。</p>
+
+<h3>实测影响 <span class="badge b-meas">实测</span></h3>
+<p>取 6 张同时具备三档缩略图的源图（4K–7K 分辨率），对比现状与有损 WebP（q85）的体积与编码耗时：</p>
+
+<table>
+  <thead>
+    <tr><th>档位</th><th class="num">文件数</th><th class="num">现状（无损）</th><th class="num">有损 q85</th><th class="num">体积降幅</th><th class="num">编码耗时（无损→有损）</th></tr>
+  </thead>
+  <tbody>
+    <tr><td>w240</td><td class="num">148</td><td class="num">50.1 KB</td><td class="num">≈ 8.6 KB</td><td class="num down">−83%</td><td class="num">87.4 → 8.0 ms <span class="down">(11.0×)</span></td></tr>
+    <tr><td>w480</td><td class="num">146</td><td class="num">180.9 KB</td><td class="num">≈ 32.0 KB</td><td class="num down">−82%</td><td class="num">200.4 → 26.9 ms <span class="down">(7.4×)</span></td></tr>
+    <tr><td>w720</td><td class="num">175</td><td class="num">392.4 KB</td><td class="num">≈ 49.4 KB</td><td class="num down">−87%</td><td class="num">194.7 → 58.4 ms <span class="down">(3.3×)</span></td></tr>
+  </tbody>
+</table>
+
+<div class="chartbox">
+  <h4>各档位缩略图体积：无损 vs 有损 q85</h4>
+  <p class="hint">单位 KB。现状取全库实测平均，有损值按同源样本实测压缩比推算。</p>
+  <div class="chartwrap"><canvas id="c-size"></canvas></div>
+</div>
+
+<div class="chartbox">
+  <h4>WebP 编码耗时：无损 vs 有损 q85</h4>
+  <p class="hint">单位毫秒（3840×2160 源图，单张）。编码耗时直接决定首次浏览图库时缩略图的生成速度。</p>
+  <div class="chartwrap"><canvas id="c-time"></canvas></div>
+</div>
+
+<p><b>双重收益</b>：不仅缓存体积降约 85%，编码速度还快 3.3–11 倍。缩略图生成走 12 线程并行池，一页 48 张的场景下，w720 档的编码总耗时从约 780 ms 降到约 234 ms。</p>
+
+<h3>修复方案</h3>
+<table>
+  <thead><tr><th>方案</th><th>做法</th><th>优点</th><th>代价</th></tr></thead>
+  <tbody>
+    <tr>
+      <td><b>A（推荐）</b></td>
+      <td>引入 <code>webp</code> crate（libwebp 的 C 绑定），用有损编码器</td>
+      <td>体积/质量最优、编码最快、与现有 <code>.webp</code> 缓存路径一致</td>
+      <td>新增一个 C 依赖（libwebp-sys 自带源码，本机已有 VS Build Tools 可编译）</td>
+    </tr>
+    <tr>
+      <td><b>B（零依赖）</b></td>
+      <td>改存 JPEG（<code>image::codecs::jpeg::JpegEncoder::new_with_quality</code>，q85）</td>
+      <td>不新增任何依赖，改动最小，可立即实施</td>
+      <td>体积比有损 WebP 大约 20–30%（仍比现状小 80%）；JPEG 不支持透明通道</td>
+    </tr>
+  </tbody>
+</table>
+<p class="lead">方案 B 的透明通道问题风险很低——本机 175 张源图经检查全部为 RGB（无 alpha），且缩略图仅用于网格展示。</p>
+
+<div class="card tint">
+  <b>实施注意：必须让旧缓存失效。</b> <code>ensure_thumbnail_inner()</code> 在 <code>dst.exists()</code> 时直接返回旧文件，
+  改编码后旧的无损缓存<b>不会自动重建</b>。建议在文件名中加编码版本标记（如 <code>__w720q85.webp</code>），
+  旧文件即自然失效并被清理逻辑回收，避免手工清理与"改了没效果"的困惑。
+</div>
+
+<h2 class="sec"><span class="tag p1">P1</span>孤儿缩略图未自动回收</h2>
+<p class="lead">缩略图清理命令 <code>clean_thumbnails</code> 存在且实现正确，但<b>只能由用户在「数据库」页手动点击触发</b>，没有随源图删除自动执行，长任务下载-删除循环后会持续堆积。</p>
+
+<table>
+  <thead><tr><th>来源</th><th class="num">缩略图文件</th><th class="num">体积</th><th class="num">对应源图</th><th class="num">孤儿占比</th></tr></thead>
+  <tbody>
+    <tr><td>wallhaven</td><td class="num">470</td><td class="num">100.1 MB</td><td class="num">175 张</td><td class="num">0%</td></tr>
+    <tr><td>reddit</td><td class="num">208</td><td class="num">30.7 MB</td><td class="num up">0 张</td><td class="num up">100%</td></tr>
+    <tr class="total"><td>合计</td><td class="num">678</td><td class="num">130.8 MB</td><td class="num">175 张</td><td class="num">23%</td></tr>
+  </tbody>
+</table>
+
+<p>reddit 保存目录当前为空（337 条数据库记录中 192 条为 love=1 的"缺失文件"），其 <b>208 个缩略图 / 30.7 MB 全部是孤儿</b>——即使重新下载，这些图也需要重新生成缩略图，缓存没有任何复用价值。</p>
+
+<p><b>成因（已核实）</b>：应用内的删除路径（<code>dislike_file</code> / <code>delete_orphan_file/files</code>）<b>四处都已经调用</b>了
+<code>remove_thumbnails()</code>，所以这些孤儿并非"漏接清理"，而是<b>外部删除</b>造成的——用户在资源管理器里删图、
+或用同步工具清空目录时，应用无从感知。<br>
+<b>效果</b>：清理可释放 <span class="down">30.7 MB</span>（占缓存 23%）。<br>
+<b>已实施</b>：改为启动后延迟自动跑一次保守清理，不再依赖用户手动点击（见第五节）。</p>
+
+<h2 class="sec"><span class="tag p2">P2</span>DPR 档位缓存存在闲置副本</h2>
+<p class="lead">三档缩略图（w240 / w480 / w720）可共存、互不覆盖。当前配置 <code>thumbnail_dpr = 3</code> 是<b>最低档位（floor）</b>语义：</p>
+
+<pre><code>// src/utils/thumbSize.ts:56
+const needed = Math.ceil((drawnWidth * COVER_WIDTH_FACTOR * deviceDpr) / THUMB_BASE_WIDTH);
+return clampDpr(Math.max(floor, needed));   // floor = 3 → 恒返回 3</code></pre>
+
+<p>由于 <code>Math.max(3, needed)</code> 恒 ≥ 3 且被 clamp 到 3，<b>实际只会请求 w720</b>。w240 与 w480 是用户此前将 <code>thumbnail_dpr</code> 设为 1 或 2 时期生成的遗留缓存，在当前配置下不会再被读取：</p>
+
+<table>
+  <thead><tr><th>档位</th><th class="num">文件数</th><th class="num">体积</th><th>当前配置下</th></tr></thead>
+  <tbody>
+    <tr><td>w240</td><td class="num">148</td><td class="num">7.4 MB</td><td class="up">闲置（floor=3 不会请求）</td></tr>
+    <tr><td>w480</td><td class="num">146</td><td class="num">26.4 MB</td><td class="up">闲置（floor=3 不会请求）</td></tr>
+    <tr><td>w720</td><td class="num">175</td><td class="num">68.7 MB</td><td class="down">在用</td></tr>
+    <tr class="total"><td>合计</td><td class="num">469</td><td class="num">102.5 MB</td><td class="num">33.8 MB 可回收</td></tr>
+  </tbody>
+</table>
+
+<p><b>效果</b>：释放 <span class="down">33.8 MB</span>。<br>
+<b>注意</b>：这是<b>配置相关的</b>结论——若用户下调 <code>thumbnail_dpr</code> 或更改网格密度，w240/w480 会重新变得有用（届时自动重新生成）。
+因此建议做成「按当前配置清理非最优档位」的显式操作而非自动行为，<code>clean_stale_thumbnails()</code> 增加一个"仅保留 floor 及以上档位"的判断即可。</p>
+
+<h2 class="sec">三、效果汇总</h2>
+
+<div class="chartbox">
+  <h4>缩略图缓存：当前构成与优化后</h4>
+  <p class="hint">单位 MB。优化 1 = 改有损编码并重新生成；优化 2 = 在此基础上清理孤儿；优化 3 = 再清理闲置档位。</p>
+  <div class="chartwrap tall"><canvas id="c-total"></canvas></div>
+</div>
+
+<table>
+  <thead>
+    <tr><th>优化项</th><th class="num">当前</th><th class="num">优化后</th><th class="num">释放/降幅</th><th class="num">可信度</th></tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><b>P0</b> 无损 → 有损 WebP q85（全部档位重新生成）</td>
+      <td class="num">130.8 MB</td><td class="num">≈ 18.6 MB</td>
+      <td class="num down">−112 MB（−86%）</td>
+      <td class="num"><span class="badge b-meas">实测</span></td>
+    </tr>
+    <tr>
+      <td><b>P1</b> 清理 reddit 孤儿缩略图</td>
+      <td class="num">30.7 MB</td><td class="num">0 MB</td>
+      <td class="num down">−30.7 MB</td>
+      <td class="num"><span class="badge b-meas">实测</span></td>
+    </tr>
+    <tr>
+      <td><b>P2</b> 清理闲置 DPR 档位（w240/w480）</td>
+      <td class="num">33.8 MB</td><td class="num">0 MB</td>
+      <td class="num down">−33.8 MB</td>
+      <td class="num"><span class="badge b-meas">实测</span></td>
+    </tr>
+    <tr class="total">
+      <td>三者叠加（P0 后 P1/P2 已包含在 18.6 MB 内）</td>
+      <td class="num">130.8 MB</td><td class="num">≈ 8.6 MB</td>
+      <td class="num down">−122 MB（−93%）</td>
+      <td class="num"></td>
+    </tr>
+  </tbody>
+</table>
+
+<p class="lead">叠加口径说明：P0 重新生成后，reddit 孤儿与闲置档位若一并清理，最终只剩 w720 有损版 175 个文件（175 × 49.4 KB ≈ 8.6 MB）。</p>
+
+<h3>附带收益 <span class="badge b-meas">实测</span></h3>
+<ul>
+  <li><b>首次浏览更快</b>：缩略图编码速度提升 3.3–11×，一页 48 张 w720 缩略图的编码耗时约 780 ms → 234 ms。</li>
+  <li><b>滚动更顺</b>：单张 w720 缩略图磁盘读取量 392 KB → 49 KB，一屏 48 张从约 18.8 MB 降到约 2.4 MB。无损 WebP 的解码（Huffman + LZ77 + 预测）也明显慢于有损（DCT）。</li>
+  <li><b>降低磁盘压力</b>：用户 C 卷可用空间仅约 40 GB，回收 120 MB 缓存是纯收益。</li>
+</ul>
+
+<h2 class="sec">四、已优化的方向（不建议重复投入）</h2>
+<p class="lead">以下几处是常见的性能瓶颈，但本项目<b>已经处理到位</b>，继续投入的边际收益很低：</p>
+<table>
+  <thead><tr><th>方向</th><th>现状</th><th>结论</th></tr></thead>
+  <tbody>
+    <tr><td>前端首屏体积</td><td>Vuetify 按单组件目录导入、入口只注册首屏组件、自托管字体、MDI 图标子集化；首屏 JS 约 99 KB gzip</td><td class="down">已接近下限</td></tr>
+    <tr><td>SQLite 深翻页</td><td>两库各自走索引分页 + 流式归并，避免 ATTACH+UNION ALL 的临时 B-tree（实测 offset 25000 由 1362 ms 降至 2.5 ms）</td><td class="down">已解决</td></tr>
+    <tr><td>JPEG 缩略图解码</td><td>走 <code>jpeg-decoder</code> 的 DCT 域 1/2、1/4、1/8 降采样，避免整图解码（原占全链路 80% 时间）</td><td class="down">已解决</td></tr>
+    <tr><td>目录扫描与统计</td><td><code>dir_listing</code> 5s TTL 缓存 + <code>file_cache</code> 目录 mtime 校验，一次刷新共用同一次扫描</td><td class="down">已解决</td></tr>
+    <tr><td>缩略图并发度</td><td>线程数 = min(核数−2, 内存预算/48MiB)，clamp 到 2–12，避开 UI 与内存争抢</td><td class="down">已解决</td></tr>
+    <tr><td>依赖瘦身</td><td><code>image</code> 关闭默认 feature 只留 4 种格式；<code>tokio</code> 按需 feature；<code>tauri</code> 未启用 devtools</td><td class="down">已处理</td></tr>
+  </tbody>
+</table>
+
+<h2 class="sec"><span class="tag p3">P3</span>低收益 / 待验证项</h2>
+<table>
+  <thead><tr><th>项</th><th>说明</th><th class="num">预期效果</th><th class="num">可信度</th></tr></thead>
+  <tbody>
+    <tr>
+      <td>release profile 加 <code>panic = "abort"</code></td>
+      <td>当前为 <code>lto="thin"</code> + <code>codegen-units=1</code> + <code>strip=true</code>，缺 abort。可去掉 unwind 表</td>
+      <td class="num">二进制 −10~15%</td>
+      <td class="num"><span class="badge b-est">需实测</span></td>
+    </tr>
+    <tr>
+      <td><code>lto = "thin"</code> → <code>"fat"</code></td>
+      <td>换取更小的体积与略好的运行时性能</td>
+      <td class="num">体积 −3~5%</td>
+      <td class="num"><span class="badge b-est">需实测</span></td>
+    </tr>
+    <tr>
+      <td>SQLite <code>cache_size = −64000</code></td>
+      <td>每连接 64 MB 页缓存 × 2 个库 ≈ 128 MB 上限。用户库仅 300 KB 级，远超实际需要</td>
+      <td class="num">内存上限降低</td>
+      <td class="num"><span class="badge b-est">低收益</span></td>
+    </tr>
+    <tr>
+      <td>SQLite <code>mmap_size</code></td>
+      <td>当前未设置。可减少读操作的 syscall</td>
+      <td class="num">大库读取略快</td>
+      <td class="num"><span class="badge b-est">需实测</span></td>
+    </tr>
+  </tbody>
+</table>
+<p class="lead">P3 各项针对的是用户当前 300 KB 级的库规模，实测收益预计很小；若未来库增长到数万条以上再评估更合适。</p>
+
+<h2 class="sec">五、实施结果</h2>
+<p class="lead">P0 / P1 / P2 已全部落地并通过验证；P3 经核实后判定不采纳。</p>
+
+<table>
+  <thead><tr><th>项</th><th>改动</th><th>验证</th></tr></thead>
+  <tbody>
+    <tr>
+      <td><b>P0</b><br>有损编码</td>
+      <td><code>thumbnail.rs</code> 新增 <code>encode_webp_lossy()</code>，改走 <code>webp</code> crate（libwebp 绑定）的 <code>Encoder::from_rgb / from_rgba(..).encode(85)</code>；文件名加 <code>.q85</code> 编码标记，旧缓存自然失效</td>
+      <td>新增 <code>test_thumbnail_is_lossy_webp</code>：直接检查文件头 fourcc 必须是 <code>VP8&nbsp;</code>，而非 <code>VP8L</code></td>
+    </tr>
+    <tr>
+      <td><b>P1</b><br>孤儿清理</td>
+      <td><code>lib.rs</code> 启动后延迟 12s 自动跑一次保守清理（<code>spawn</code> + <code>spawn_blocking</code>，失败只记日志，不阻塞首屏）</td>
+      <td>清理逻辑 4 个用例：孤儿 / 有效 / 过期编码 / 档位</td>
+    </tr>
+    <tr>
+      <td><b>P2</b><br>档位清理</td>
+      <td><code>db/thumbs.rs</code> 新增 <code>clean_stale_thumbnails_keeping(dir, save, keep_min_dpr)</code>；手动清理传 <code>Some(thumbnail_dpr)</code>，启动自动清理传 <code>None</code></td>
+      <td><code>test_clean_stale_thumbnails_floor_is_opt_in</code> 验证档位清理仅在显式传参时生效</td>
+    </tr>
+    <tr>
+      <td><b>P3</b><br>panic=abort</td>
+      <td class="up">不采纳</td>
+      <td>项目非测试代码有 <b>118 处</b> <code>unwrap/expect</code>：启用后「单条命令 panic」会升级为「整个应用崩溃」，风险远超约 10% 的体积收益</td>
+    </tr>
+  </tbody>
+</table>
+
+<h3>验证结果</h3>
+<table>
+  <thead><tr><th>套件</th><th class="num">结果</th></tr></thead>
+  <tbody>
+    <tr><td><code>cargo test</code></td><td class="num down">129 passed / 0 failed（新增 5 个用例）</td></tr>
+    <tr><td><code>cargo clippy --all-targets -- -D warnings</code></td><td class="num down">0 警告</td></tr>
+    <tr><td><code>cargo fmt --check</code></td><td class="num down">PASS</td></tr>
+    <tr><td><code>vue-tsc --noEmit</code></td><td class="num down">0 错误</td></tr>
+    <tr><td><code>deno task test:unit</code></td><td class="num down">39 passed</td></tr>
+    <tr><td><code>deno task test:render</code></td><td class="num down">6 个视图全部正常渲染</td></tr>
+  </tbody>
+</table>
+
+<h3>对现有缓存的实测推演</h3>
+<p class="lead">按新逻辑对当前 678 个缩略图做只读推演（<b>未删除任何文件</b>）：</p>
+<table>
+  <thead><tr><th>来源</th><th class="num">文件数</th><th class="num">体积</th><th class="num">判为过期编码</th><th class="num">判为孤儿</th></tr></thead>
+  <tbody>
+    <tr><td>wallhaven</td><td class="num">470</td><td class="num">100.1 MB</td><td class="num">100.1 MB</td><td class="num">0 MB</td></tr>
+    <tr><td>reddit</td><td class="num">208</td><td class="num">30.7 MB</td><td class="num">30.7 MB</td><td class="num">30.7 MB</td></tr>
+    <tr class="total"><td>合计</td><td class="num">678</td><td class="num">130.8 MB</td><td class="num down">130.8 MB</td><td class="num">30.7 MB</td></tr>
+  </tbody>
+</table>
+<p>现有缓存全部是换编码前的无标记文件，因此<b>首次启动新版应用时会全部回收（130.8 MB）</b>，
+随后按需重新生成为有损版，稳态约 <b>8.6 MB</b>（175 张 × w720 ≈ 49 KB）——与第一节的预测一致。</p>
+
+<div class="card tint">
+  <b>生效前提</b>：需要重新构建应用（改动引入了新的 C 依赖 <code>libwebp-sys</code>）。
+  构建后首次启动即可在日志中看到自动清理结果；缩略图会在浏览时按需重建，无需手动干预。
+</div>
+
+<div class="card tint2">
+  <b>实测基准（新增）</b>：<code>bench_thumb_pipeline</code> 已改用生产编码器并输出体积。
+  4K 源图 → 480px 缩略图：<b>编码 91 ms / 63 KiB</b>；1080p → 80 ms / 79 KiB。
+  （测试用的是合成渐变噪声图，比真实照片更难压缩，故体积高于真实缩略图的约 49 KB。）
+</div>
+
+<div class="footnote">
+  数据来源：本机 <code>C:\Users\25149\WallHub</code> 数据库（wallhaven 316 行 / reddit 337 行）、
+  <code>%LOCALAPPDATA%\rustwallhub\thumbnails</code>（678 个文件）及 <code>Pictures\背景\wallhaven</code>（175 张源图）。<br>
+  体积与耗时对比采用 Pillow（libwebp）在相同源图、相同目标宽度下实测；Rust 侧 <code>image-webp</code> 为纯 Rust 实现，
+  绝对耗时可能不同，但无损与有损编码之间的<b>相对差异</b>由算法特性决定，比例关系可迁移。<br>
+  标记为「需实测」的项为基于社区通行经验的估算，尚未在本项目上验证。
+</div>
+
+</div>
+<script>
+(function(){
+  if (typeof Chart === "undefined") {
+    document.querySelectorAll('.chartwrap').forEach(function(el){
+      el.innerHTML = '<div style="display:flex;height:100%;align-items:center;justify-content:center;color:#8b8fa3;font-size:13px">图表库未能加载（离线），请参考上方数据表</div>';
+    });
+    return;
+  }
+  var ink2 = '#5c6075', line = '#e3e5ea';
+  Chart.defaults.font.family = '-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif';
+  Chart.defaults.font.size = 12;
+  Chart.defaults.color = ink2;
+
+  var grid = { color: line, drawBorder: false };
+
+  new Chart(document.getElementById('c-size'), {
+    type: 'bar',
+    data: {
+      labels: ['w240（148 个）', 'w480（146 个）', 'w720（175 个）'],
+      datasets: [
+        { label:'现状（无损 VP8L）', data:[50.1,180.9,392.4], backgroundColor:'#dc2626', borderRadius:5, maxBarThickness:54 },
+        { label:'有损 q85',        data:[8.6,32.0,49.4],   backgroundColor:'#2563eb', borderRadius:5, maxBarThickness:54 }
+      ]
+    },
+    options: {
+      responsive:true, maintainAspectRatio:false,
+      plugins:{ legend:{ position:'top', labels:{ usePointStyle:true, pointStyle:'circle', boxWidth:7, padding:16 } },
+                tooltip:{ callbacks:{ label:function(c){ return c.dataset.label+': '+c.parsed.y+' KB'; } } } },
+      scales:{ x:{ grid:{ display:false } },
+               y:{ beginAtZero:true, grid:grid, ticks:{ callback:function(v){ return v+' KB'; } } } }
+    }
+  });
+
+  new Chart(document.getElementById('c-time'), {
+    type: 'bar',
+    data: {
+      labels: ['w240', 'w480', 'w720'],
+      datasets: [
+        { label:'现状（无损）', data:[87.4,200.4,194.7], backgroundColor:'#dc2626', borderRadius:5, maxBarThickness:54 },
+        { label:'有损 q85',    data:[8.0,26.9,58.4],    backgroundColor:'#16a34a', borderRadius:5, maxBarThickness:54 }
+      ]
+    },
+    options: {
+      responsive:true, maintainAspectRatio:false,
+      plugins:{ legend:{ position:'top', labels:{ usePointStyle:true, pointStyle:'circle', boxWidth:7, padding:16 } },
+                tooltip:{ callbacks:{ label:function(c){ return c.dataset.label+': '+c.parsed.y+' ms'; } } } },
+      scales:{ x:{ grid:{ display:false } },
+               y:{ beginAtZero:true, grid:grid, ticks:{ callback:function(v){ return v+' ms'; } } } }
+    }
+  });
+
+  new Chart(document.getElementById('c-total'), {
+    type: 'bar',
+    data: {
+      labels: ['当前', '优化 1：改有损编码', '优化 2：+清理孤儿', '优化 3：+清理闲置档位'],
+      datasets: [
+        { label:'wallhaven 在用（w720）', data:[68.7, 8.6, 8.6, 8.6], backgroundColor:'#2563eb', borderRadius:4, stack:'s' },
+        { label:'wallhaven 闲置档位',    data:[33.8, 5.8, 5.8, 0],   backgroundColor:'#7c3aed', borderRadius:4, stack:'s' },
+        { label:'reddit 孤儿',           data:[30.7, 5.2, 0, 0],     backgroundColor:'#d97706', borderRadius:4, stack:'s' }
+      ]
+    },
+    options: {
+      responsive:true, maintainAspectRatio:false,
+      plugins:{ legend:{ position:'top', labels:{ usePointStyle:true, pointStyle:'circle', boxWidth:7, padding:14 } },
+                tooltip:{ callbacks:{ label:function(c){ return c.dataset.label+': '+c.parsed.y.toFixed(1)+' MB'; } } } },
+      scales:{ x:{ stacked:true, grid:{ display:false } },
+               y:{ stacked:true, beginAtZero:true, grid:grid, ticks:{ callback:function(v){ return v+' MB'; } } } }
+    }
+  });
+})();
+</script>
+</body>
+</html>

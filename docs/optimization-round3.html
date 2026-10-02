@@ -1,0 +1,314 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>RustWallhub 优化分析 · 第三轮（同步链路）</title>
+<style>
+  :root{
+    --bg:#f6f7f9; --surface:#ffffff; --border:#e3e6ea; --text:#1c1f23; --muted:#5f6a76;
+    --accent:#2f6fed; --danger:#c0392b; --warn:#b7791f; --ok:#1e7a4a;
+    --danger-bg:#fdecea; --warn-bg:#fdf6e3; --ok-bg:#eaf6ee; --accent-bg:#eef3fe;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--text);
+       font:15px/1.7 -apple-system,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif}
+  .wrap{max-width:920px;margin:0 auto;padding:40px 24px 72px}
+  h1{font-size:26px;margin:0 0 6px;letter-spacing:-.3px}
+  .sub{color:var(--muted);font-size:13.5px;margin-bottom:32px}
+  h2{font-size:19px;margin:40px 0 14px;padding-bottom:8px;border-bottom:2px solid var(--border)}
+  h3{font-size:15.5px;margin:26px 0 10px}
+  p{margin:10px 0}
+  code{background:#eef0f3;padding:1.5px 5px;border-radius:4px;font-size:13px;
+       font-family:"Cascadia Code",Consolas,monospace}
+  pre{background:#1e2228;color:#e6e9ed;padding:14px 16px;border-radius:8px;overflow-x:auto;
+      font-size:12.5px;line-height:1.6;font-family:"Cascadia Code",Consolas,monospace}
+  pre .c{color:#7f8c99}
+  .card{background:var(--surface);border:1px solid var(--border);border-radius:10px;
+        padding:20px 22px;margin:16px 0}
+  .badge{display:inline-block;font-size:11.5px;font-weight:700;padding:2px 9px;border-radius:20px;
+         letter-spacing:.4px;vertical-align:2px}
+  .b-p1{background:var(--danger-bg);color:var(--danger)}
+  .b-p2{background:var(--warn-bg);color:var(--warn)}
+  .b-ok{background:var(--ok-bg);color:var(--ok)}
+  table{width:100%;border-collapse:collapse;margin:14px 0;font-size:13.5px}
+  th,td{text-align:left;padding:9px 11px;border-bottom:1px solid var(--border);vertical-align:top}
+  th{background:#f0f2f5;font-weight:600;font-size:12.5px;color:var(--muted)}
+  td.num{font-variant-numeric:tabular-nums;white-space:nowrap}
+  .kv{display:flex;gap:10px;flex-wrap:wrap;margin:14px 0}
+  .kv div{background:var(--surface);border:1px solid var(--border);border-radius:8px;
+          padding:10px 14px;min-width:150px}
+  .kv b{display:block;font-size:20px;font-variant-numeric:tabular-nums}
+  .kv span{font-size:11.5px;color:var(--muted)}
+  .note{background:var(--accent-bg);border-left:3px solid var(--accent);padding:11px 15px;
+        border-radius:0 7px 7px 0;margin:14px 0;font-size:13.5px}
+  .warnbox{background:var(--warn-bg);border-left:3px solid var(--warn);padding:11px 15px;
+           border-radius:0 7px 7px 0;margin:14px 0;font-size:13.5px}
+  ul{margin:10px 0;padding-left:22px}
+  li{margin:5px 0}
+  .muted{color:var(--muted)}
+  .dim{opacity:.55}
+  footer{margin-top:48px;padding-top:16px;border-top:1px solid var(--border);
+         color:var(--muted);font-size:12.5px}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>RustWallhub 优化分析 · 第三轮</h1>
+<div class="sub">聚焦范围：OSS 同步链路 · 数据来源：本机真实运行日志与代码实测 · 2026-10-02</div>
+
+<div class="note">
+  <b>一句话结论：</b>前两轮把"大件"（缩略图编码、打包链路）都收干了。这轮转向<b>同步链路</b>，发现两个真实的
+  无用功——每次启动都全量拉取合并、每次退出都无条件上传。<b>两项都有实测数字支撑</b>，其余方向经核查确认已无空间。
+</div>
+
+<div class="kv">
+  <div><b>622 ms</b><span>启动自动拉取（每次，0 变化）</span></div>
+  <div><b>250 ms</b><span>退出自动上传（每次，0 变化）</span></div>
+  <div><b>15 s</b><span>退出上传的硬超时上限</span></div>
+  <div><b>6 / 6</b><span>日志里的启动拉取，结果全是 0 条变化</span></div>
+</div>
+
+<h2>P1 <span class="badge b-p1">值得做</span> 启动自动拉取：无变化检测，每次都全量下载 + 合并</h2>
+
+<h3>现状</h3>
+<p>应用启动约 6 秒后会执行一次自动拉取。代码路径是
+<code>auto_sync_on_startup</code> → <code>run_oss_download</code>：</p>
+
+<pre><span class="c">// src-tauri/src/commands/sync.rs:328</span>
+let (wh_key, rd_key) = oss.snapshot_keys();
+let wh_exists = oss::head_object(&amp;client, &amp;oss, &amp;wh_key).await?;   <span class="c">// 2 次 HEAD，廉价</span>
+let rd_exists = oss::head_object(&amp;client, &amp;oss, &amp;rd_key).await?;
+...
+let wh_bytes = if wh_exists {
+    Some(oss::get_object(&amp;client, &amp;oss, &amp;wh_key).await?)        <span class="c">// ← 无条件全量 GET</span>
+} else { None };
+let rd_bytes = if rd_exists { Some(oss::get_object(...).await?) } else { None };
+<span class="c">// 然后：落盘临时快照 → 记录级合并进本地库 → invalidate_stats</span></pre>
+
+<p>问题在于：<code>head_object</code> 只返回 <code>Result&lt;bool&gt;</code>（对象在不在），
+<b>把 OSS 在 HEAD 响应里本来就给的 <code>ETag</code> 丢掉了</b>。
+于是代码知道"远端有快照"，却完全不关心"远端快照是不是还是我上次导入的那一份"。</p>
+
+<h3>实测</h3>
+<p>日志里 6 次启动，<b>每一次的合并结果都是"新增 0 条、恢复 0 条"</b>——即远端自上次导入后从未变化：</p>
+
+<table>
+  <thead><tr><th>启动时间</th><th>拉取耗时</th><th>合并结果</th><th>是否白跑</th></tr></thead>
+  <tbody>
+    <tr><td>09-24 13:41:25.268</td><td class="num">414 ms</td><td>0 / 0</td><td>是</td></tr>
+    <tr><td>09-27 10:46:13.258</td><td class="num">669 ms</td><td>0 / 0</td><td>是</td></tr>
+    <tr><td>09-29 16:13:04.013</td><td class="num">582 ms</td><td>0 / 0</td><td>是</td></tr>
+    <tr><td>09-29 17:11:05.383</td><td class="num">539 ms</td><td>0 / 0</td><td>是</td></tr>
+    <tr><td>09-29 17:11:28.900</td><td class="num">414 ms</td><td>0 / 0</td><td>是</td></tr>
+    <tr><td>10-02 07:04:05.038</td><td class="num">622 ms</td><td>0 / 0</td><td>是</td></tr>
+  </tbody>
+</table>
+
+<p class="muted">计时取自 <code>[sync] 启动自动拉取开始</code> 与 <code>完成</code> 两条日志的时间戳差值。</p>
+
+<h3>这 622 ms 里在做什么</h3>
+<svg viewBox="0 0 680 118" width="100%" style="max-width:680px;margin:8px 0 4px">
+  <g font-size="11" font-family="inherit" fill="#5f6a76">
+    <!-- 轴线 -->
+    <line x1="20" y1="86" x2="660" y2="86" stroke="#e3e6ea" stroke-width="1"/>
+    <text x="20" y="104">0 ms</text>
+    <text x="620" y="104">622 ms</text>
+  </g>
+  <!-- 有效部分：2 次 HEAD -->
+  <rect x="20" y="46" width="52" height="26" rx="4" fill="#2f6fed"/>
+  <text x="46" y="38" font-size="11.5" fill="#2f6fed" text-anchor="middle" font-weight="700">2×HEAD</text>
+  <text x="46" y="63" font-size="11" fill="#fff" text-anchor="middle">必需</text>
+  <!-- 浪费部分 -->
+  <rect x="72" y="46" width="128" height="26" rx="4" fill="#c0392b" opacity=".82"/>
+  <text x="136" y="38" font-size="11.5" fill="#c0392b" text-anchor="middle" font-weight="700">2×GET 全量下载</text>
+  <text x="136" y="63" font-size="11" fill="#fff" text-anchor="middle">~350 KB</text>
+  <rect x="200" y="46" width="72" height="26" rx="4" fill="#c0392b" opacity=".55"/>
+  <text x="236" y="38" font-size="11.5" fill="#c0392b" text-anchor="middle" font-weight="700">落盘</text>
+  <rect x="272" y="46" width="120" height="26" rx="4" fill="#c0392b" opacity=".35"/>
+  <text x="332" y="38" font-size="11.5" fill="#c0392b" text-anchor="middle" font-weight="700">记录级合并 + 清缓存</text>
+  <text x="332" y="63" font-size="11" fill="#7a1f16" text-anchor="middle">改 DB</text>
+  <!-- 说明 -->
+  <text x="72" y="24" font-size="11.5" fill="#c0392b" font-weight="700">↑ 这部分在"远端未变化"时完全是浪费</text>
+  <line x1="72" y1="28" x2="392" y2="28" stroke="#c0392b" stroke-width="1" stroke-dasharray="3 3"/>
+</svg>
+<p class="muted" style="font-size:12.5px">区间宽度为示意，非精确分段计时；唯一精确的实测值是总耗时 622 ms。</p>
+
+<h3>为什么要紧</h3>
+<ul>
+  <li><b>每次启动固定多花约 0.6 秒</b>在网络上，且完全取决于 OSS 与代理的当前速度——慢网下会明显拉长。</li>
+  <li>更值得注意的是：它会<b>在启动 6 秒后对数据库做一次写入</b>（合并 + <code>invalidate_stats</code>）。这个时刻用户通常刚开始翻图库，等于给浏览主路径引了一次写锁竞争。</li>
+  <li>顺带产生一次多余的 OSS 下行流量与计费（量小，但纯属无效）。</li>
+</ul>
+
+<h3>修法</h3>
+<ol>
+  <li>让 <code>head_object</code> 返回 <code>(bool, Option&lt;String&gt;)</code>——顺带把响应头里的 <code>ETag</code> 取出来（OSS 的 HEAD 一定带）。</li>
+  <li>在本地记下"上次成功导入的 ETag"（放进 <code>config</code> 或一个小的 state 文件，两个 key 各记一份）。</li>
+  <li>HEAD 拿到 ETag 后先比对：<b>一致就直接返回"无变化"，跳过 GET、跳过落盘、跳过合并。</b></li>
+</ol>
+<div class="note">
+  <b>为什么 ETag 是可靠信号：</b>OSS 的 <code>ETag</code> 对普通上传就是对象的 MD5，写入内容变了它必然变。
+  唯一要小心的是<b>分片上传</b>（ETag 形如 <code>&lt;md5&gt;-&lt;n&gt;</code>）——但本项目用 <code>put_object</code> 单次上传，不涉及。
+</div>
+<p><b>预期收益（估算）：</b>622 ms → <b>约 150–250 ms</b>（只剩 2 次 HEAD），并消除启动阶段的一次 DB 写入。
+准确值需实现后实测。</p>
+
+<h2>P2 <span class="badge b-p2">值得做，但改的是数据链路，需谨慎</span> 退出自动上传：无条件执行，且会卡住关闭</h2>
+
+<h3>现状</h3>
+<pre><span class="c">// src-tauri/src/commands/sync.rs:488</span>
+let auto_upload = config.as_ref().map(|c| c.oss_auto_upload_on_exit).unwrap_or(false);
+if !auto_upload { return; }                       <span class="c">// 只看开关，不看数据有没有变</span>
+log::info!("[sync] 退出自动上传开始");
+let result = tokio::time::timeout(                      <span class="c">// ← 硬超时 15 秒</span>
+    std::time::Duration::from_secs(15), run_oss_upload(&amp;state)).await;</pre>
+
+<p>而且这个收尾任务是<b>真的会挡住关窗</b>的——<code>lib.rs</code> 里是：</p>
+<pre><span class="c">// src-tauri/src/lib.rs:291</span>
+if commands::sync::begin_exit_tasks() {
+    api.prevent_exit();                                   <span class="c">// 拦住退出</span>
+    tauri::async_runtime::spawn(async move {
+        commands::sync::run_exit_tasks(handle.clone()).await;   <span class="c">// 最长 15 秒</span>
+        handle.exit(0);
+    });
+}</pre>
+
+<h3>实测</h3>
+<p>10-02 那次会话：进程 07:03:59 起来，<b>07:04:05.667 就触发了退出上传</b>——用户只开了约 <b>3.5 秒</b>，
+数据库不可能有任何变化，但照样把两个快照推了上去：</p>
+<pre>[07:04:05.667] [sync] 退出自动上传开始
+[07:04:05.918] [sync] 退出自动上传完成：已上传 Wallhaven、Reddit 快照到 OSS   <span class="c">// 250 ms</span></pre>
+<p>日志里 5 次退出、5 次上传，无误判记录，也就是<b>没有一次是因为"确实有新数据"才传的</b>。</p>
+
+<h3>为什么要紧</h3>
+<ul>
+  <li>常规情况下是浪费 ~250 ms 与一次上行流量（约 350 KB）。</li>
+  <li><b>真正的风险在于它同时是退出阻塞点。</b>网络卡住时用户会看到"点了关闭没反应"，最长 15 秒才关掉。
+      这类问题在慢网/代理异常时才会暴露，日常不易复现。</li>
+</ul>
+
+<h3>修法（比"脏标记"更安全的一种）</h3>
+<p>我上一轮拒绝改这里，理由是"加脏标记、判断错会导致数据不同步"。这个顾虑是对的——脏标记需要在每个写库点挂钩子，
+漏一个就静默丢数据。<b>换个更保守的信号：文件级的 mtime + size 比对。</b></p>
+<ol>
+  <li>每次成功上传后，记录两个本地 DB 的 <code>mtime</code> 与 <code>size</code>。</li>
+  <li>退出时比对；两者都没变<b>且 WAL 已 checkpoint</b>，就判定"本地无新数据"，直接跳过上传。</li>
+</ol>
+<div class="warnbox">
+  <b>为什么这个判据是安全的：</b>任何对 DB 的写入都必然改变 mtime（通常还会改 size），
+  所以<b>误判方向只会是"以为变了、实际没变"</b>——最坏结果是多传一次，<b>永远不会漏传</b>。
+  这正是它可以做、而脏标记不行的原因。
+  <br><b>实现时要盯的两点：</b>① WAL 模式下主库文件的 mtime 可能滞后于实际写入 →
+  必须放在 <code>maintain_on_exit</code>（WAL checkpoint）<b>之后</b>再取 mtime；
+  ② 记录值要与"上次上传成功"绑定，上传失败时不能更新，否则下次会被误判为无变化。
+</div>
+
+<h2>已核查、确认无收益的方向</h2>
+<p>这些我都实际看过并给出判据，列出来是为了避免后续重复投入：</p>
+<table>
+  <thead><tr><th>方向</th><th>核查结论</th></tr></thead>
+  <tbody>
+    <tr>
+      <td>release profile</td>
+      <td><code>lto="thin"</code> / <code>codegen-units=1</code> / <b><code>strip=true</code></b> / <code>opt-level=3</code>
+          全部已开。二进制 19.84 MB 已是 strip 后的结果。只剩 <code>lto=thin→fat</code>（约 5–10% 体积，换大幅拉长构建）
+          与 <code>panic="abort"</code>（上轮已判定不做），<b>均不建议</b>。</td>
+    </tr>
+    <tr>
+      <td><code>image</code> crate feature</td>
+      <td>只启用 <code>jpeg/png/webp/gif</code>，<code>cargo tree -e features</code> 确认四个都在代码中实际使用，无冗余。</td>
+    </tr>
+    <tr>
+      <td>SQLite <code>cache_size=-64000</code></td>
+      <td>看着像"给 300 KB 的库配了 64 MB 缓存"，但这是<b>上限而非预分配</b>——SQLite 按需分配页。
+          真实库仅 47 / 37 页（192 KB / 151 KB），实际占用远小于上限。<b>不是浪费，无需改。</b></td>
+    </tr>
+    <tr>
+      <td>asset 协议授权累积</td>
+      <td>曾担心 <code>allow_directory</code> 被反复调用（启动、保存设置、每次浏览自定义目录）会堆积规则。
+          查 Tauri 源码：<code>FsScope</code> 内部是 <code>HashSet&lt;Pattern&gt;</code>，
+          <b>天然去重，重复调用无害</b>。</td>
+    </tr>
+    <tr>
+      <td>缩略图解码线程池</td>
+      <td>运行日志实测 <b>10 线程</b>（16 核，<code>min(cpus-2, 480MiB/48)</code>），与内存预算自洽，无调整必要。</td>
+    </tr>
+    <tr>
+      <td>前端 CSS 与死代码</td>
+      <td>全部 CSS 合计 <b>177 KB / gzip 26 KB</b>；9 个 composable 全部有引用，无孤儿模块。</td>
+    </tr>
+    <tr>
+      <td>缩略图 IPC 往返</td>
+      <td><code>resolve_thumbnails</code> 一次批量 48 张（日志确认 <code>count=48, dpr=3</code>），
+          不是逐张 N+1 调用。</td>
+    </tr>
+  </tbody>
+</table>
+
+<h2>实施结果</h2>
+<p>两项都已实施并通过验证。<b>实施过程中又查出两个原分析没看出来的真 bug</b>，其中一个正是让 P2 完全失效的原因。</p>
+
+<h3>🔴 新发现 1：无变化的合并也会写库</h3>
+<p><code>import_*_snapshot</code> 无条件 <code>tx.commit()</code>。逐步骤比对文件哈希定位到：</p>
+<table>
+  <thead><tr><th>操作</th><th>是否改写数据库文件</th></tr></thead>
+  <tbody>
+    <tr><td>只开闭 / ATTACH + DETACH / 空事务 COMMIT</td><td>否</td></tr>
+    <tr><td>跑两条合并语句 + <b>COMMIT</b>（0 行变化）</td><td><b style="color:#c0392b">是</b></td></tr>
+    <tr><td>跑两条合并语句 + <b>ROLLBACK</b>（0 行变化）</td><td><b style="color:#1e7a4a">否</b></td></tr>
+  </tbody>
+</table>
+<p>不修的话，每次"无变化"的拉取都会把本地库 mtime 改掉 → 退出时必然触发上传 → 新 ETag → 另一台再拉再传，
+<b>"你传我拉"永不终止</b>。P2 的判据会被这个写入完全抵消。已加 <code>commit_or_rollback()</code>。</p>
+
+<h3>🔴 新发现 2：<code>maintain_on_exit</code> 自己没做到它注释里承诺的事</h3>
+<p>原实现是 <code>wal_checkpoint(TRUNCATE); PRAGMA optimize;</code>——而 optimize 一旦真的要更新统计信息，
+<b>它自己也会写库，写入同样滞留在 WAL 里</b>。于是函数返回时 <code>.db</code> 依然不是完整状态、WAL 也没归零，
+它注释里写的"直接复制 .db 做备份不会漏掉尚未 checkpoint 的事务"其实没达成。
+诊断实测：连读两次该函数，第二次读到的内容与第一次不同（<code>ec8a…</code> → <code>72f6…</code>）。
+补一次收尾 checkpoint（<code>ckpt; optimize; ckpt</code>）后，单次调用即稳定。</p>
+
+<h3>已通过的验证</h3>
+<table>
+  <thead><tr><th>验证项</th><th>结果</th></tr></thead>
+  <tbody>
+    <tr><td>后端 <code>cargo test</code></td><td><b>137 passed</b>（原 129 + 新增 8）</td></tr>
+    <tr><td><code>cargo clippy --all-targets -D warnings</code> / <code>fmt --check</code></td><td>0 警告 / PASS</td></tr>
+    <tr><td>前端 <code>vue-tsc</code> / <code>vitest</code> / 渲染自检</td><td>0 错误 / <b>39 passed</b> / <b>6 个视图全部通过</b>（13 秒）</td></tr>
+    <tr><td>「无变化导入不写库」真实库模拟</td><td>✅ 三次收尾 mtime/hash/大小完全一致，导入后 mtime 与基线相同</td></tr>
+    <tr><td>ETag 跳过判据</td><td>✅ 单测覆盖 6 种情形（无基线/一致/变了/无 ETag/换 prefix/对象不存在）</td></tr>
+  </tbody>
+</table>
+<h3>🔧 顺带修掉：渲染自检脚本会永久挂起</h3>
+<p><code>tests/render-check.mjs</code> 的顺序是「先起静态服务器，再启浏览器」。浏览器启动失败时会在
+服务器已监听的状态下抛出，而 <code>main().catch()</code> 只设了 <code>process.exitCode</code>、
+<b>没关服务器</b> → 事件循环永不结束 → 脚本一直挂着不退出（实测白挂 20 多分钟，CI 里等于挂死）。
+已把服务器句柄提到模块级、尾部改为关闭后明确 <code>process.exit(code)</code>：
+同一场景现在 <b>1 秒退出、退出码 1、诊断清晰</b>。</p>
+<div class="warnbox">
+  <b>两点还没实测、需诚实说明：</b>
+  ① 启动耗时的真实降幅（622 ms → 预计 150–250 ms）需要重新构建应用后跑一次才有数字，
+  单测覆盖不到网络那一段；
+  ② 两台机器之间的实际收敛行为也没法在单机上验证。判据的保守方向（不确认就重下/重传）都写成测试了，
+  但端到端仍需真机确认。
+</div>
+
+<h2>建议顺序</h2>
+<ul>
+  <li><b>第一步：P1（ETag 变化检测）。</b>收益明确、完全在同步的"读"方向、失败只影响一次同步，风险最低。</li>
+  <li><b>第二步：P2（mtime+size 跳过上传）。</b>顺带解决退出阻塞。实现时严格按上面两个注意点来，
+      并补一个"改了 DB 就必须上传"的测试作为回归防线。</li>
+  <li>P1 顺带可以复用同一份"上次同步状态"记录，两件事放一起改更省事。</li>
+</ul>
+
+<footer>
+  数据来源：<code>%LOCALAPPDATA%\state\rustwallhub\logs\rustwallhub.log</code>（424 行，覆盖 09-24 ~ 10-02 共 6 次启动）+
+  源码实测（<code>cargo tree</code>、Tauri 2.11.1 源码）。
+  本报告未记录任何 OSS 凭据或密钥内容。
+</footer>
+
+</div>
+</body>
+</html>
