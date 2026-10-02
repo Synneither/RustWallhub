@@ -247,7 +247,6 @@ pub fn run() {
             install_update,
             // wallhaven
             search_wallhaven,
-            start_wallhaven_download,
             download_wallhaven_selected,
             // reddit
             start_reddit_download,

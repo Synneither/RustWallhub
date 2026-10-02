@@ -45,7 +45,6 @@ pub struct AppConfig {
     pub wallhaven_q: String,
     #[serde(default)]
     pub wallhaven_order: String,
-    pub wallhaven_max_images: u32,
     // --- Reddit ---
     pub reddit_save_dir: String,
     pub reddit_db_path: String,
@@ -262,7 +261,6 @@ impl Default for AppConfig {
             wallhaven_ratios: "landscape".into(),
             wallhaven_q: String::new(),
             wallhaven_order: "desc".into(),
-            wallhaven_max_images: 100,
             reddit_save_dir: format!("{home}/Pictures/背景/reddit"),
             reddit_db_path: format!("{db_dir}/reddit_images.db"),
             reddit_url: default_reddit_url(),
@@ -297,7 +295,6 @@ mod tests {
         assert_eq!(cfg.wallhaven_categories, "010");
         assert_eq!(cfg.wallhaven_purity, "111");
         assert_eq!(cfg.wallhaven_sorting, "toplist");
-        assert_eq!(cfg.wallhaven_max_images, 100);
         assert_eq!(cfg.reddit_max_images, 100);
         assert_eq!(cfg.download_concurrency, 6);
         assert_eq!(cfg.thumbnail_dpr, 2);
@@ -378,7 +375,7 @@ mod tests {
         assert!(!path.exists());
         let cfg = AppConfig::load(&path).unwrap();
         assert!(path.exists());
-        assert_eq!(cfg.wallhaven_max_images, 100);
+        assert_eq!(cfg.reddit_max_images, 100);
     }
 
     #[test]
@@ -389,7 +386,6 @@ mod tests {
         let cfg = AppConfig {
             wallhaven_api_key: "test_key".into(),
             wallhaven_categories: "111".into(),
-            wallhaven_max_images: 50,
             reddit_url: "https://reddit.com/r/test".into(),
             download_concurrency: 12,
             thumbnail_dpr: 3,
@@ -400,7 +396,6 @@ mod tests {
         let loaded = AppConfig::load(&path).unwrap();
         assert_eq!(loaded.wallhaven_api_key, "test_key");
         assert_eq!(loaded.wallhaven_categories, "111");
-        assert_eq!(loaded.wallhaven_max_images, 50);
         assert_eq!(loaded.reddit_url, "https://reddit.com/r/test");
         assert_eq!(loaded.download_concurrency, 12);
         assert_eq!(loaded.thumbnail_dpr, 3);
