@@ -14,6 +14,9 @@
 //!
 //! 判定用运行时 `cfg!` 而不是 `#[cfg]`，好处是这些逻辑在 Windows 上也会被编译，
 //! 本地 clippy 能直接查出问题（Linux 相关代码平时只有 CI 才会编到）。
+//!
+//! 另外这里还要撤掉 AppImage 打包脚本强加的 `GDK_BACKEND=x11`，见
+//! [`undo_packaging_forced_x11`]。
 
 use std::path::Path;
 
@@ -23,8 +26,38 @@ pub fn init() {
     if !cfg!(target_os = "linux") {
         return;
     }
+    undo_packaging_forced_x11();
     log_environment();
     apply_webkit_workarounds();
+}
+
+/// AppImage 的 `AppRun`（linuxdeploy 的 `linuxdeploy-plugin-gtk.sh`）会**无条件**
+/// `export GDK_BACKEND=x11`，把 GTK 从 Wayland 拽回 X11/XWayland。在 Wayland 会话下这不是
+/// 用户的选择，而且会带来两个实际问题：
+///
+/// 1. 键盘输入进不去：GTK 走 X11 后端后，输入框能聚焦却打不进字（中文输入法同样失效）。
+///    `.deb` / `cargo tauri dev` 都不带这个环境变量，所以只有 AppImage 中招。
+/// 2. 窗口 `app-id` 变成 X11 的 WM_CLASS（`Rustwallhub`），与 README 里按 `rustwallhub`
+///    写的 niri 窗口规则对不上，dock 图标也会错位。
+///
+/// 这里在 GTK 初始化之前把这条被强加的变量撤掉，让 GDK 回到会话真实的后端。只在
+/// 「确实从 AppImage 启动（`APPIMAGE` 存在）且值恰为 `x11` 且会话确实是 Wayland
+/// （`WAYLAND_DISPLAY` 存在）」时动手；纯 X11 会话不受影响。打包脚本会覆盖用户手写的
+/// `GDK_BACKEND`，所以无法区分「用户自己设的 x11」——真要在 Wayland 上强制 X11，
+/// 用 `.deb` 或 `cargo tauri dev` 运行时设置即可。
+fn undo_packaging_forced_x11() {
+    if std::env::var_os("APPIMAGE").is_none() || std::env::var_os("WAYLAND_DISPLAY").is_none() {
+        return;
+    }
+    let forced_x11 = matches!(
+        std::env::var("GDK_BACKEND").as_deref(),
+        Ok(value) if value.trim().eq_ignore_ascii_case("x11")
+    );
+    if !forced_x11 {
+        return;
+    }
+    log::info!("[linux-env] 撤销 AppImage 强加的 GDK_BACKEND=x11，改用会话自带的 Wayland 后端");
+    std::env::remove_var("GDK_BACKEND");
 }
 
 /// 记一条环境摘要，排查「在谁的会话里、跑的是哪个包」时直接看日志即可。

@@ -101,6 +101,8 @@ chmod +x rustwallhub_*.AppImage && ./rustwallhub_*.AppImage
 
 遇到 `dlopen(): error loading libfuse.so.2` 时，装上 `fuse2`，或改用解包运行：`./rustwallhub_*.AppImage --appimage-extract-and-run`。
 
+AppImage 的启动脚本（linuxdeploy 生成的 `AppRun`）会**无条件** `export GDK_BACKEND=x11`。在 Wayland 会话下会把 GTK 拽回 X11：表现为**输入框能聚焦却打不进字**（中文输入法同样失效），窗口 `app-id` 也会变成 X11 的 `Rustwallhub`。应用启动时会撤销这个变量、改走会话真实的 Wayland 后端；纯 X11 会话不受影响。
+
 ### 桌面集成（装进启动器）
 
 AppImage 不会被启动器自动收录，所以先手动装一次桌面项：
